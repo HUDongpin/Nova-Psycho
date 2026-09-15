@@ -21,7 +21,7 @@ This is a locally runnable version using synthetic data. No professional instrum
 | `docker build -f deploy/Dockerfile -t nova-psycho-helper:0.1.0 .` | passed | application image with Chromium and Noto CJK fonts |
 | CN and HK Compose configuration checks | passed | both environments' configuration parses; not yet started as real cloud environments |
 
-**Later changes.** This table records the 2026-09-10 delivery point and is left as recorded. Since then: the unit suite has grown from 37 to 162 tests; the AI adapter has been verified against the real service (see `docs/ai-regional-verification.md`); and the single runtime image has been split into `-web` and `-worker` targets, so the bare `docker build` command above no longer matches the deployment. Use `docker compose up`, which builds both targets. See `docs/deployment.md`.
+**Later changes.** This table records the 2026-09-10 delivery point and is left as recorded. Since then: the unit suite has grown well beyond the figure above (run `npm test` for the current count, and see the CI badge in the README); the AI adapter has been verified against the real service (see `docs/ai-regional-verification.md`); and the single runtime image has been split into `-web` and `-worker` targets, so the bare `docker build` command above no longer matches the deployment. Use `docker compose up`, which builds both targets. See `docs/deployment.md`.
 
 Run evidence is in `work/qa/` in the main development directory. Interface checks used two local demo services; content lifecycle checks used an isolated database that was created and then dropped, without covering or deleting existing families.
 
