@@ -1,51 +1,51 @@
-# 专业量表接入
+# Professional instrument intake
 
-当前示例 `nova-family-demo@1.0.0` 为虚构演示，不是正式心理量表。正式服务环境拒绝创建、收集或发布演示量表任务，并拒绝连接演示分类的数据库。
+The current example, `nova-family-demo@1.0.0`, is fictional and is not a professional psychological instrument. A service environment refuses to create, collect or publish demo-instrument tasks, and refuses to connect to a database classified as demo.
 
-## 需要提供的材料
+## Materials required
 
-1. 量表名称、作者、正式版本、出版／获取来源。
-2. 电子化、商业使用和中文译本的授权依据；量表软件的开源许可不包含量表题目的使用权。
-3. 明确的使用年龄、填答者（学生／家长／教师）、适用地区、简体与繁体文本。不同译本不得随意机器转换后当作同一已验证版本。
-4. 原始题目、离散回答选项、正反向题、各分量表的题目归属和聚合规则。
-5. 缺失答案规则、解释阈值、常模来源与适用人群、建议复测间隔。
-6. 每个解释分段对应的家长说明、行动建议、依据来源和预设的风险提示。
-7. 标准算例：至少包含最低／最高分、边界分、反向题、允许与不允许的缺失，以及不适用年龄／角色／地区。
+1. Instrument name, author, official version, and publication or acquisition source.
+2. The licensing basis for electronic use, commercial use and the Chinese translation; the instrument software's open-source licence does not cover the right to use the instrument's items.
+3. The explicit ages of use, the respondent (student / parent / teacher), the applicable regions, and simplified and traditional text. Different translations must not be machine-converted and then treated as the same validated version.
+4. Original items, discrete response options, positive and reverse items, item membership per subscale, and aggregation rules.
+5. Missing-answer rules, interpretation thresholds, norm source and applicable population, and the recommended retest interval.
+6. The parent explanation, action advice, source of basis and preset risk notices for each interpretive band.
+7. Standard worked examples: covering at least minimum and maximum scores, boundary scores, reverse items, permitted and non-permitted missing data, and inapplicable age / role / region.
 
-## 配置顺序
+## Configuration order
 
-先在管理员“报告内容”建立建议库和报告模板，再导入量表。建议库包含固定的 ID、双语标题／正文、依据来源以及关联的维度 ID。量表每个分段通过建议 ID 关联这些内容。
+First create the advice library and report template under the administrator's "Report content", then import the instrument. The advice library holds fixed IDs, bilingual titles and bodies, the source of basis, and the associated dimension IDs. Each instrument band references this content through advice IDs.
 
-量表 JSON 可从管理员“下载示例”取得，或运行以下命令导出同一示例（输出仅包含原创演示内容）：
+The instrument JSON can be obtained from the administrator's "Download example", or exported with the following command (the output contains only original demo content):
 
 ```sh
 node --import tsx -e "import('./src/domain/demo.ts').then(m=>console.log(JSON.stringify(m.demoScale,null,2)))" > work/demo-scale-example.json
 ```
 
-主要字段：
+Main fields:
 
-| 字段 | 含义 |
+| Field | Meaning |
 |---|---|
-| `id` + `version` | 唯一量表版本；修改内容必须发布新版本 |
-| `demo` | 是否为演示；不能仅改为 false 就认为量表完成验证 |
-| `rights` | 电子化与商业使用状态及凭据引用 |
-| `minAge/maxAge`, `regions`, `roles` | 使用对象边界 |
-| `norm` | 常模说明、来源、地区、年龄与已核验标记 |
-| `items` | 双语题目、可选观察者题干、离散数值选项、反向与必答标记 |
-| `dimensions` | 题目归属、求和／均值、缺失上限、是否折算、解释分段 |
-| `riskRules` | 具体题目及回答值触发的固定双语提示 |
-| `retakeDays` | 同一填答者与量表版本的最低复测间隔 |
+| `id` + `version` | The unique instrument version; any content change must publish a new version |
+| `demo` | Whether this is a demo; setting it to false does not by itself make the instrument validated |
+| `rights` | Electronic and commercial usage status, and the reference for the evidence |
+| `minAge/maxAge`, `regions`, `roles` | The boundary of who the instrument applies to |
+| `norm` | Norm description, source, region, age range and a verified flag |
+| `items` | Bilingual items, optional observer wording, discrete numeric options, reverse and required flags |
+| `dimensions` | Item membership, sum or mean aggregation, missing-data ceiling, prorating, interpretive bands |
+| `riskRules` | Fixed bilingual notices triggered by specific items and response values |
+| `retakeDays` | The minimum retest interval for the same respondent and instrument version |
 
-引擎拒绝重复题号、未知题目引用、超范围回答、重复或越界分段、与维度不匹配的建议、不明确的部分均值规则，以及任意 SQL／代码表达式。均值存在缺失或求和需要比例折算时，相关题目必须使用相同数值范围。不同角色不合并计分，不同版本不直接比较。
+The engine rejects duplicate item numbers, unknown item references, out-of-range responses, duplicate or out-of-range bands, advice that does not match the dimension, ambiguous partial-mean rules, and arbitrary SQL or code expressions. Where a mean has missing values, or a sum requires proportional adjustment, the relevant items must use the same numeric range. Different roles are never merged into one score, and different versions are never compared directly.
 
-当前支持原始分规则。若量表需要 T 分、年龄分组常模查表、特殊权重或其他复杂算法，应将该算法作为新的确定性计分能力实现，并与正式手册的标准算例逐项核对。不得擅自用简单求和替代。
+Only raw-score rules are currently supported. If an instrument needs T-scores, age-banded norm lookup, special weighting or another complex algorithm, implement that algorithm as a new deterministic scoring capability and check it item by item against the official manual's worked examples. Do not substitute a simpler sum.
 
-停用版本不删除历史记录；已经分配但未完成的任务仍可提交。发布新建议库时，系统保留启用中量表及未完成任务需要的建议引用。重新启用旧量表时再次检查兼容性。
+Retiring a version does not delete historical records; tasks already assigned but not completed can still be submitted. When publishing a new advice library, the system preserves the advice references needed by active instruments and incomplete tasks. Reactivating an old instrument re-checks compatibility.
 
-## 已识别的候选资源
+## Candidate resources identified
 
-- SDQ：电子版本需要事先授权，见 https://sdqinfo.org/。
-- RCADS：中文版本、电子化和商业分发需按 https://rcads.ucla.edu/permissions 核对。
-- PSC／PSC-17、SCORE-15：作为待核对候选，不预置题目或宣称已获得商用许可。
+- SDQ: electronic versions require prior authorisation, see https://sdqinfo.org/.
+- RCADS: Chinese versions, electronic use and commercial distribution must be checked against https://rcads.ucla.edu/permissions.
+- PSC / PSC-17 and SCORE-15: listed as candidates pending verification; no items are pre-loaded and no commercial licence is claimed.
 
-后续文献与中国内地／香港适用性核查使用 EdUHK Library https://www.lib.eduhk.hk/ 和量表开发机构、期刊论文等可靠来源。仅访问图书馆入口或取得中文表格不代表完成信效度或常模验证。任何登录信息不得进入配置、代码、日志或委派消息。
+Subsequent literature and mainland China / Hong Kong applicability checks use the EdUHK Library at https://www.lib.eduhk.hk/ together with instrument developer bodies, journal articles and other reputable sources. Merely accessing a library portal or obtaining a Chinese-language form does not constitute completed reliability, validity or norm verification. No login credentials may enter configuration, code, logs or delegated messages.

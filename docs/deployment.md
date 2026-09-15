@@ -1,25 +1,25 @@
-# 区域部署与运维
+# Regional deployment and operations
 
-## 运行边界
+## Operating boundary
 
-当前已验证的是本机 CN/HK 两套独立数据库、应用和报告目录。生产时应把同一应用镜像部署在实际位于中国内地、香港的两个环境。两个本地端口或两个数据库本身不证明真实地理驻留。
+What is verified today is two independent local CN/HK sets of database, application and report directory. Production should deploy the same application image into two environments actually located in mainland China and Hong Kong. Two local ports, or two databases, do not by themselves prove real geographic residency.
 
-部署模式写入数据库 `deployment_settings`，应用同时检查区域和 `demo/service` 分类。不能把演示数据库改一个环境变量就升级为正式服务；建立新的正式数据库，并使用已核实的专业量表。
+Deployment mode is written into the database `deployment_settings`, and the application checks both the region and the `demo/service` classification. A demo database cannot be upgraded to a service database by changing one environment variable; create a new service database and use a verified professional instrument.
 
-`deploy/Dockerfile` 包含 Next.js 应用、报告进程运行依赖、Chromium 与 Noto CJK 字体。`deploy/compose.yml` 在每个区域分别启动数据库、迁移、Web 和报告进程。数据库没有宿主公网端口；Web 默认仅监听宿主127.0.0.1，由该地区的 HTTPS 反向代理接入。
+`deploy/Dockerfile` contains the Next.js application, the report-process runtime dependencies, Chromium and Noto CJK fonts. `deploy/compose.yml` starts the database, migration, web and report processes separately for each region. The database has no host public port; by default the web service listens only on host 127.0.0.1, fronted by that region's HTTPS reverse proxy.
 
-## 每个区域的配置
+## Per-region configuration
 
-在版本控制之外准备一个权限600的环境文件，参考根目录 `.env.example`。分别设置：
+Prepare a permissions-600 environment file outside version control, following the root `.env.example`. Set these separately:
 
-- `NOVA_MODE=service`、正确的 `NOVA_REGION=CN` 或 `HK`。
-- 真实 HTTPS 网站来源 `NOVA_PUBLIC_URL`；它也是服务端校验写请求来源的依据。
-- 本区域 `DATABASE_URL`，以及首次创建数据库所需的 PostgreSQL 配置。
-- 本区域独立 `NOVA_REPORT_KEY`（32字节随机密钥，以64位十六进制表示）。数据库和磁盘／备份还需使用部署环境提供的加密与访问控制。
-- 私有报告目录。Docker 使用 `/var/lib/nova/reports`，不得映射到公开静态目录或公开存储桶。
-- `NOVA_DIST_DIR=.next`，以便 CN/HK 共用同一镜像构建。
+- `NOVA_MODE=service`, and the correct `NOVA_REGION=CN` or `HK`.
+- A real HTTPS site origin `NOVA_PUBLIC_URL`; this is also the basis for server-side write-request origin validation.
+- This region's `DATABASE_URL`, plus the PostgreSQL settings needed to create the database on first run.
+- This region's independent `NOVA_REPORT_KEY` (a 32-byte random key expressed as 64 hex characters). The database and disk/backups also need the encryption and access control provided by the deployment environment.
+- A private report directory. Docker uses `/var/lib/nova/reports`; it must not be mapped to a public static directory or a public storage bucket.
+- `NOVA_DIST_DIR=.next`, so that CN and HK share one image build.
 
-示例命令中的环境文件路径需替换为该区域实际路径；不会创建云资源、购买服务或发送真实家庭数据：
+Replace the environment file paths in the example commands with the real paths for that region. No cloud resources are created, no services are purchased, and no real family data is sent:
 
 ```sh
 docker build -f deploy/Dockerfile -t nova-psycho-helper:0.1.0 .
@@ -27,37 +27,47 @@ NOVA_ENV_FILE=/secure/nova-cn.env docker compose --env-file /secure/nova-cn.env 
 NOVA_ENV_FILE=/secure/nova-cn.env docker compose --env-file /secure/nova-cn.env -f deploy/compose.yml up -d
 ```
 
-在香港主机上使用单独的香港环境文件运行相同流程。不要将正式环境变量文件、数据库备份或报告密钥复制到另一个地区作为便捷测试手段。
+Run the same flow on the Hong Kong host with a separate Hong Kong environment file. Do not copy a production environment file, a database backup or a report key into the other region as a convenience for testing.
 
-首次迁移不创建用户或临床内容。通过部署环境的安全密钥输入方式提供 `NOVA_NEW_USER_USERNAME`、`NOVA_NEW_USER_NAME`、`NOVA_NEW_USER_ROLE`（admin或staff）和 `NOVA_NEW_USER_PASSWORD`，在对应容器中运行 `node --import tsx scripts/create-user.ts`。不要把密码写入命令参数或终端日志。之后家长、学生和教师通过一次性邀请自行建立账号。
+The first migration creates no users and no clinical content. Supply `NOVA_NEW_USER_USERNAME`, `NOVA_NEW_USER_NAME`, `NOVA_NEW_USER_ROLE` (admin or staff) and `NOVA_NEW_USER_PASSWORD` through the deployment environment's secure secret input, and run `node --import tsx scripts/create-user.ts` in the corresponding container. Do not put passwords in command arguments or terminal logs. Afterwards, parents, students and teachers create their own accounts through one-time invitations.
 
-## AI 地域验证
+## AI regional verification
 
-未启用或未配置完整密钥时，规则模板继续自动出报告。要启用百炼，设置：
+When AI is not enabled, or credentials are incomplete, the rule template continues to publish reports automatically. To enable Bailian, set:
 
 - `NOVA_AI_ENABLED=true`
-- `NOVA_AI_DEPLOYMENT_SCOPE=CN` 或 `HK`，必须等于部署区域。
-- `NOVA_AI_BASE_URL`：对应地域业务空间的 HTTPS OpenAI兼容地址，路径为 `/compatible-mode/v1`。
-- `NOVA_AI_MODEL`、本业务空间的 `NOVA_AI_API_KEY`。
+- `NOVA_AI_DEPLOYMENT_SCOPE=CN` or `HK`, which must equal the deployment region.
+- `NOVA_AI_BASE_URL`: the HTTPS OpenAI-compatible address of the corresponding regional business workspace, with path `/compatible-mode/v1`.
+- `NOVA_AI_MODEL`, and this business workspace's `NOVA_AI_API_KEY`.
 
-软件限制已配置地址的区域域名并拒绝跨区域／全球域名，但**仅凭域名和环境变量不能证明业务空间实际使用了限定地域的推理节点**。启用真实数据前，需在百炼控制台核验该工作空间的实际推理范围、存储、日志与数据使用条款，并保存部署配置证据。根据官方文档，接入存储地域与推理执行范围是不同设置：https://help.aliyun.com/zh/model-studio/hong-kong-china-global。
+The software restricts the configured address to regional domains and rejects cross-region and global domains, but **a domain name and environment variables alone cannot prove that the business workspace actually used in-region inference nodes**. Before enabling real data, verify that workspace's actual inference scope, storage, logging and data-use terms in the Model Studio console, and retain the deployment configuration as evidence. Per the official documentation, the access/storage region and the service deployment scope are separate settings: https://help.aliyun.com/zh/model-studio/hong-kong-china-global
 
-该版本只发送年龄段、填答者角色、结构化分数／分段以及可选建议，不发送姓名、联系方式、学校、逐题答案或服务观察。没有当前AI处理同意时不会发起模型调用。风险信号始终使用预设模板，不等待AI。
+This version sends only age band, respondent role, structured scores/bands and optional advice — not names, contact details, school, per-item answers or case observations. No model call is made without current AI-processing consent. Risk signals always use the preset template and do not wait for AI.
 
-## 监测与恢复
+### Verifying the adapter against a real workspace
 
-- `/api/health` 检查数据库连接、地区和模式；仅有该探针成功并不证明报告流程工作正常。
-- 监测 `report_jobs` 的 ready/running/failed 数量和最旧等待时间，同时检查报告进程持续运行。进程以租约领取任务，失效租约可被其他进程接管，最多三次失败后明确标记失败。
-- 失败日志只包含区域、尝试次数和稳定错误码；不要为排查问题增加答案、报告正文、Cookie或供应商请求内容日志。
-- 排查并修复基础设施问题后，可在该区域重新安排失败任务；先核对其家庭仍存在、授权仍有效。操作应留有运行记录，不能作为逐份临床审批步骤。工作空间对管理员和工作人员显示失败任务的「重新排队生成报告」控制，调用 `POST /api/assessments/:id/retry-report`，返回 `{id,status:'queued'}`；请求进行中禁止重复点击，并展示服务器错误或已重新排队的说明后刷新。家长、学生和教师看不到也不得使用该操作。停用量表版本后，仅管理员可通过确认对话框重新启用（`PATCH /api/scales/:id`，`{status:'active'}`），由服务器核验当前建议内容；不匹配时保持停用并显示错误。
-- 数据删除立即撤销查询与会话权限；加密文件删除通过持久化删除队列执行，报告进程同时清理孤立文件。因此报告进程也是完成物理删除的必要服务。
+The adapter's constraints are unit-tested, but those tests use a stubbed fetcher. To verify it against an actual regional workspace, with credentials configured for that region, run:
 
-## 备份与还原
+```sh
+node scripts/run-region.mjs CN ai-conformance
+```
 
-每个区域独立备份 PostgreSQL、私有报告文件与报告密钥，保存在该区域受限且加密的备份介质。使用数据库的事务一致性备份和私有卷快照；密钥另行受控备份，不能混入公开代码包。更换密钥前必须设计旧文件迁移或密钥版本策略，直接替换密钥会导致旧PDF无法解密。
+This script imports no database module and builds its snapshot in memory from the fictional demo instrument, so there is no code path by which real family data can reach the provider. It refuses to run if the active instrument is not marked as a demo instrument, inspects the transmitted payload for identity and raw-answer leakage, and never prints the API key or response bodies. It reports per-assumption results with stable codes, writes evidence to `work/qa/ai-conformance.json`, and exits non-zero if any check fails. See `docs/ai-regional-verification.md` for what each check means and which assumptions were confirmed against the official documentation rather than a live call.
 
-还原到一个新的、隔离的同区域环境，先停止报告工作进程，恢复数据库与匹配的报告文件／密钥，再检查数据库区域与模式、权限、历史HTML/PDF、一个新的测评自动发布流程和删除队列。完成验证后再切换服务流量。不要用覆盖现有数据库的命令尝试还原演练。
+## Monitoring and recovery
 
-## 正式启用所需的外部输入
+- `/api/health` checks the database connection, region and mode; a successful probe alone does not prove the report pipeline works.
+- Monitor the ready/running/failed counts and the oldest wait time in `report_jobs`, and confirm the report process runs continuously. Processes claim jobs under a lease; an expired lease can be taken over by another process, and after at most three failures a job is explicitly marked failed.
+- Failure logs contain only the region, attempt count and a stable error code; do not add answers, report bodies, cookies or vendor request content to logs for troubleshooting.
+- After diagnosing and fixing an infrastructure problem, failed jobs can be rescheduled in that region; first confirm the family still exists and consent is still valid. The action should leave an operational record and must not serve as a per-report clinical approval step. The workspace shows a "requeue report generation" control to administrators and staff for failed tasks, calling `POST /api/assessments/:id/retry-report` and returning `{id,status:'queued'}`; repeated clicks must be blocked while the request is in flight, and the server error or the requeued explanation must be shown before refreshing. Parents, students and teachers cannot see or use this action. After an instrument version is retired, only an administrator can reactivate it through a confirmation dialog (`PATCH /api/scales/:id`, `{status:'active'}`), with the server validating the current advice content; on a mismatch it stays retired and shows the error.
+- Data deletion immediately revokes query and session access; encrypted file deletion runs through a persistent deletion queue, and the report process also clears orphaned files. The report process is therefore also a necessary service for completing physical deletion.
 
-代码、局部测试和本机运行不能替代：专业量表与标准算例、电子化及商业授权、内地／香港适用证据、实际域名和云环境、机构的知情说明及服务责任安排、真实地域限定推理凭据与验收。v1 基础能力已在本机源码中实现；本批次的重试／重新启用界面已于2026-09-15通过根目录集中测试与本地浏览器操作验收（见 docs/grok-batch-20260915.md）。专业量表、授权、云驻留、百炼地域推理与设备验收尚未完成，不能把当前源码状态写成已经通过这些验收。
+## Backup and restore
+
+Back up PostgreSQL, the private report files and the report key independently for each region, on restricted and encrypted backup media in that region. Use transactionally consistent database backups and private volume snapshots; the key is backed up separately under its own controls and must not be mixed into public code packages. Before changing a key, design an old-file migration or key-versioning strategy; replacing a key directly makes existing PDFs undecryptable.
+
+Restore into a new, isolated, same-region environment: stop the report worker first, restore the database and the matching report files and key, then check the database region and mode, permissions, historical HTML/PDF, one new automatic report publication flow, and the deletion queue. Switch service traffic only after verification. Do not attempt a restore drill with commands that overwrite an existing database.
+
+## External inputs required for production
+
+Code, partial tests and local runs are no substitute for: professional instruments and standard worked examples, electronic and commercial licensing, mainland/Hong Kong applicability evidence, real domains and cloud environments, the institution's information notice and service-responsibility arrangements, and real region-restricted inference credentials and acceptance. The v1 base capabilities are implemented in this source; the retry/reactivation interface in this batch passed central tests and local browser verification on 2026-09-15 (see `docs/grok-batch-20260915.md`). Professional instruments, licensing, cloud residency, Bailian regional inference and device acceptance are not yet complete, and the current source state must not be written up as having passed them.

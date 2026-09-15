@@ -1,27 +1,27 @@
 # Nova Psycho Helper
 
-面向中国内地与香港 K–12 家庭的测评、自动报告与持续支持工作空间。
+An assessment, automatic-reporting and ongoing-support workspace for K–12 families in mainland China and Hong Kong.
 
-**项目目录：`/Volumes/Starship/Nova Psycho Helper`。** 问卷使用 MIT 许可的 SurveyJS Form Library；Nova 独立实现家庭管理、规则计分、自动发布、私有 PDF 和复测比较。LimeSurvey 保留为未来完整问卷平台备选。
+**Project directory: `/Volumes/Starship/Nova Psycho Helper`.** Questionnaires use the MIT-licensed SurveyJS Form Library; Nova independently implements family management, rule-based scoring, automatic publication, private PDFs and retest comparison. LimeSurvey is retained as an option for a future full survey platform.
 
-## 当前可以使用什么
+## What works today
 
-- 运营端建立家庭档案、分配服务人员、记录监护人授权，创建学生／家长／教师访问邀请。
-- 填答者确认知情说明后，通过 SurveyJS 作答；草稿自动保存，版本校验避免旧页面覆盖新答案。
-- 服务端进行反向计分、分量表求和／均值、缺失处理、适用年龄／地区／角色检查和规则触发。
-- 独立报告进程自动生成并发布简繁体 HTML 与 PDF，无逐份人工审核步骤。
-- 家长只能读取授权家庭的报告；学生和教师只能访问分配给自己的测评，不能读取家长报告。
-- 相同填答者、相同量表版本的复测可以比较原始分变化；学生、家长和教师的观察分别保留。
-- 关怀目标、完成状态、服务团队私密观察、量表版本、建议库和报告模板管理。
-- 管理员／负责家庭的工作人员可重试失败报告，保留原作答和计分；管理员可重新启用配套建议有效的停用量表。
-- 新生成的复测报告显示上次日期、原始分变化及高分方向说明。
-- 内地与香港使用分开的数据库、会话和报告目录；语言切换不会切换数据区域。
+- Operations staff create family records, assign case workers, record guardian consent, and issue student / parent / teacher access invitations.
+- Respondents confirm the information notice, then answer through SurveyJS; drafts save automatically and version checks stop a stale page from overwriting newer answers.
+- The server performs reverse scoring, subscale sums and means, missing-data handling, age / region / role eligibility checks and rule triggering.
+- A separate report process generates and publishes simplified- and traditional-Chinese HTML and PDF automatically, with no per-report human review step.
+- Parents can only read reports for families they are authorised for; students and teachers can only reach assessments assigned to them, and cannot read parent reports.
+- Retests by the same respondent on the same instrument version can be compared by raw-score change; student, parent and teacher observations are kept separate.
+- Care goals, completion status, private case-worker observations, instrument versions, the advice library and report templates are all managed.
+- Administrators, or the assigned case worker, can retry failed reports while preserving the original answers and scores; administrators can reactivate a retired instrument whose advice dependencies are still valid.
+- Newly generated retest reports show the previous assessment date, the raw-score change, and what a higher score means for that dimension.
+- Mainland China and Hong Kong use separate databases, sessions and report directories; switching language does not switch data region.
 
-**当前运行的是演示环境。** 内置量表为 Nova 原创的 9 道虚构流程示例题，配套家庭、历史答案和报告均为合成数据，没有临床常模。它用于验证软件，不能评估真实孩子的心理健康。尚未接入用户提供的专业量表、真实家庭资料或真实百炼推理密钥。
+**This is currently a demonstration environment.** The bundled instrument is a Nova-original 9-item fictional workflow example; the accompanying families, historical answers and reports are all synthetic data, with no clinical norms. It exists to validate the software and cannot assess a real child's mental health. No user-supplied professional instrument, real family record or real Bailian inference key has been connected yet.
 
-## 本地启动
+## Running locally
 
-需要 Node.js 24、npm、Docker；macOS 有 Google Chrome 时报告进程直接使用它。其他环境可安装 Playwright Chromium，或通过 `NOVA_CHROMIUM_EXECUTABLE` 指定受支持的 Chromium。
+Requires Node.js 24, npm and Docker. On macOS the report process uses Google Chrome directly; other environments can install Playwright Chromium, or point `NOVA_CHROMIUM_EXECUTABLE` at a supported Chromium build.
 
 ```sh
 cd '/Volumes/Starship/Nova Psycho Helper'
@@ -31,7 +31,7 @@ npm run setup:cn
 npm run setup:hk
 ```
 
-在四个终端分别运行：
+Then run each of these in its own terminal:
 
 ```sh
 npm run dev
@@ -40,30 +40,30 @@ npm run dev:hk
 npm run worker:hk
 ```
 
-| 环境 | 网页地址 | PostgreSQL 端口 |
+| Environment | Web address | PostgreSQL port |
 |---|---|---|
-| 内地演示 | http://127.0.0.1:3100 | 55431 |
-| 香港演示 | http://127.0.0.1:3101 | 55432 |
+| Mainland demo | http://127.0.0.1:3100 | 55431 |
+| Hong Kong demo | http://127.0.0.1:3101 | 55432 |
 
-这些监听均绑定本机。首次运行会生成独立随机数据库密码和报告加密密钥，保存在 `work/local-cn.env`、`work/local-hk.env`，文件权限为600；不会打印密钥。重复初始化会保留已有数据。停止数据库可运行 `docker stop nova-psycho-helper-cn-db nova-psycho-helper-hk-db`；该命令不会删除数据卷。
+All listeners bind to loopback. The first run generates independent random database passwords and report encryption keys, stored in `work/local-cn.env` and `work/local-hk.env` with permissions `600`; keys are never printed. Re-running initialisation preserves existing data. Databases can be stopped with `docker stop nova-psycho-helper-cn-db nova-psycho-helper-hk-db`, which does not delete data volumes.
 
-入口页提供清楚标注的合成账号。建议依次体验：管理员查看家庭／分配任务 → 学生完成一份待答测评 → 家长查看新报告及下载 PDF。两个站点的登录和数据互不共用。
+The entry page offers clearly labelled synthetic accounts. A suggested walkthrough: view families and assignments as an administrator → complete a pending assessment as a student → view the new report and download the PDF as the matching parent. The two sites share neither logins nor data.
 
-## 计分与自动报告约定
+## Scoring and automatic report conventions
 
-计分数据以服务端为准，不接受客户端总分。每次提交冻结量表、分数、年龄、建议库、模板和同意范围；已提交答案与已发布报告由数据库触发器保护。中文版和繁体版 HTML 与 PDF 同时冻结保存，不会随未来模板代码更改而重写。
+Scoring is authoritative on the server; client-supplied totals are not accepted. Every submission freezes the instrument, scores, age, advice library, template and consent scope. Submitted answers and published reports are protected by database triggers. The simplified- and traditional-Chinese HTML and PDF are frozen together at publication and are not rewritten by later template changes.
 
-AI 接口可在地域限定的百炼工作空间启用。当前版本让模型**从本次分数适用的专业建议中排序**，只能返回已存在的建议 ID，不能新增诊断、分数、自由文本或未经支持的干预建议。没有 AI 授权、未配置密钥、模型失败或出现风险信号时，自动使用规则模板。缺失信息会明确呈现，风险提示优先于普通建议。
+The AI interface can be enabled for a region-restricted Bailian workspace. In the current version the model **orders the professional advice applicable to this assessment's scores**; it may only return advice IDs that already exist, and cannot add diagnoses, scores, free text or unsupported interventions. Without AI consent, without configured credentials, on model failure, or when a risk signal is present, the rule template is used automatically. Missing information is shown explicitly, and risk notices take precedence over ordinary advice.
 
-报告 PDF 在服务端用 AES-256-GCM 加密存储，下载前检查角色、家庭及区域权限，再解密发送。用户主动下载的 PDF 是普通可阅读文件，不带文件密码；授权撤销无法收回家长已经下载的副本。
+Report PDFs are stored server-side encrypted with AES-256-GCM. Role, family and region permissions are checked before decryption and delivery. A PDF the user downloads is an ordinary readable file with no file password; revoking access cannot recall copies a parent has already downloaded.
 
-## 接入正式内容
+## Bringing in production content
 
-管理员在“报告内容”建立首个建议库和报告模板，再通过“量表库”导入完整量表定义。下载示例 JSON 可以查看格式。详细说明见 `docs/scale-intake.md`。
+An administrator first creates the initial advice library and report template under "Report content", then imports full instrument definitions under "Instrument library". Downloading the example JSON shows the format; see `docs/scale-intake.md` for detail.
 
-上线量表必须具备适用的电子化／商业使用权限、年龄与地区证据、计分规范和解释依据。当前引擎支持离散数值选项、反向题、求和／均值、明确的缺失规则及原始分阈值解释；不支持任意代码或 SQL 计分表达式。涉及额外标准分换算或复杂算法的量表需先增加独立规则与标准样例，不能用相近规则代替。
+Any instrument taken live must have applicable electronic / commercial usage rights, age and region evidence, a scoring specification, and an interpretive basis. The current engine supports discrete numeric options, reverse items, sum / mean aggregation, explicit missing-data rules, and raw-score threshold interpretation; it does not support arbitrary code or SQL scoring expressions. Instruments needing additional standard-score conversion or complex algorithms require new deterministic rules and standard worked examples first — they must not be approximated with a similar rule.
 
-## 验证与部署
+## Verification and deployment
 
 ```sh
 npm test
@@ -72,14 +72,21 @@ NOVA_DIST_DIR=.next-verify npm run build
 npm run test:integration
 node scripts/run-region.mjs CN database-checks
 node scripts/run-region.mjs CN content-regressions
+node scripts/run-region.mjs CN retry-regressions
 ```
 
-集成测试只运行于明确分类的演示环境。并发／生命周期检查使用合成家庭或专门创建后删除的隔离测试数据库，不删除用户既有家庭。证据输出到 `work/qa/`。
+Integration tests run only against explicitly classified demo environments. Concurrency and lifecycle checks use synthetic families, or an isolated test database that is created and then dropped; they do not delete a user's existing families. Evidence is written to `work/qa/`.
 
-生产部署文件在 `deploy/`，操作说明在 `docs/deployment.md`。同一镜像可以部署到内地与香港，但生产时必须在实际对应地区分别部署，分别配置数据库、存储、密钥和推理工作空间。当前本地双环境测试不等于已完成真实云地区部署、量表专业验证或真实推理验收。
+Live AI conformance against a real regional workspace is checked separately, using an in-memory synthetic snapshot and no database:
 
-架构接口见 `docs/api-contract.md`；保留的选型依据见 `docs/platform-decision.md`。
+```sh
+node scripts/run-region.mjs CN ai-conformance
+```
 
-## 开发分工
+Production deployment files are in `deploy/`, with operating notes in `docs/deployment.md`. The same image can be deployed to both mainland China and Hong Kong, but production requires separate deployments in the actual corresponding regions, each with its own database, storage, keys and inference workspace. Passing the local dual-environment tests does not constitute a completed real cloud regional deployment, professional instrument validation, or real inference acceptance.
 
-按当前约定，Grok CLI 主开发，Codex 负责范围控制、必要集成和验收。使用小任务与独立源码副本，避免运行资料进入开发提示。具体流程见 `docs/grok-workflow.md`，2026-09-15 的功能补全与当前验收见 `docs/grok-batch-20260915.md`。
+Architecture and interface details are in `docs/api-contract.md`; retained selection rationale is in `docs/platform-decision.md`.
+
+## Development ownership
+
+Under the current arrangement, Grok CLI does the main implementation work, while Codex handles scope control, necessary integration and acceptance. Small tasks and independent source copies are used to keep runtime material out of development prompts. See `docs/grok-workflow.md` for the process, and `docs/grok-batch-20260915.md` for the 2026-09-15 feature completion and current acceptance record.

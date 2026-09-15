@@ -1,56 +1,56 @@
-# Nova Psycho Helper 0.1.0 本地交付与验收
+# Nova Psycho Helper 0.1.0 local delivery and acceptance
 
-日期：2026-09-10。开发主目录：`/Volumes/Starship/Nova Psycho Helper`。
+Date: 2026-09-10. Main development directory: `/Volumes/Starship/Nova Psycho Helper`.
 
-## 交付范围
+## Delivery scope
 
-已实现并在本机运行 SurveyJS 作答、家庭档案、监护人授权、学生／家长／教师独立测评、服务端计分、自动家长报告、简繁体 PDF、同版本复测比较、关怀目标和运营内容管理。报告直接自动发布，无逐份人工审核队列。源码、依赖锁文件、PostgreSQL 结构、区域运行脚本及 Docker 部署文件均已保存。
+Implemented and running locally: SurveyJS answering, family records, guardian consent, separate student / parent / teacher assessments, server-side scoring, automatic parent reports, simplified and traditional PDFs, same-version retest comparison, care goals and operations content management. Reports publish automatically, with no per-report human review queue. The source, dependency lockfile, PostgreSQL schema, regional run scripts and Docker deployment files are all retained.
 
-这是使用合成数据的本地可运行版本。没有接入专业量表或真实家庭资料，没有建立内地／香港的实际云部署，没有进行真实百炼调用。当前AI适配器只允许在本次分数适用的既有建议中选择和排序；AI未启用或失败时，报告自动使用规则模板。
+This is a locally runnable version using synthetic data. No professional instrument or real family record has been connected, no real mainland China / Hong Kong cloud deployment has been established, and no real Bailian call has been made. The current AI adapter may only select and order among the existing advice applicable to this assessment's scores; when AI is not enabled or fails, the report automatically uses the rule template.
 
-## 自动检查结果
+## Automated check results
 
-| 检查 | 结果 | 主要覆盖 |
+| Check | Result | Main coverage |
 |---|---:|---|
-| `npm test` | 37 项通过，5 个测试文件 | 反向计分、缺失和适用范围、规则校验、内容约束、AI降级、HTML输出 |
-| `npm run typecheck` | 通过 | TypeScript类型检查 |
-| `NOVA_DIST_DIR=.next-verify npm run build` | 通过 | Next.js生产构建与页面生成 |
-| `npm run test:integration` | 15 组通过 | 区域／家庭／角色权限、账户与一次性邀请、授权门槛、草稿版本、重复提交、简繁体报告、风险与信息缺失、删除和复测 |
-| `node scripts/run-region.mjs CN database-checks` | 6 组通过 | 并发授权和删除、数据库不可变性、PDF加密、环境分类及历史比较来源 |
-| `node scripts/run-region.mjs CN content-regressions` | 4 组通过 | 首版内容、停用量表的未完成任务、提交重试、内容恢复和量表重新启用 |
-| `docker build -f deploy/Dockerfile -t nova-psycho-helper:0.1.0 .` | 通过 | 带Chromium与Noto CJK字体的应用镜像 |
-| CN与HK的Compose配置检查 | 通过 | 两套环境的配置可以解析；尚未以此启动实际云环境 |
+| `npm test` | 37 passed, 5 test files | reverse scoring, missing data and applicability, rule validation, content constraints, AI fallback, HTML output |
+| `npm run typecheck` | passed | TypeScript type checking |
+| `NOVA_DIST_DIR=.next-verify npm run build` | passed | Next.js production build and page generation |
+| `npm run test:integration` | 15 groups passed | regional / family / role permissions, accounts and one-time invitations, consent gating, draft versions, duplicate submission, simplified and traditional reports, risk and missing information, deletion and retest |
+| `node scripts/run-region.mjs CN database-checks` | 6 groups passed | concurrent consent and deletion, database immutability, PDF encryption, environment classification and historical comparison source |
+| `node scripts/run-region.mjs CN content-regressions` | 4 groups passed | first-version content, incomplete tasks for retired instruments, submission retry, content recovery and instrument reactivation |
+| `docker build -f deploy/Dockerfile -t nova-psycho-helper:0.1.0 .` | passed | application image with Chromium and Noto CJK fonts |
+| CN and HK Compose configuration checks | passed | both environments' configuration parses; not yet started as real cloud environments |
 
-运行证据位于开发主目录的 `work/qa/`。接口检查使用两套本地演示服务；内容生命周期检查使用专门创建并删除的隔离数据库，未覆盖或删除既有家庭。
+Run evidence is in `work/qa/` in the main development directory. Interface checks used two local demo services; content lifecycle checks used an isolated database that was created and then dropped, without covering or deleting existing families.
 
-## 浏览器与报告检查
+## Browser and report checks
 
-- 桌面管理员工作台、繁体量表库和家长报告已在浏览器查看。学生只显示分配给自己的测评。
-- 完成真实SurveyJS作答、草稿保存、切换语言、提交和家长PDF下载；提交后由独立报告进程自动发布。
-- 填答者确认前没有可操作题目或草稿请求；重新打开需再次确认，已保存答案仍在。
-- 390像素移动视口下，香港默认繁体，导航可用，页面没有整体横向溢出。真实微信内置浏览器、iOS和Android设备尚未验收。
-- 延迟草稿请求与语言切换的复现仅产生两次有序保存；另一页面写入导致409后，界面保留本地答案并停止继续提交，明确重载后读取服务端最新答案。
-- 首次内容编辑状态用隔离浏览器API响应测试，并使用真实领域校验器验证空白内容被拒绝、有效首版提交成功；503保留为错误。真实数据库首版创建另由隔离数据库检查覆盖。
-- 简体／繁体家长报告PDF的字体、图表、分页和正文已经渲染查看。容器内也执行了简繁体PDF渲染检查。输出的PDF示例均包含演示说明。
+- The desktop administrator workspace, the traditional-Chinese instrument library and parent reports were viewed in a browser. Students see only the assessments assigned to them.
+- Completed a real SurveyJS assessment, draft saving, language switching, submission and parent PDF download; after submission the separate report process published automatically.
+- Before the respondent confirmed, there were no operable questions and no draft requests; reopening required confirmation again, and saved answers remained.
+- At a 390-pixel mobile viewport, Hong Kong defaulted to traditional Chinese, navigation worked, and the page had no overall horizontal overflow. Real WeChat embedded browser, iOS and Android devices have not been accepted.
+- Reproducing a delayed draft request together with a language switch produced only two ordered saves; after another page's write caused a 409, the interface kept the local answers and stopped submitting, and reading the server's latest answers required an explicit reload.
+- The first content-edit state was tested with an isolated browser API response, and a real domain validator was used to confirm that blank content is rejected and a valid first version submits successfully; 503 was retained as an error. Real database first-version creation is separately covered by the isolated database check.
+- The fonts, charts, pagination and body text of the simplified and traditional parent report PDFs were rendered and reviewed. Simplified and traditional PDF rendering checks were also run inside the container. All output PDF samples include the demonstration notice.
 
-两轮代码复查提出的问题已修复并复查关闭，包括授权前草稿、并发授权、邀请与删除竞争、演示数据库误用于正式服务、历史报告冻结、草稿覆盖以及停用量表内容依赖。复查结果不替代量表专业有效性或生产验收。
+Issues raised in two rounds of code review were fixed and closed on re-review, including drafts before consent, concurrent consent, invitation and deletion races, a demo database misused for a service, historical report freezing, draft overwriting and retired-instrument content dependencies. Review results do not substitute for professional instrument validity or production acceptance.
 
-## 启动与体验
+## Startup and walkthrough
 
-本次交付时，两个应用和各自的报告进程已启动：
+At delivery time, both applications and their report processes were running:
 
-- 内地本地演示：`http://127.0.0.1:3100`
-- 香港本地演示：`http://127.0.0.1:3101`
+- Mainland local demo: `http://127.0.0.1:3100`
+- Hong Kong local demo: `http://127.0.0.1:3101`
 
-可从入口选择演示管理员、学生或家长。建议先查看管理员工作台，再以学生身份完成一份待答测评，随后以对应家长身份查看自动报告。两个地址是本机演示入口，无法从其他设备直接访问。
+The entry page lets you choose a demo administrator, student or parent. A suggested order: view the administrator workspace, then complete a pending assessment as a student, then view the automatic report as the matching parent. Both addresses are local demo entry points and are not directly reachable from other devices.
 
-重启方法见根目录 `README.md`；正式内容格式见 `docs/scale-intake.md`；区域部署和备份方法见 `docs/deployment.md`。
+For restart instructions see the root `README.md`; for the production content format see `docs/scale-intake.md`; for regional deployment and backup see `docs/deployment.md`.
 
-## 正式服务仍需完成
+## Still required for a service
 
-1. 提供拟接入的专业量表原文／简繁体版本、电子化及商业授权、年龄和地区依据、完整计分规则及人工标准算例。现有引擎不支持的复杂计分需要新增独立规则。
-2. 在中国内地和香港分别准备域名、HTTPS、数据库、私有存储、备份和访问环境，进行真实区域部署验收。
-3. 若启用AI，提供对应地域业务空间的百炼配置，核验实际推理范围，并验证真实调用的权限和数据范围。
-4. 确认机构的正式知情说明与服务责任安排，并在目标手机及微信内验证完整作答、登录和报告下载。
+1. Provide the source text of the intended professional instrument, in simplified and traditional versions, with electronic and commercial licensing, age and region evidence, complete scoring rules and manual worked examples. Complex scoring that the current engine does not support requires new dedicated rules.
+2. Prepare domains, HTTPS, databases, private storage, backups and access environments separately in mainland China and Hong Kong, and complete real regional deployment acceptance.
+3. If enabling AI, provide the Bailian configuration for the corresponding regional business workspace, verify the actual inference scope, and validate the permissions and data scope of real calls.
+4. Confirm the institution's formal information notice and service-responsibility arrangements, and verify complete answering, login and report download on target phones and inside WeChat.
 
-演示数据库不可直接改为正式服务数据库。后续开发继续使用Starship上的主目录；交付源码压缩包为本次版本快照，未包含运行密钥、数据库、已登录会话、依赖目录或构建缓存。
+A demo database cannot be changed directly into a service database. Subsequent development continues in the main directory on Starship; the delivered source archive is a snapshot of this version and contains no runtime keys, database, logged-in sessions, dependency directory or build cache.
