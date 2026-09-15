@@ -22,10 +22,22 @@ Prepare a permissions-600 environment file outside version control, following th
 Replace the environment file paths in the example commands with the real paths for that region. No cloud resources are created, no services are purchased, and no real family data is sent:
 
 ```sh
-docker build -f deploy/Dockerfile -t nova-psycho-helper:0.1.0 .
 NOVA_ENV_FILE=/secure/nova-cn.env docker compose --env-file /secure/nova-cn.env -f deploy/compose.yml config --quiet
 NOVA_ENV_FILE=/secure/nova-cn.env docker compose --env-file /secure/nova-cn.env -f deploy/compose.yml up -d
 ```
+
+Compose builds both images itself, so there is no separate `docker build` step.
+
+### Two images, not one
+
+The Dockerfile has two runtime targets, because the web service and the report worker need different things:
+
+- **`nova-psycho-helper:<version>-web`** runs Next's standalone server (`node server.js`). It serves HTTP and streams already-encrypted PDFs; it never renders one, so it carries no Chromium and no CJK fonts.
+- **`nova-psycho-helper:<version>-worker`** renders the PDFs, so it has Chromium and the CJK fonts, and it runs the TypeScript scripts directly, so it keeps the full dependency tree and source. The migration service uses this image too.
+
+Splitting them matters because Chromium and the CJK fonts are 812 MB and the full dependency tree is 563 MB, and the web service needs neither in full. A bare `docker build -f deploy/Dockerfile .` with no `--target` produces the worker image, since that stage is last.
+
+Note that `next.config.ts` sets `output: "standalone"`. The web target honours that by running the generated `server.js`; running `next start` against a standalone build is the combination Next warns about.
 
 Run the same flow on the Hong Kong host with a separate Hong Kong environment file. Do not copy a production environment file, a database backup or a report key into the other region as a convenience for testing.
 
