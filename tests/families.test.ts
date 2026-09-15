@@ -19,7 +19,8 @@ const familyRow={id:FAMILY_ID,region:"CN",family_name:"Synthetic family",child_n
 
 const clientCalls:string[]=[];
 const client={
-  query:vi.fn(async(sql:string)=>{
+  // Declared with a params argument so mock.calls exposes the bound values.
+  query:vi.fn(async(sql:string,_params?:unknown[]):Promise<{rows:unknown[]}>=>{
     clientCalls.push(String(sql));
     if(String(sql).includes("SELECT id FROM families"))return {rows:[{id:FAMILY_ID}]};
     if(String(sql).includes("SELECT family_id FROM invitations"))return {rows:[{family_id:FAMILY_ID}]};

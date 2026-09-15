@@ -27,7 +27,9 @@ const scale=parseScale(demoScale);
 
 const clientCalls:string[]=[];
 const client={
-  query:vi.fn(async(sql:string)=>{
+  // Declared with a params argument and a widened row type so each test can install its
+  // own row shape without fighting the inferred return type.
+  query:vi.fn(async(sql:string,_params?:unknown[]):Promise<{rows:unknown[]}>=>{
     clientCalls.push(String(sql));
     const text=String(sql);
     if(text.includes("SELECT id FROM families"))return {rows:[{id:FAMILY_ID}]};

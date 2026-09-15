@@ -20,7 +20,6 @@ const mockList=vi.mocked(listPrivatePdfKeys);
 const mockRender=vi.mocked(renderPdf);
 
 const ASSESSMENT_ID="11111111-2222-4333-8444-555555555555";
-const FAMILY_ID="22222222-3333-4444-8555-666666666666";
 const TOKEN="33333333-4444-4555-8666-777777777777";
 const snapshot:AssessmentSnapshot={
   scale:demoScale,advice:{id:"a",version:"1.0.0",content:demoAdvice},template:{id:"t",version:"1.0.0",content:demoTemplate},
