@@ -9,3 +9,25 @@ work/
 !.env.example
 *.tsbuildinfo
 .DS_Store
+
+# Credential material must never be committed. This repository is public, and
+# `git add -A` will happily sweep a stray key file into a commit.
+*API*Key*
+*api*key*
+*secret*
+*credential*
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+credentials/
+
+# Office documents. This repository holds no legitimate .docx/.xlsx/.pptx, and
+# a stray one is far more likely to be a data export than documentation.
+*.docx
+*.doc
+*.xlsx
+*.xls
+*.pptx
+*.ppt

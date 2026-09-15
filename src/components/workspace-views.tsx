@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
-import { ArrowLeft, ArrowRight, BookOpenText, CaretRight, Check, CheckCircle, ClipboardText, DownloadSimple, FileText, HandHeart, Leaf, Plus, ShieldCheck, Sparkle, Target, Trash, UserCircle, UserPlus, UsersThree } from "@phosphor-icons/react";
+import { ArrowLeft, ArrowRight, BookOpenText, CaretRight, Check, CheckCircle, ClipboardText, DownloadSimple, FileText, HandHeart, Leaf, Plus, ShieldCheck, Trash, UserCircle, UserPlus, UsersThree } from "@phosphor-icons/react";
 import { api, apiUrl, ApiError, errorMessage, isStaff, retryAssessmentReport, type Assessment, type Family, type Goal, type Locale, type Report, type Scale, type Workspace } from "./api";
 import { firstContentStructure } from "./content-samples";
 import { copy, formatDate, roleName, statusName } from "./copy";

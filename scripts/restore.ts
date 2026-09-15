@@ -1,8 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { createReadStream } from "node:fs";
 import pg from "pg";
-import { backupKeyFromEnv, decryptFile, fingerprintKey, maskUrl, pgConnection, requireReportKey, run, sha256File, type BackupManifest } from "./backup-lib";
+import { backupKeyFromEnv, decryptFile, fingerprintKey, pgConnection, requireReportKey, run, sha256File, type BackupManifest } from "./backup-lib";
 
 // Restores one regional backup into an ISOLATED environment.
 //

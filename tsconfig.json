@@ -10,6 +10,16 @@
     "skipLibCheck": true,
     "strict": true,
     "noEmit": true,
+    // Correctness checks beyond `strict`. These stand in for a linter: they catch
+    // dead imports, unreachable branches, missing override and implicit returns.
+    // forceConsistentCasingInFileNames matters because development happens on
+    // macOS (case-insensitive) while CI runs on Linux (case-sensitive).
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "forceConsistentCasingInFileNames": true,
     "esModuleInterop": true,
     "module": "esnext",
     "moduleResolution": "bundler",

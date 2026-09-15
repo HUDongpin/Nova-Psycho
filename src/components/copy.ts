@@ -1,5 +1,6 @@
 import type { Locale, Role, AssessmentStatus } from "./api";
-const dictionary = {
+// Exported so tests can assert that every entry carries both locales.
+export const dictionary = {
   brand: ["Nova 心理助手", "Nova 心理助手"], tagline: ["看见成长，陪伴每一步", "看見成長，陪伴每一步"],
   dashboard: ["工作台", "工作台"], families: ["家庭档案", "家庭檔案"], assessments: ["测评任务", "評估任務"], reports: ["成长报告", "成長報告"], care: ["关怀计划", "關懷計劃"], scales: ["量表库", "量表庫"], content: ["报告内容", "報告內容"], workspace: ["家庭支持工作空间", "家庭支援工作空間"],
   loading: ["正在载入…", "正在載入…"], retry: ["重新载入", "重新載入"], retryReport: ["重新排队生成报告", "重新排隊產生報告"], retrying: ["正在重新排队…", "正在重新排隊…"], retryQueued: ["报告已重新排队，生成完成后会自动更新。", "報告已重新排隊，產生完成後會自動更新。"], close: ["关闭", "關閉"], cancel: ["取消", "取消"], save: ["保存", "儲存"], saving: ["正在保存…", "正在儲存…"], saved: ["已保存", "已儲存"], create: ["创建", "建立"], creating: ["正在创建…", "正在建立…"], submit: ["确认提交", "確認提交"], submitting: ["正在提交…", "正在提交…"], back: ["返回", "返回"], viewAll: ["查看全部", "查看全部"], view: ["查看", "查看"], search: ["搜索家庭、学生姓名", "搜尋家庭、學生姓名"], refresh: ["刷新", "重新整理"], actions: ["操作", "操作"],

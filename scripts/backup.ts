@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { backupKeyFromEnv, encryptFile, fingerprintKey, maskUrl, pgConnection, requireReportKey, run, sha256File, timestampSlug, type BackupManifest } from "./backup-lib";
+import { backupKeyFromEnv, encryptFile, fingerprintKey, pgConnection, requireReportKey, run, sha256File, timestampSlug, type BackupManifest } from "./backup-lib";
 import { getConfig } from "../src/lib/config";
 import { closeDatabase, query } from "../src/lib/db";
 

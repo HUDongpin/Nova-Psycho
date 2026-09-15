@@ -1,6 +1,6 @@
 "use client";
 import { useState } from "react";
-import { Check, Copy, LinkSimple, ShieldCheck, UploadSimple, Warning } from "@phosphor-icons/react";
+import { Check, Copy, LinkSimple, ShieldCheck, Warning } from "@phosphor-icons/react";
 import { api, apiUrl, eligibleScales, type Family, type Locale, type Role, type Scale, type Workspace } from "./api";
 import { copy, formatDate, roleName } from "./copy";
 import { Badge, ErrorNotice, Field, FormActions, Modal, useMutation } from "./ui";

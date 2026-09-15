@@ -1,8 +1,8 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
-import { ArrowClockwise, ArrowRight, BookOpenText, CaretDown, ChartBar, ClipboardText, FileText, FlowerLotus, HandHeart, House, IconContext, List, Plus, ShieldCheck, SignOut, SlidersHorizontal, UsersThree, X } from "@phosphor-icons/react";
+import { ArrowClockwise, ArrowRight, BookOpenText, ClipboardText, FileText, FlowerLotus, HandHeart, House, IconContext, List, Plus, ShieldCheck, SignOut, SlidersHorizontal, UsersThree, X } from "@phosphor-icons/react";
 import { api, ApiError, errorMessage, isAdult, isStaff, type Family, type Scale, type Session, type Workspace } from "./api";
-import { copy, roleName, type CopyKey } from "./copy";
+import { roleName, type CopyKey } from "./copy";
 import { Brand, DemoBanner, Empty, ErrorNotice, Loading, LocaleSwitch, PrivacyModal, RegionLabel, useLocale, useMutation } from "./ui";
 import { Login } from "./login";
 import { AssessmentView, ReportView } from "./documents";
