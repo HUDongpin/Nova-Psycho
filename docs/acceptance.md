@@ -21,6 +21,8 @@ This is a locally runnable version using synthetic data. No professional instrum
 | `docker build -f deploy/Dockerfile -t nova-psycho-helper:0.1.0 .` | passed | application image with Chromium and Noto CJK fonts |
 | CN and HK Compose configuration checks | passed | both environments' configuration parses; not yet started as real cloud environments |
 
+**Later changes.** This table records the 2026-09-10 delivery point and is left as recorded. The unit suite has since grown from 37 to 50 tests; the additions are the AI adapter hardening cases described in `docs/ai-regional-verification.md`.
+
 Run evidence is in `work/qa/` in the main development directory. Interface checks used two local demo services; content lifecycle checks used an isolated database that was created and then dropped, without covering or deleting existing families.
 
 ## Browser and report checks

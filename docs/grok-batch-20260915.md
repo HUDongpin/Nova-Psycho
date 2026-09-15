@@ -31,6 +31,8 @@ Grok operated in a sanitized source copy at `work/grok-v1-20260915/source`; priv
 | Browser | admin retry: failed → queued → published → report opened; retired scale confirmation → active; temporary synthetic fixtures removed |
 | PDF rendering | new simplified/traditional comparison PDFs rendered and visually reviewed; date/direction/cautions visible without clipping |
 
+**Later changes (same day).** This table records the batch as accepted on 2026-09-15 and is left as recorded. Subsequent adapter hardening took the unit suite from 42 to 50 tests; see `docs/ai-regional-verification.md`.
+
 The regression script initially failed because it expected a retake-interval error after retiring the scale. The test now checks retake while the scale is active and separately checks retired-scale rejection; production eligibility rules were not weakened.
 
 Evidence is in `work/qa/{api-integration-results,database-checks,content-regressions,retry-regressions}.json`, candidate PDF samples and Grok summaries in `work/grok-v1-20260915/`. The synthetic UI fixture returned to the pre-test state: two CN demo families, six CN demo reports, three pending CN tasks. The dated source snapshot contains no runtime secrets or private data.
