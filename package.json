@@ -18,7 +18,9 @@
     "setup:hk": "node scripts/run-region.mjs HK setup",
     "worker:cn": "node scripts/run-region.mjs CN worker",
     "worker:hk": "node scripts/run-region.mjs HK worker",
-    "test:integration": "tsx scripts/integration.ts"
+    "test:integration": "tsx scripts/integration.ts",
+    "backup:cn": "node scripts/run-region.mjs CN backup",
+    "backup:hk": "node scripts/run-region.mjs HK backup"
   },
   "dependencies": {
     "@phosphor-icons/react": "^2.1.10",

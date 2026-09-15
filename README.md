@@ -85,6 +85,8 @@ Live AI conformance against a real regional workspace is checked separately, usi
 node scripts/run-region.mjs CN ai-conformance
 ```
 
+Regional backups are taken with `npm run backup:cn` or `npm run backup:hk`, and restored into an isolated environment with `node scripts/run-region.mjs CN restore <backup-directory>`. The restore refuses to overwrite a live database or a non-empty target. See `docs/deployment.md` for the procedure and its guards.
+
 Production deployment files are in `deploy/`, with operating notes in `docs/deployment.md`. The same image can be deployed to both mainland China and Hong Kong, but production requires separate deployments in the actual corresponding regions, each with its own database, storage, keys and inference workspace. Passing the local dual-environment tests does not constitute a completed real cloud regional deployment, professional instrument validation, or real inference acceptance.
 
 Architecture and interface details are in `docs/api-contract.md`; retained selection rationale is in `docs/platform-decision.md`.

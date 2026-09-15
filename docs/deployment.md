@@ -64,9 +64,50 @@ This script imports no database module and builds its snapshot in memory from th
 
 ## Backup and restore
 
-Back up PostgreSQL, the private report files and the report key independently for each region, on restricted and encrypted backup media in that region. Use transactionally consistent database backups and private volume snapshots; the key is backed up separately under its own controls and must not be mixed into public code packages. Before changing a key, design an old-file migration or key-versioning strategy; replacing a key directly makes existing PDFs undecryptable.
+Back up PostgreSQL, the private report files and the report key independently for each region, on restricted and encrypted backup media in that region. The key is backed up separately under its own controls and must not be mixed into public code packages. Before changing a key, design an old-file migration or key-versioning strategy; replacing a key directly makes existing PDFs undecryptable.
 
-Restore into a new, isolated, same-region environment: stop the report worker first, restore the database and the matching report files and key, then check the database region and mode, permissions, historical HTML/PDF, one new automatic report publication flow, and the deletion queue. Switch service traffic only after verification. Do not attempt a restore drill with commands that overwrite an existing database.
+### Taking a backup
+
+```sh
+npm run backup:cn
+npm run backup:hk
+```
+
+This writes `work/backups/<REGION>/<timestamp>/` (override with `NOVA_BACKUP_DIR`) containing a `pg_dump` custom-format dump, an archive of the private report directory, and a `manifest.json` holding sizes, SHA-256 checksums, per-table row counts, the region and mode, and a **fingerprint** of the report key.
+
+The report key itself is never included. The fingerprint exists so that a restore can detect a mismatched key, which would otherwise produce silently unreadable PDFs.
+
+The dump contains answer and snapshot data in plaintext. Set `NOVA_BACKUP_KEY` (64 hex characters) to encrypt both archives with AES-256-GCM; without it the command warns loudly and protection rests entirely on the storage medium. Files are written `0600` inside a `0700` directory. The database password is passed through the environment rather than as a command argument, so it does not appear in the process table.
+
+A backup is refused if `pg_restore --list` reports no table data, so an empty or failed dump is never recorded as a valid backup.
+
+### Restoring
+
+Restore into a new, isolated, same-region environment. The script never writes to the database named by `DATABASE_URL`; the target is supplied explicitly and must be empty.
+
+```sh
+createdb -h 127.0.0.1 -p 55431 -U nova nova_restore_drill
+
+NOVA_RESTORE_DATABASE_URL=postgresql://nova:PASSWORD@127.0.0.1:55431/nova_restore_drill \
+NOVA_RESTORE_REPORT_DIR=/secure/nova-drill-reports \
+NOVA_BACKUP_KEY=<the key the backup was taken with> \
+node scripts/run-region.mjs CN restore work/backups/CN/<timestamp>
+```
+
+Add `--verify-only` to check the checksums and the key fingerprint without restoring anything.
+
+The restore refuses to proceed when any of the following holds. Each refusal is deliberate:
+
+- the target URL equals `DATABASE_URL`, so a live environment cannot be overwritten
+- the backup's region does not match `NOVA_RESTORE_REGION`
+- the checksums do not match, so a damaged archive is never applied
+- `NOVA_REPORT_KEY` does not match the manifest fingerprint
+- the target database already contains tables in the `public` schema
+- the target report directory is not empty
+
+After restoring it verifies the region, the mode, every per-table row count and the report file count against the manifest, and exits non-zero if any check fails. Stop the report worker before restoring and start it afterwards: it is also the service that completes physical deletion. Switch service traffic only after that verification.
+
+A restore drill was run against the local CN environment on 2026-09-15. Seventeen tables and twelve report files were restored into a throwaway database; every row count matched the manifest, and all twelve restored report files decrypted back to valid PDFs with the report key. The live database was not modified, and the drill database was dropped afterwards.
 
 ## External inputs required for production
 
