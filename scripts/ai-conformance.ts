@@ -129,5 +129,7 @@ for(const check of checks){
   console.log(`  [${mark}] ${check.code} — ${check.detail}`);
 }
 console.log(`\nEvidence written to work/qa/ai-conformance.json`);
-console.log("Note: passing here shows the adapter works against this workspace. It does not prove which geographic inference nodes executed the request; confirm the workspace deployment scope in the Model Studio console.\n");
+console.log(config.region === "CN"
+  ? "Note: passing here shows the adapter works against this workspace. Beijing supports a single deployment scope, so there is no scope choice to confirm; it still does not prove which geographic nodes executed a request.\n"
+  : "Note: passing here shows the adapter works against this workspace. Hong Kong supports both a global and an in-region deployment scope, so confirm the workspace's scope in the Model Studio console; an approved hostname alone does not prove in-region inference.\n");
 process.exit(failed.length?1:0);

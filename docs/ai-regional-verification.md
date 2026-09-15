@@ -14,6 +14,8 @@
 |---|---|---|
 | Endpoint host is `llm-<workspaceId>.<region>.maas.aliyuncs.com` | Beijing is documented as `{WorkspaceId}.cn-beijing.maas.aliyuncs.com`. The Hong Kong migration example uses `llm-xxx.cn-hongkong.maas.aliyuncs.com`, confirming that the `llm-` prefix is the business-space ID form. | Confirmed — the allowlist regex matches both regions |
 | Path is `/compatible-mode/v1` | Documented for both regions | Confirmed |
+| Only a workspace-scoped host is acceptable, not the shared domain | The documented Beijing migration is `https://dashscope.aliyuncs.com/compatible-mode/v1` → `https://llm-xxx.cn-beijing.maas.aliyuncs.com/compatible-mode/v1`, and `dashscope.aliyuncs.com` stops receiving new features after 2026-09-30 | Confirmed — the shared and trial domains are rejected; a Beijing business-space host is accepted. Covered by `tests/config.test.ts` |
+| Beijing supports a single deployment scope | The official region table states Beijing and Singapore each support one scope and require no selection | Confirmed — removes the Hong Kong scope ambiguity for a mainland deployment |
 | `response_format: {type:"json_object"}` is accepted | Supported. It additionally requires the literal word "JSON" in a system or user message, otherwise the call errors. | Confirmed — the system prompt already contains "JSON" |
 | The correct parameter name is `max_tokens` | Documented name; `max_completion_tokens` is not used by this API | Confirmed, but see hazard 1 |
 | The reply shape is `choices[0].message.content` | Documented response shape | Confirmed |
@@ -38,7 +40,11 @@ None of the following can be settled from documentation:
 2. That the deployed model actually honours `response_format`. Fence-stripping only makes the failure survivable; it does not show that the failure does not occur.
 3. That the model reliably returns exactly the eligible advice IDs, in a stable order, across repeated calls.
 4. Real end-to-end latency against the 8-second timeout budget.
-5. **The geographic execution question.** The documentation confirms that the access/storage region and the *service deployment scope* are separate settings. For Hong Kong the deployment scope is either "global (any available node, including inside mainland China and overseas)" or "Hong Kong (in-region inference only)". An approved hostname plus a matching `NOVA_AI_DEPLOYMENT_SCOPE` value therefore does **not** prove in-region inference. This must be confirmed for the actual workspace in the Model Studio console, and the evidence retained. No automated check in this repository can establish it.
+5. **The geographic execution question — simpler in Beijing than in Hong Kong.** The documentation confirms that the access/storage region and the *service deployment scope* are separate settings, and that the available scopes differ by region:
+   - **Beijing (`cn-beijing`) supports a single deployment scope.** The official region table states that Beijing and Singapore each support only one scope and require no selection, so there is no scope choice to get wrong.
+   - **Hong Kong (`cn-hongkong`) supports two**: "global (any available node, including inside mainland China and overseas)" and "Hong Kong (in-region inference only)". There, an approved hostname plus a matching `NOVA_AI_DEPLOYMENT_SCOPE` does **not** prove in-region inference, and the choice must be confirmed for the actual workspace in the Model Studio console.
+
+   This makes Beijing the lower-ambiguity option for a mainland China deployment. In either region, no automated check in this repository can establish which nodes executed a given request.
 
 ## Running the verification
 
