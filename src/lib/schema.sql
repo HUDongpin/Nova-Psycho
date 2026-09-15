@@ -24,6 +24,15 @@ WITH ranked AS(SELECT id,row_number() OVER(PARTITION BY family_id ORDER BY creat
 UPDATE consents SET revoked_at=now() FROM ranked WHERE consents.id=ranked.id AND ranked.n>1;
 CREATE UNIQUE INDEX IF NOT EXISTS one_active_family_consent ON consents(family_id) WHERE revoked_at IS NULL;
 CREATE TABLE IF NOT EXISTS invitations(token_hash text PRIMARY KEY,family_id uuid NOT NULL REFERENCES families(id) ON DELETE CASCADE,role text NOT NULL CHECK(role IN ('parent','student','teacher')),expires_at timestamptz NOT NULL,used_at timestamptz,created_by uuid REFERENCES users(id));
+-- Single-use links that let an EXISTING account set a new password. Issued by an
+-- administrator and shown once; never emailed automatically, matching invitations.
+-- Accepting one also ends every session for that account.
+CREATE TABLE IF NOT EXISTS recovery_tokens(
+ token_hash text PRIMARY KEY,user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+ region text NOT NULL CHECK(region IN ('CN','HK')),expires_at timestamptz NOT NULL,used_at timestamptz,
+ created_by uuid REFERENCES users(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS recovery_expiry ON recovery_tokens(expires_at);
 CREATE TABLE IF NOT EXISTS scales(id text PRIMARY KEY,scale_id text NOT NULL,version text NOT NULL,definition jsonb NOT NULL,status text NOT NULL DEFAULT 'active' CHECK(status IN ('active','retired')),created_at timestamptz NOT NULL DEFAULT now(),UNIQUE(scale_id,version));
 CREATE TABLE IF NOT EXISTS content_versions(id uuid PRIMARY KEY,kind text NOT NULL CHECK(kind IN ('advice','template')),version text NOT NULL,content jsonb NOT NULL,created_at timestamptz NOT NULL DEFAULT now(),UNIQUE(kind,version));
 CREATE TABLE IF NOT EXISTS assessments(

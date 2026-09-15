@@ -25,6 +25,11 @@ POST `/api/families/:id/invites` `{role:'parent'|'student'|'teacher'}` -> `{url,
 GET `/api/invite?token=...` -> `{familyName,role,region,expiresAt}`.
 POST `/api/invite` `{token,name,username,password}` -> `{ok:true}` and cookie. Minimum password 12 characters.
 
+## Account recovery
+POST `/api/users/:id/recovery` `{}` -> `{url,expiresAt,name}` (admin). Issues a single-use link that lets an existing account set a new password. Any earlier outstanding link for the same account is retired. Show a copyable URL; never auto-send. Refuses a disabled account, and refuses an account outside the caller's region.
+GET `/api/recovery` with an `X-Recovery-Token` header (or `?token=...`) -> `{name,username,role,region,expiresAt}`.
+POST `/api/recovery` `{token,password}` -> `{ok:true}`. Minimum password 12 characters. Consumes the link, sets the password, ends every existing session for that account, and writes an audit event. Unlike an invitation it deliberately does not create a session; the account holder signs in with the new password afterwards. The link is valid for 60 minutes, shorter than an invitation window because it resets a credential.
+
 ## Assessments
 POST `/api/assessments` `{familyId,respondentId,scaleVersionId,locale}` -> `{id}` (admin/staff/parent for a linked family). The respondent must belong to the family and the role must be supported. The retake interval is enforced per person and instrument version; synthetic seeds supply older baselines.
 GET `/api/assessments/:id?locale=...` -> `{id,status,childName,scaleTitle,demo,description,surveyJson,draftAnswers,draftRevision:number,consentRequired:boolean}`. Only the assigned respondent can read their questionnaire and answers.

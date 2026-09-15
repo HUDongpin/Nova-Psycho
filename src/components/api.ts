@@ -13,6 +13,8 @@ export interface Observation { id: string; familyId: string; body: string; creat
 export interface Workspace { user: User; region: Region; mode: "demo" | "service"; families: Family[]; assessments: Assessment[]; reports: Report[]; scales: Scale[]; goals: Goal[]; observations: Observation[]; staff: { id: string; name: string }[]; contentVersions: { id: string; kind: string; version: string; createdAt: string }[]; summary: Record<string, number> }
 export interface SurveyRecord { id: string; status: AssessmentStatus; childName: string; scaleTitle: string; demo: boolean; description: string; surveyJson: Record<string, unknown>; draftAnswers: Record<string, number>; draftRevision: number; consentRequired: boolean }
 export interface Privacy { version: string; title: string; sections: { title: string; body: string }[] }
+/** Identifies an existing account that an administrator is issuing a recovery link for. */
+export interface RecoveryTarget { memberId: string; memberName: string }
 export class ApiError extends Error { constructor(message: string, public code: string, public status: number) { super(message); this.name = "ApiError"; } }
 export function apiUrl(path: string, locale: Locale): string { return `${path}${path.includes("?") ? "&" : "?"}locale=${locale}`; }
 export async function api<T>(path: string, locale: Locale, options: { method?: "GET" | "POST" | "PATCH" | "DELETE"; body?: unknown; signal?: AbortSignal; headers?: Record<string, string> } = {}): Promise<T> {

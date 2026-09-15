@@ -6,6 +6,7 @@ import { query } from "@/lib/db";
 import { body,checkOrigin,handle,HttpError,json,localeOf,requireRole } from "@/lib/http";
 import { privacyNotice } from "@/lib/privacy";
 import { opsStatus } from "@/lib/ops";
+import { acceptRecovery, createRecovery, recoveryInfo } from "@/lib/recovery";
 import { workspaceFor } from "@/lib/workspace";
 import { acceptInvitation,createFamily,createInvitation,deleteFamily,invitationInfo,recordConsent } from "@/lib/families";
 import { assessmentDetail,createAssessment,retryReport,saveDraft,submitAssessment } from "@/lib/assessments";
@@ -41,6 +42,10 @@ async function dispatch(request:Request,context:Context):Promise<Response>{retur
   if(method==="POST"&&route==="auth/logout"){const response=json({ok:true});await endSession(request,response);return response;}
   if(method==="GET"&&route==="invite")return json(await invitationInfo(request.headers.get("x-invitation-token")??new URL(request.url).searchParams.get("token")));
   if(method==="POST"&&route==="invite"){const id=await acceptInvitation(await body(request));const response=json({ok:true});await setSession(response,id);return response;}
+  // Recovery links are unauthenticated, like invitations, but deliberately do not
+  // create a session: the account holder signs in with the new password afterwards.
+  if(method==="GET"&&route==="recovery")return json(await recoveryInfo(request.headers.get("x-recovery-token")??new URL(request.url).searchParams.get("token")));
+  if(method==="POST"&&route==="recovery")return json(await acceptRecovery(await body(request)));
   const actor=await requireActor(request);
   if(method==="GET"&&route==="workspace")return json(await workspaceFor(actor,locale));
   if(method==="POST"&&route==="families")return json(await createFamily(actor,await body(request)),201);
@@ -50,6 +55,7 @@ async function dispatch(request:Request,context:Context):Promise<Response>{retur
     if(method==="DELETE"&&path.length===2)return json(await deleteFamily(actor,path[1],await body(request)));
   }
   if(method==="POST"&&route==="assessments")return json(await createAssessment(actor,await body(request)),201);
+  if(method==="POST"&&path[0]==="users"&&path[1]&&path.length===3&&path[2]==="recovery")return json(await createRecovery(actor,path[1]),201);
   if(path[0]==="assessments"&&path[1]){
     if(method==="GET"&&path.length===2)return json(await assessmentDetail(actor,path[1],locale));
     if(method==="PATCH"&&path.length===2)return json(await saveDraft(actor,path[1],await body(request)));

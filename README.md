@@ -9,6 +9,8 @@ An assessment, automatic-reporting and ongoing-support workspace for K–12 fami
 ## What works today
 
 - Operations staff create family records, assign case workers, record guardian consent, and issue student / parent / teacher access invitations.
+- An administrator can issue a single-use recovery link so an existing account can set a new password; completing it ends every session that account had open.
+- Administrators can read a report-queue status endpoint covering job counts, oldest wait, expired leases, and whether the report worker is actually alive.
 - Respondents confirm the information notice, then answer through SurveyJS; drafts save automatically and version checks stop a stale page from overwriting newer answers.
 - The server performs reverse scoring, subscale sums and means, missing-data handling, age / region / role eligibility checks and rule triggering.
 - A separate report process generates and publishes simplified- and traditional-Chinese HTML and PDF automatically, with no per-report human review step.
