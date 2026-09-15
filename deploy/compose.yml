@@ -1,0 +1,62 @@
+# Run this file independently on a host IN the intended data region.
+# Never put both regional databases on a single production host and call that geographic isolation.
+name: nova-${NOVA_REGION:?set_NOVA_REGION}
+services:
+  database:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?set_POSTGRES_USER}
+      POSTGRES_DB: ${POSTGRES_DB:?set_POSTGRES_DB}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set_POSTGRES_PASSWORD}
+    volumes:
+      - database-data:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 5s
+      timeout: 3s
+      retries: 15
+    restart: unless-stopped
+    networks: [private]
+  migrate:
+    image: nova-psycho-helper:0.1.0
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    env_file: ${NOVA_ENV_FILE:?set_NOVA_ENV_FILE_to_absolute_service_env}
+    command: [node, --import, tsx, scripts/setup.ts]
+    volumes: [reports:/var/lib/nova/reports]
+    depends_on:
+      database: {condition: service_healthy}
+    networks: [private]
+    restart: "no"
+  web:
+    image: nova-psycho-helper:0.1.0
+    env_file: ${NOVA_ENV_FILE:?set_NOVA_ENV_FILE_to_absolute_service_env}
+    ports:
+      - "127.0.0.1:${NOVA_LOCAL_WEB_PORT:-3100}:3000"
+    volumes: [reports:/var/lib/nova/reports]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    networks: [private, egress]
+  worker:
+    image: nova-psycho-helper:0.1.0
+    env_file: ${NOVA_ENV_FILE:?set_NOVA_ENV_FILE_to_absolute_service_env}
+    command: [node, --import, tsx, scripts/worker.ts]
+    volumes: [reports:/var/lib/nova/reports]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    restart: unless-stopped
+    networks: [private, egress]
+volumes:
+  database-data:
+  reports:
+networks:
+  private:
+    internal: true
+  egress:

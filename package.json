@@ -1,0 +1,43 @@
+{
+  "name": "nova-psycho-helper",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/run-region.mjs CN web",
+    "dev:hk": "node scripts/run-region.mjs HK web",
+    "build": "next build",
+    "start": "node scripts/run-region.mjs CN start",
+    "start:hk": "node scripts/run-region.mjs HK start",
+    "worker": "tsx scripts/worker.ts",
+    "db:setup": "tsx scripts/setup.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "bootstrap:local": "node scripts/bootstrap-local.mjs",
+    "setup:cn": "node scripts/run-region.mjs CN setup",
+    "setup:hk": "node scripts/run-region.mjs HK setup",
+    "worker:cn": "node scripts/run-region.mjs CN worker",
+    "worker:hk": "node scripts/run-region.mjs HK worker",
+    "test:integration": "tsx scripts/integration.ts"
+  },
+  "dependencies": {
+    "@phosphor-icons/react": "^2.1.10",
+    "next": "16.3.4",
+    "pg": "8.23.0",
+    "playwright": "^1.58.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "survey-core": "3.0.3",
+    "survey-react-ui": "3.0.3",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/pg": "^8.15.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "vitest": "5.0.0"
+  }
+}

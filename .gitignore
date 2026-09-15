@@ -1,0 +1,11 @@
+node_modules/
+.next/
+.next-hk/
+.next-verify/
+work/
+.workbuddy-ai/
+.env
+.env.*
+!.env.example
+*.tsbuildinfo
+.DS_Store

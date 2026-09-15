@@ -1,0 +1,11 @@
+node_modules
+.next
+.next-hk
+.next-verify
+work
+.env
+.env.*
+!.env.example
+.git
+*.tsbuildinfo
+.DS_Store

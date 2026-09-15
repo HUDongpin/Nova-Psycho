@@ -1,0 +1,11 @@
+import { loadEnvFile } from "node:process";
+import { spawn } from "node:child_process";
+import path from "node:path";
+const [region="CN",command="web"]=process.argv.slice(2);
+if(!["CN","HK"].includes(region))throw new Error("Region must be CN or HK");
+loadEnvFile(path.resolve(`work/local-${region.toLowerCase()}.env`));
+const port=region==="CN"?"3100":"3101";
+const args=command==="web"?["node_modules/next/dist/bin/next","dev","--hostname","127.0.0.1","--port",port]:command==="start"?["node_modules/next/dist/bin/next","start","--hostname","127.0.0.1","--port",port]:command==="build"?["node_modules/next/dist/bin/next","build"]:["--import","tsx",`scripts/${command}.ts`,...process.argv.slice(4)];
+const child=spawn(process.execPath,args,{stdio:"inherit",env:process.env});
+for(const signal of ["SIGINT","SIGTERM"])process.on(signal,()=>child.kill(signal));
+child.on("exit",code=>process.exit(code??0));
