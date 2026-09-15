@@ -47,4 +47,8 @@ PATCH `/api/scales/:id` `{status:'active'|'retired'}` -> `{ok:true}` (admin). Re
 GET `/api/content/:kind` where kind is `advice|template` -> `{id,version,content}` (admin).
 POST `/api/content/:kind` `{version,content:object}` -> `{id}` immutable version (admin).
 
+## Operations
+GET `/api/health` -> `{ok,region,mode}`. Unauthenticated liveness probe; it checks the database connection, region and mode only, and proves nothing about the report pipeline.
+GET `/api/ops/status` (admin) -> `{region,mode,checkedAt,jobs:{ready,running,done,failed},oldestReadySeconds:number|null,expiredLeases:number,worker:{alive,workerId,heartbeatAgeSeconds,uptimeSeconds,cycles},warnings:string[]}`. The report worker refreshes a heartbeat every 5 seconds; `alive` is false once that heartbeat is more than 60 seconds old. `warnings` uses stable codes: `worker_never_started`, `worker_stale`, `failed_jobs`, `expired_leases`, `queue_backlog`. Alert on those codes rather than on raw counts. Staff, parents, students and teachers receive `403 ROLE_DENIED`.
+
 The frontend must show demo labels, empty/error/loading states, visible field labels and real actions. No browser-only scoring and no fake success messages. The privacy notice is available at `/api/privacy?locale=...` -> `{version,title,sections:[{title,body}]}`. In service mode, never expose demo login buttons or role switching.

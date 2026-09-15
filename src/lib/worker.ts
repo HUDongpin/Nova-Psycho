@@ -17,6 +17,18 @@ export async function cleanOrphanReports():Promise<void>{
     const r=rows[0];if(!r||r.status==="failed"||(r.pdf_keys&&!Object.values(r.pdf_keys).includes(key)))await removePrivatePdf(key);
   }
 }
+// Refreshes this region's heartbeat row. A stale heartbeat is the only reliable
+// signal that the report pipeline has stopped, since an idle queue looks healthy
+// whether or not anything is listening to it.
+export async function recordHeartbeat(workerId:string):Promise<void>{
+  await query(`INSERT INTO worker_heartbeats(region,worker_id,cycles) VALUES($1,$2,1)
+    ON CONFLICT(region) DO UPDATE SET
+      started_at=CASE WHEN worker_heartbeats.worker_id<>EXCLUDED.worker_id THEN now() ELSE worker_heartbeats.started_at END,
+      worker_id=EXCLUDED.worker_id,
+      heartbeat_at=now(),
+      cycles=CASE WHEN worker_heartbeats.worker_id<>EXCLUDED.worker_id THEN 1 ELSE worker_heartbeats.cycles+1 END`,
+    [getConfig().region,workerId]);
+}
 export async function processOneJob():Promise<boolean>{
   const token=randomUUID();
   const jobs=await query(`WITH candidate AS (

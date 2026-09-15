@@ -5,6 +5,7 @@ import { getConfig } from "@/lib/config";
 import { query } from "@/lib/db";
 import { body,checkOrigin,handle,HttpError,json,localeOf,requireRole } from "@/lib/http";
 import { privacyNotice } from "@/lib/privacy";
+import { opsStatus } from "@/lib/ops";
 import { workspaceFor } from "@/lib/workspace";
 import { acceptInvitation,createFamily,createInvitation,deleteFamily,invitationInfo,recordConsent } from "@/lib/families";
 import { assessmentDetail,createAssessment,retryReport,saveDraft,submitAssessment } from "@/lib/assessments";
@@ -79,6 +80,9 @@ async function dispatch(request:Request,context:Context):Promise<Response>{retur
   }
   if(method==="GET"&&route==="audit"){
     requireRole(actor.role,["admin"]);return json(await query("SELECT id,action,entity_id,created_at FROM audit_events WHERE region=$1 ORDER BY id DESC LIMIT 500",[actor.region]));
+  }
+  if(method==="GET"&&route==="ops/status"){
+    requireRole(actor.role,["admin"]);return json(await opsStatus());
   }
   throw new HttpError(404,"未找到该功能。","NOT_FOUND");
 });}

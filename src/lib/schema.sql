@@ -49,6 +49,12 @@ CREATE TABLE IF NOT EXISTS goals(id uuid PRIMARY KEY,family_id uuid NOT NULL REF
 CREATE TABLE IF NOT EXISTS observations(id uuid PRIMARY KEY,family_id uuid NOT NULL REFERENCES families(id) ON DELETE CASCADE,body text NOT NULL,created_by uuid REFERENCES users(id),created_at timestamptz NOT NULL DEFAULT now());
 CREATE TABLE IF NOT EXISTS audit_events(id bigserial PRIMARY KEY,region text NOT NULL,actor_id uuid,action text NOT NULL,entity_id text,created_at timestamptz NOT NULL DEFAULT now());
 CREATE TABLE IF NOT EXISTS file_deletion_jobs(file_key text PRIMARY KEY,created_at timestamptz NOT NULL DEFAULT now());
+-- One row per region. The report worker refreshes it every few seconds so that
+-- "is the report pipeline actually running?" is answerable without inspecting hosts.
+CREATE TABLE IF NOT EXISTS worker_heartbeats(
+ region text PRIMARY KEY CHECK(region IN ('CN','HK')),worker_id text NOT NULL,
+ started_at timestamptz NOT NULL DEFAULT now(),heartbeat_at timestamptz NOT NULL DEFAULT now(),cycles bigint NOT NULL DEFAULT 0
+);
 
 CREATE OR REPLACE FUNCTION nova_no_version_update() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
