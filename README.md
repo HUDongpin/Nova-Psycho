@@ -1,5 +1,7 @@
 # Nova Psycho Helper
 
+[![CI](https://github.com/HUDongpin/Nova-Psycho/actions/workflows/ci.yml/badge.svg)](https://github.com/HUDongpin/Nova-Psycho/actions/workflows/ci.yml)
+
 An assessment, automatic-reporting and ongoing-support workspace for K–12 families in mainland China and Hong Kong.
 
 **Project directory: `/Volumes/Starship/Nova Psycho Helper`.** Questionnaires use the MIT-licensed SurveyJS Form Library; Nova independently implements family management, rule-based scoring, automatic publication, private PDFs and retest comparison. LimeSurvey is retained as an option for a future full survey platform.

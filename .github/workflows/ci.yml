@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: typecheck, tests, build
+    runs-on: ubuntu-latest
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+      # Reuses the .next-verify path already covered by .gitignore.
+      NOVA_DIST_DIR: .next-verify
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      # The repository .npmrc points npm's cache at ./work/npm-cache, which is
+      # gitignored, so npm creates it fresh here. No runtime environment is
+      # required for this job: getConfig() is only called while serving a
+      # request, never during typecheck, tests or the build. deploy/Dockerfile
+      # relies on the same property.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Production build
+        run: npm run build
+
+# The integration, database, content and retry checks are deliberately not run
+# here. They require two regional PostgreSQL instances, running web servers and
+# a Chromium build, and they are documented as local-only against explicitly
+# classified demo environments. Run them locally:
+#   npm run test:integration
+#   node scripts/run-region.mjs CN database-checks
+#   node scripts/run-region.mjs CN content-regressions
+#   node scripts/run-region.mjs CN retry-regressions
+# The live AI conformance check needs a real regional credential and is never
+# run in CI:
+#   node scripts/run-region.mjs CN ai-conformance
