@@ -106,3 +106,11 @@ export function ContentView({ workspace, locale, onRefresh }: { workspace: Works
     </div>
   </>;
 }
+interface AuditEvent { id: number; action: string; entity_id: string | null; created_at: string }
+// The audit trail was being written but had no way to be read except through SQL, which
+// makes it useless for the review it exists to support. The endpoint already existed.
+export function AuditView({ locale }: { locale: Locale }) {
+  const t = copy(locale); const [events, setEvents] = useState<AuditEvent[] | null>(null); const [error, setError] = useState(""); const [attempt, setAttempt] = useState(0);
+  useEffect(() => { const controller = new AbortController(); setError(""); api<AuditEvent[]>("/api/audit", locale, { signal: controller.signal }).then(setEvents).catch(err => { if (!controller.signal.aborted) setError(errorMessage(err)); }); return () => controller.abort(); }, [locale, attempt]);
+  return <><div className="page-title"><div><span className="eyebrow">WHO DID WHAT</span><h1>{t("audit")}</h1><p>{t("auditIntro")}</p></div></div><p className="info-strip"><ShieldCheck />{t("auditNote")}</p><section className="panel">{error ? <ErrorNotice message={error} locale={locale} onRetry={() => setAttempt(attempt + 1)} /> : !events ? <Loading locale={locale} /> : events.length ? <div className="version-list">{events.map(event => <div key={event.id}><span className="version-dot" /><div><strong>{event.action}</strong><small>{formatDate(event.created_at, locale, true)}{event.entity_id ? ` · ${t("auditEntity")} ${event.entity_id.slice(0, 8)}` : ""}</small></div></div>)}</div> : <Empty title={t("noAudit")} />}</section></>;
+}

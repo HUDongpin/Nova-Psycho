@@ -1,13 +1,13 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
-import { ArrowClockwise, ArrowRight, BookOpenText, ClipboardText, FileText, FlowerLotus, HandHeart, House, IconContext, List, Plus, ShieldCheck, SignOut, SlidersHorizontal, UsersThree, X } from "@phosphor-icons/react";
+import { ArrowClockwise, ArrowRight, BookOpenText, ClipboardText, ClockCounterClockwise, FileText, FlowerLotus, HandHeart, House, IconContext, List, Plus, ShieldCheck, SignOut, SlidersHorizontal, UsersThree, X } from "@phosphor-icons/react";
 import { api, ApiError, errorMessage, isAdult, isStaff, type Family, type RecoveryTarget, type Scale, type Session, type Workspace } from "./api";
 import { roleName, type CopyKey } from "./copy";
 import { Brand, DemoBanner, Empty, ErrorNotice, Loading, LocaleSwitch, PrivacyModal, RegionLabel, useLocale, useMutation } from "./ui";
 import { Login } from "./login";
 import { AssessmentView, ReportView } from "./documents";
 import { AssessmentForm, ConsentForm, DeleteFamilyForm, FamilyForm, GoalForm, InvitationForm, ObservationForm, RecoveryForm, RetireScaleForm, ScaleImportForm } from "./forms";
-import { AssessmentList, ContentView, Dashboard, FamiliesView, FamilyView, GoalList, ReportCards, ScalesView, type OpenForm, type Route } from "./workspace-views";
+import { AssessmentList, AuditView, ContentView, Dashboard, FamiliesView, FamilyView, GoalList, ReportCards, ScalesView, type OpenForm, type Route } from "./workspace-views";
 function readRoute(): Route { const parts = window.location.hash.replace(/^#\/?/, "").split("/"); return { page: parts[0] || "dashboard", id: parts[1] ? decodeURIComponent(parts[1]) : undefined }; }
 type FormState = { kind: Parameters<OpenForm>[0]; target?: Family | Scale | RecoveryTarget } | null;
 // An `in` check narrows a union of object types to an intersection rather than to a
@@ -31,13 +31,13 @@ export default function NovaApp() {
   if (!session) return <IconContext.Provider value={{ size: 20, weight: "regular" }}><main className="startup-page"><Brand />{error ? <ErrorNotice message={error} locale={locale} onRetry={() => void loadSession()} /> : <Loading locale={locale} />}</main></IconContext.Provider>;
   if (!session.user) return <IconContext.Provider value={{ size: 20, weight: "regular" }}><Login session={session} locale={locale} setLocale={setLocale} onLogin={loadSession} /></IconContext.Provider>;
   const user = session.user; const adult = isAdult(user.role); const admin = user.role === "admin";
-  const nav: { key: CopyKey; icon: typeof House; group: "main" | "admin" }[] = adult ? [{ key: "dashboard", icon: House, group: "main" }, { key: "families", icon: UsersThree, group: "main" }, { key: "assessments", icon: ClipboardText, group: "main" }, { key: "reports", icon: FileText, group: "main" }, { key: "care", icon: HandHeart, group: "main" }, ...(admin ? [{ key: "scales" as const, icon: BookOpenText, group: "admin" as const }, { key: "content" as const, icon: SlidersHorizontal, group: "admin" as const }] : [])] : [{ key: "assessments", icon: ClipboardText, group: "main" }];
+  const nav: { key: CopyKey; icon: typeof House; group: "main" | "admin" }[] = adult ? [{ key: "dashboard", icon: House, group: "main" }, { key: "families", icon: UsersThree, group: "main" }, { key: "assessments", icon: ClipboardText, group: "main" }, { key: "reports", icon: FileText, group: "main" }, { key: "care", icon: HandHeart, group: "main" }, ...(admin ? [{ key: "scales" as const, icon: BookOpenText, group: "admin" as const }, { key: "content" as const, icon: SlidersHorizontal, group: "admin" as const }, { key: "audit" as const, icon: ClockCounterClockwise, group: "admin" as const }] : [])] : [{ key: "assessments", icon: ClipboardText, group: "main" }];
   const activeNav = route.page === "family" ? "families" : route.page === "assessment" ? "assessments" : route.page === "report" ? "reports" : route.page;
   const family = form?.target && "familyName" in form.target ? form.target : undefined; const selectedScale = form?.target && "scaleId" in form.target ? form.target : undefined; const recoveryTarget = isRecoveryTarget(form?.target) ? form.target : undefined;
   const viewProps = workspace ? { workspace, locale, navigate, openForm } : null;
   function currentView() {
     if (!workspace || !viewProps) return error ? null : <Loading locale={locale} />;
-    if ((route.page === "scales" || route.page === "content") && !admin) return <Empty title={t("unauthorized")} />;
+    if ((route.page === "scales" || route.page === "content" || route.page === "audit") && !admin) return <Empty title={t("unauthorized")} />;
     if (!adult && route.page !== "assessment" && route.page !== "assessments") return <Loading locale={locale} />;
     switch (route.page) {
       case "dashboard": return <Dashboard {...viewProps} onRefresh={loadWorkspace} />;
@@ -50,6 +50,7 @@ export default function NovaApp() {
       case "care": return <><div className="page-title"><div><span className="eyebrow">SMALL STEPS, LASTING CARE</span><h1>{t("care")}</h1><p>{t("careNote")}</p></div><button className="button primary" onClick={() => openForm("goal")} disabled={!workspace.families.length}><Plus />{t("newGoal")}</button></div><section className="panel care-list-panel"><GoalList goals={workspace.goals} workspace={workspace} locale={locale} onChange={loadWorkspace} /></section></>;
       case "scales": return <ScalesView {...viewProps} />;
       case "content": return <ContentView workspace={workspace} locale={locale} onRefresh={loadWorkspace} />;
+      case "audit": return <AuditView locale={locale} />;
       default: return <Empty title={t("missing")} action={<button className="button secondary" onClick={() => navigate({ page: adult ? "dashboard" : "assessments" })}>{t("back")}</button>} />;
     }
   }
