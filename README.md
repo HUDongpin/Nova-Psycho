@@ -77,9 +77,12 @@ npm run test:integration
 node scripts/run-region.mjs CN database-checks
 node scripts/run-region.mjs CN content-regressions
 node scripts/run-region.mjs CN retry-regressions
+node scripts/run-region.mjs CN recovery-checks
 ```
 
 Integration tests run only against explicitly classified demo environments. Concurrency and lifecycle checks use synthetic families, or an isolated test database that is created and then dropped; they do not delete a user's existing families. Evidence is written to `work/qa/`.
+
+The PDF renderer tests need a real Chromium and are skipped without one; the suite says so when it skips them rather than passing quietly. Run `npx playwright install chromium`, or point `NOVA_CHROMIUM_EXECUTABLE` at one, to include them.
 
 Live AI conformance against a real regional workspace is checked separately, using an in-memory synthetic snapshot and no database:
 
