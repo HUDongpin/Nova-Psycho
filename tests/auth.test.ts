@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 
 vi.mock("../src/lib/db",()=>({query:vi.fn()}));
 import { query } from "../src/lib/db";
-import { actorOf,audit,checkPassword,cookieName,endSession,hashPassword,hashToken,limitLogin,requireActor,setSession } from "../src/lib/auth";
+import { actorOf,audit,checkPassword,cookieName,endSession,hashPassword,hashToken,limitLogin,listAuditEvents,requireActor,setSession } from "../src/lib/auth";
 
 const mockQuery=vi.mocked(query);
 
@@ -155,5 +155,25 @@ describe("audit trail",()=>{
     mockQuery.mockResolvedValueOnce([]);
     await audit(null,"user.recovery_completed","u1");
     expect(mockQuery.mock.calls[0][1]).toEqual(["CN",null,"user.recovery_completed","u1"]);
+  });
+  it("lists four columns newest-first, bound to the region",async()=>{
+    const rows=[{id:"a1",action:"family.created",entity_id:"f1",created_at:"2026-01-01"}];
+    mockQuery.mockResolvedValueOnce(rows);
+    await expect(listAuditEvents("CN")).resolves.toEqual(rows);
+    const [sql,values]=mockQuery.mock.calls[0];
+    const text=String(sql);
+    const selected=(text.match(/SELECT\s+(.+?)\s+FROM/i)?.[1]??"").split(",").map(part=>part.trim());
+    expect(selected).toEqual(["id","action","entity_id","created_at"]);
+    expect(text).toContain("ORDER BY id DESC");
+    expect(text).toContain("LIMIT 500");
+    expect(values).toEqual(["CN"]);
+    expect(text).not.toMatch(/actor_id|\bname\b|payload/i);
+  });
+  it("binds CN and HK as the sole query value",async()=>{
+    mockQuery.mockResolvedValue([]);
+    await listAuditEvents("CN");
+    await listAuditEvents("HK");
+    expect(mockQuery.mock.calls[0][1]).toEqual(["CN"]);
+    expect(mockQuery.mock.calls[1][1]).toEqual(["HK"]);
   });
 });

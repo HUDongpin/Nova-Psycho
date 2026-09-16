@@ -11,6 +11,7 @@ This is the user-designated project: `/Volumes/Starship/Nova Psycho Helper`.
 - Keep runtime data, scratch files, captures and private report files in `work/`, outside public assets and version control.
 - No commits, pushes, paid cloud provisioning or public deployment are included in the initial implementation request.
 - For scholarly evidence use EdUHK Library plus reputable open sources; APA 7 by default. Never retain or delegate credentials.
+- When non-trivial engineering work needs deliberate playbooks, evidence gates, or parallel bounded ownership, use **pstack** (Poteto Mode) and its skills as needed — match the task to a playbook, read only the named skill/principle files, verify against the real artifact. Do not treat pstack as sticky across casual turns; Nova privacy, demo-data, and no-live-deploy rules still override any playbook step that would conflict.
 
 Checks: `npm test`, `npm run typecheck`, `npm run build`, `npm run test:integration` (when configured), plus real browser and rendered PDF review.
 

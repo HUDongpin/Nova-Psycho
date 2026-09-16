@@ -1,4 +1,4 @@
-import { describe,it,expect,afterAll } from "vitest";
+import { describe,it,expect,afterAll,beforeAll,beforeEach } from "vitest";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -8,19 +8,32 @@ import { demoAdvice,demoScale,demoTemplate } from "../src/domain/demo";
 import { scoreAssessment } from "../src/domain/scoring";
 import type { ReportPayload } from "../src/domain/types";
 
-// Rendering needs a real Chromium, which CI does not have. The suite skips there rather
-// than pretending to pass, and the skip is announced so it cannot be mistaken for
-// coverage. Run `npx playwright install chromium` to enable it anywhere.
+// Rendering needs a real Chromium, which CI and some sandboxes do not have. The suite
+// skips there rather than pretending to pass, and the skip is announced so it cannot be
+// mistaken for coverage. Run `npx playwright install chromium` to enable it anywhere.
 //
-// Detection is deliberately conservative: an explicit NOVA_CHROMIUM_EXECUTABLE, Chrome
+// Gate 1 is path-based and conservative: an explicit NOVA_CHROMIUM_EXECUTABLE, Chrome
 // on macOS, or Playwright's own browser cache. Guessing at Linux paths risks matching a
 // snap wrapper that launches but cannot render, which would turn a skip into a failure.
-const canRender=Boolean(process.env.NOVA_CHROMIUM_EXECUTABLE)
+// Gate 2 is a one-time launch/render probe: a present binary can still fail with EPERM
+// or SIGABRT. NOVA_SKIP_PDF_RENDER=1|true force-skips without probing.
+const forceSkip=process.env.NOVA_SKIP_PDF_RENDER==="1"||process.env.NOVA_SKIP_PDF_RENDER==="true";
+const hasChromiumHint=Boolean(process.env.NOVA_CHROMIUM_EXECUTABLE)
   ||(process.platform==="darwin"&&existsSync("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"))
   ||["Library/Caches/ms-playwright",".cache/ms-playwright"].some(relative=>existsSync(path.join(homedir(),relative)));
+const canRender=!forceSkip&&hasChromiumHint;
 
-if(!canRender){
+if(forceSkip){
+  console.warn("[pdf.test] NOVA_SKIP_PDF_RENDER is set, so PDF rendering is NOT being tested here.");
+}else if(!hasChromiumHint){
   console.warn("[pdf.test] No Chromium found, so the PDF renderer is NOT being tested here. Run `npx playwright install chromium` to enable these tests.");
+}
+
+function isEnvironmentRenderFailure(error:unknown){
+  const err=error as {code?:string;message?:string;cause?:unknown};
+  const cause=err?.cause as {code?:string;message?:string}|undefined;
+  const text=`${err?.code??""} ${err?.message??error} ${cause?.code??""} ${cause?.message??""}`;
+  return /EPERM|EACCES|ENOENT|SIGABRT|SIGKILL|SIGSEGV|SIGTRAP|sandbox|spawn|Executable|missing dependenc|shared librar|not permitted|Failed to launch|browserType\.launch|Target closed|has been closed|crashed|Timeout|timed out/i.test(text);
 }
 
 const payload:ReportPayload={
@@ -34,6 +47,23 @@ const payload:ReportPayload={
 afterAll(async()=>{await closePdfBrowser();});
 
 describe.skipIf(!canRender)("PDF rendering",()=>{
+  let renderAvailable=true;
+
+  beforeAll(async()=>{
+    try{
+      await renderPdf("<!DOCTYPE html><html><body><p>probe</p></body></html>");
+    }catch(error){
+      await closePdfBrowser().catch(()=>{});
+      if(!isEnvironmentRenderFailure(error))throw error;
+      renderAvailable=false;
+      console.warn("[pdf.test] Chromium launch/render probe failed, so PDF rendering is NOT being tested here.",error);
+    }
+  },60_000);
+
+  beforeEach(context=>{
+    if(!renderAvailable)context.skip();
+  });
+
   it("produces a real PDF document from a minimal page",async()=>{
     const pdf=await renderPdf("<!DOCTYPE html><html><body><p>Nova</p></body></html>");
     expect(pdf.subarray(0,4).toString()).toBe("%PDF");

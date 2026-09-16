@@ -98,4 +98,4 @@ Architecture and interface details are in `docs/api-contract.md`; retained selec
 
 ## Development ownership
 
-Under the current arrangement, Grok CLI does the main implementation work, while Codex handles scope control, necessary integration and acceptance. Small tasks and independent source copies are used to keep runtime material out of development prompts. See `docs/grok-workflow.md` for the process, and `docs/grok-batch-20260915.md` for the 2026-09-15 feature completion and current acceptance record.
+Under the current arrangement, Grok CLI does the main implementation work, while Cursor handles scope control, runs Grok, integrates diffs and runs acceptance. Small tasks and independent source copies are used to keep runtime material out of development prompts. Verification may set `NOVA_SKIP_PDF_RENDER=1` when Chromium cannot launch; skipped PDF tests are not coverage. Professional, cloud and Bailian gates remain external. See `docs/grok-workflow.md` for the process, and `docs/grok-batch-20260915.md` for the 2026-09-15 feature completion and current acceptance record.

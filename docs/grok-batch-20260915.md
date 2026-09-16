@@ -41,6 +41,10 @@ Evidence is in `work/qa/{api-integration-results,database-checks,content-regress
 
 Docker's status and ordinary restart timed out; the restart identified two stuck backend processes. After terminating those named processes and starting Docker through its official CLI, the engine responded and the existing CN/HK containers started with their original volumes. Database setup reported existing data preserved. Nova's stale HK development process also required termination before a fresh instance could bind the port. Both local apps and report workers were restarted. No factory reset, prune or volume deletion was performed. System-disk free space was approximately 6.3 GiB during diagnosis; that observation does not establish the cause.
 
+## Postscript — 2026-09-16
+
+Cursor now runs Grok for subsequent local cycles. The table above remains the 2026-09-15 acceptance record; this note does not rewrite that history.
+
 ## Remaining external acceptance
 
 Professional instruments, digital/commercial rights, scoring examples and population evidence; real CN/HK hosting/storage/HTTPS and geographic-residency acceptance; optional authorized regional Bailian inference; institution-approved notices; physical WeChat/iOS/Android acceptance. Current data and questionnaire are explicitly synthetic demonstrations. No clinical or production-readiness claim follows from the local tests.

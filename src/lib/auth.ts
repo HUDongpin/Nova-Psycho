@@ -50,3 +50,7 @@ export async function limitLogin(username:string):Promise<void>{
 export async function audit(actor:Actor|null,action:string,entityId:string|null=null):Promise<void>{
   await query("INSERT INTO audit_events(region,actor_id,action,entity_id) VALUES($1,$2,$3,$4)",[getConfig().region,actor?.id??null,action,entityId]);
 }
+export type AuditEventRow = { id: string; action: string; entity_id: string | null; created_at: Date | string };
+export async function listAuditEvents(region: "CN" | "HK"): Promise<AuditEventRow[]>{
+  return query<AuditEventRow>("SELECT id,action,entity_id,created_at FROM audit_events WHERE region=$1 ORDER BY id DESC LIMIT 500",[region]);
+}

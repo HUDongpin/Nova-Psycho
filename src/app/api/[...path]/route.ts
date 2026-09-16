@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { demoScale } from "@/domain/demo";
-import { actorOf,audit,checkPassword,endSession,limitLogin,requireActor,setSession } from "@/lib/auth";
+import { actorOf,audit,checkPassword,endSession,limitLogin,listAuditEvents,requireActor,setSession } from "@/lib/auth";
 import { getConfig } from "@/lib/config";
 import { query } from "@/lib/db";
 import { body,checkOrigin,handle,HttpError,json,localeOf,requireRole } from "@/lib/http";
@@ -85,7 +85,7 @@ async function dispatch(request:Request,context:Context):Promise<Response>{retur
     if(method==="POST")return json(await createContent(actor,path[1],await body(request)),201);
   }
   if(method==="GET"&&route==="audit"){
-    requireRole(actor.role,["admin"]);return json(await query("SELECT id,action,entity_id,created_at FROM audit_events WHERE region=$1 ORDER BY id DESC LIMIT 500",[actor.region]));
+    requireRole(actor.role,["admin"]);return json(await listAuditEvents(actor.region));
   }
   if(method==="GET"&&route==="ops/status"){
     requireRole(actor.role,["admin"]);return json(await opsStatus());

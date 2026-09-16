@@ -41,6 +41,10 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      # npm test includes PDF renderer tests. Those skip when Chromium is
+      # unavailable or when NOVA_SKIP_PDF_RENDER=1|true. A skip is not PDF
+      # coverage; CI must not treat skipped PDF tests as evidence that
+      # rendering was verified.
       - name: Unit tests
         run: npm test
 
