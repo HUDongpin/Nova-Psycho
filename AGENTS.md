@@ -1,6 +1,6 @@
 # Nova Psycho Helper
 
-This is the user-designated project: `/Volumes/Starship/Nova Psycho Helper`.
+This is the user-designated project: `/Volumes/Mars/Nova Psycho Helper`.
 
 - Primary questionnaire engine: MIT SurveyJS Form Library. Keep LimeSurvey as a future alternative, not a v1 dependency.
 - V1 serves mainland China and Hong Kong with separate data regions and simplified/traditional Chinese.

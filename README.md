@@ -4,7 +4,7 @@
 
 An assessment, automatic-reporting and ongoing-support workspace for K–12 families in mainland China and Hong Kong.
 
-**Project directory: `/Volumes/Starship/Nova Psycho Helper`.** Questionnaires use the MIT-licensed SurveyJS Form Library; Nova independently implements family management, rule-based scoring, automatic publication, private PDFs and retest comparison. LimeSurvey is retained as an option for a future full survey platform.
+**Project directory: `/Volumes/Mars/Nova Psycho Helper`.** Questionnaires use the MIT-licensed SurveyJS Form Library; Nova independently implements family management, rule-based scoring, automatic publication, private PDFs and retest comparison. LimeSurvey is retained as an option for a future full survey platform.
 
 ## What works today
 
@@ -28,7 +28,7 @@ An assessment, automatic-reporting and ongoing-support workspace for K–12 fami
 Requires Node.js 24, npm and Docker. On macOS the report process uses Google Chrome directly; other environments can install Playwright Chromium, or point `NOVA_CHROMIUM_EXECUTABLE` at a supported Chromium build.
 
 ```sh
-cd '/Volumes/Starship/Nova Psycho Helper'
+cd '/Volumes/Mars/Nova Psycho Helper'
 npm ci
 npm run bootstrap:local
 npm run setup:cn
