@@ -46,6 +46,12 @@ describe("adapter robustness against documented provider behaviour",()=>{
     expect(calls[0].url).toBe(`${settings.url}/chat/completions`);
     expect((body.messages as {content:string}[]).some(message=>message.content.includes("JSON"))).toBe(true);
   });
+  it("disables DeepSeek thinking so the flash model returns the answer",async()=>{
+    const {calls,fetcher}=capture();
+    await selectNarrative(snapshot(),{...settings,url:"https://api.deepseek.com",model:"deepseek-flash"},fetcher);
+    expect(JSON.parse(calls[0].body).thinking).toEqual({type:"disabled"});
+    expect(calls[0].url).toBe("https://api.deepseek.com/chat/completions");
+  });
   it("sends no token cap, which the provider documents as truncating structured output",async()=>{
     const {calls,fetcher}=capture();await selectNarrative(snapshot(),settings,fetcher);
     const body=JSON.parse(calls[0].body);

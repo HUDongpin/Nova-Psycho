@@ -27,7 +27,11 @@ export function getConfig():Config{
       const u=new URL(ai.url);
       const cn=/^llm-[a-z0-9-]+\.cn-beijing\.maas\.aliyuncs\.com$/;
       const hk=/^llm-[a-z0-9-]+\.cn-hongkong\.maas\.aliyuncs\.com$/;
-      if(u.protocol!=="https:"||!(region==="CN"?cn:hk).test(u.hostname)||u.pathname!=="/compatible-mode/v1"||u.search||u.hash||u.username||u.password)throw new Error("Only an approved regional workspace inference endpoint is allowed");
+      const bailian=(region==="CN"?cn:hk).test(u.hostname)&&u.pathname==="/compatible-mode/v1";
+      // DeepSeek-V4.1 Flash. Thinking is on by default at the provider, so the
+      // caller must disable it. This host is not a regional Bailian workspace.
+      const deepseek=u.hostname==="api.deepseek.com"&&(u.pathname==="/"||u.pathname==="")&&ai.model==="deepseek-flash";
+      if(u.protocol!=="https:"||u.search||u.hash||u.username||u.password||!(bailian||deepseek))throw new Error("Only an approved regional workspace inference endpoint is allowed");
     }
   }
   const sibling=process.env.NOVA_DEMO_SIBLING_URL;

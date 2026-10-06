@@ -9,6 +9,7 @@ import { ageAt } from "../src/lib/access";
 import type { AssessmentSnapshot,RespondentRole } from "../src/domain/types";
 import { noticeVersion } from "../src/lib/privacy";
 import {reportHtml} from "../src/domain/report-html";
+import { ensureTriadInstruments } from "../src/lib/triad";
 const config=getConfig(),db=pool();
 try{
   const marker=await db.query("SELECT to_regclass('public.deployment_settings') AS marker");
@@ -56,7 +57,9 @@ try{
         ];
         for(const f of families){
           await client.query("INSERT INTO families(id,region,family_name,child_name,birth_date,grade,guardian_label,assigned_to) VALUES($1,$2,$3,$4,$5,$6,$7,$8)",[f.id,config.region,f.name,f.child,f.birth,f.grade,f.guardian,f.staff]);
-          for(const [uid,role] of [[f.parent,"parent"],[f.student,"student"],[account("teacher").id,"teacher"]])await client.query("INSERT INTO memberships(family_id,user_id,role) VALUES($1,$2,$3)",[f.id,uid,role]);
+          const members:[string,string][]=[[f.parent,"parent"],[f.student,"student"]];
+          if(f.child==="林小禾")members.push([account("teacher").id,"teacher"]);
+          for(const [uid,role] of members)await client.query("INSERT INTO memberships(family_id,user_id,role) VALUES($1,$2,$3)",[f.id,uid,role]);
           await client.query("INSERT INTO consents(id,family_id,actor_id,guardian_name,method,reference,notice_version,scopes) VALUES($1,$2,$3,$4,'synthetic','SYNTHETIC-DEMO-ONLY',$5,$6)",[randomUUID(),f.id,f.parent,`${f.child}${hk?"家長":"家长"}`,noticeVersion,JSON.stringify(["assessment","parent_report","sensitive_data"])]);
         }
         const baseline={q1:3,q2:1,q3:2,q4:1,q5:3,q6:1,q7:2,q8:1,q9:0};
@@ -71,14 +74,16 @@ try{
         for(const [fi,uid,role] of [[0,families[0].student,"student"],[0,families[0].parent,"parent"],[0,account("teacher").id,"teacher"],[1,families[1].student,"student"]] as const){
           await client.query("INSERT INTO assessments(id,family_id,region,respondent_id,respondent_role,scale_version_id,locale) VALUES($1,$2,$3,$4,$5,$6,$7)",[randomUUID(),families[fi].id,config.region,uid,role,scaleId,hk?"zh-HK":"zh-CN"]);
         }
-        for(const [title,detail,status] of [
+        for(const [index,[title,detail,status]] of [
+          [hk?"確認孩子喜歡的交流方式":"确认孩子喜欢的交流方式",hk?"已一起討論，可選擇散步時聊天。":"已一起讨论，可以选择散步时聊天。","completed"],
           [hk?"留一段彼此傾聽的時間":"留一段彼此倾听的时间",hk?"晚飯後先聽孩子分享一件想說的事，不急着提出建議。":"晚饭后先听孩子分享一件想说的事，不急着提出建议。","active"],
-          [hk?"一起整理一週的休息安排":"一起整理一周的休息安排",hk?"保留一段由孩子自主選擇活動的時間。":"保留一段由孩子自主选择活动的时间。","active"],
-          [hk?"確認孩子喜歡的交流方式":"确认孩子喜欢的交流方式",hk?"已一起討論，可選擇散步時聊天。":"已一起讨论，可以选择散步时聊天。","completed"]
-        ])await client.query("INSERT INTO goals(id,family_id,title,detail,status,created_by) VALUES($1,$2,$3,$4,$5,$6)",[randomUUID(),families[0].id,title,detail,status,account("staff").id]);
+          [hk?"一起整理一週的休息安排":"一起整理一周的休息安排",hk?"保留一段由孩子自主選擇活動的時間。":"保留一段由孩子自主选择活动的时间。","active"]
+        ].entries())await client.query("INSERT INTO goals(id,family_id,title,detail,status,created_by,created_at) VALUES($1,$2,$3,$4,$5,$6,now()-($7::int * interval '1 second'))",[randomUUID(),families[0].id,title,detail,status,account("staff").id,index]);
         await client.query("INSERT INTO observations(id,family_id,body,created_by) VALUES($1,$2,$3,$4)",[randomUUID(),families[0].id,hk?"合成服務紀錄：家庭希望先從晚間交流方式開始調整。本紀錄僅供服務團隊使用。":"合成服务记录：家庭希望先从晚间交流方式开始调整。本记录仅供服务团队使用。",account("staff").id]);
         await client.query("COMMIT");console.log(`Synthetic demo seeded for ${config.region}: 2 families, 8 accounts, 5 report jobs. No real student data.`);
       }catch(e){await client.query("ROLLBACK");throw e;}finally{client.release();}
     }
   }
+  await ensureTriadInstruments();
+  console.log("Growth triad questionnaires are available.");
 }finally{await closeDatabase();}

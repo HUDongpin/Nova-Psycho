@@ -3,6 +3,9 @@ import { z } from "zod";
 import type { Actor,AdviceLibrary,AssessmentSnapshot,Locale,ReportTemplate,RespondentRole,ScaleDefinition } from "../domain/types";
 import { text } from "../domain/types";
 import { scoreAssessment,ScoringError,validateAnswers } from "../domain/scoring";
+import { surveyDefinition } from "../domain/survey";
+import { TRIAD_BUNDLE } from "../domain/triad-report";
+import { queueTriadReport } from "./triad";
 import { ensureAdviceReferences } from "../domain/validation";
 import { ageAt,consentFor,familyFor } from "./access";
 import { audit } from "./auth";
@@ -10,7 +13,23 @@ import { getConfig } from "./config";
 import { currentContent,getScale,lockContent } from "./content";
 import { query,transaction } from "./db";
 import { HttpError,requireRole,validateId } from "./http";
-const answerSchema=z.record(z.string(),z.number());
+const answerSchema=z.record(z.string(),z.union([z.number(),z.array(z.number()).max(20),z.string().max(2000),z.null()])).transform(record=>{
+  const answers:Record<string,number|number[]|string>={};
+  for(const [key,value] of Object.entries(record)){
+    if(value===null)continue;
+    if(typeof value==="string"){const trimmed=value.trim();if(trimmed)answers[key]=trimmed;continue;}
+    if(Array.isArray(value)){if(value.length)answers[key]=value;continue;}
+    answers[key]=value;
+  }
+  return answers;
+});
+export { surveyDefinition };
+async function refuseDemoBesideOfficial(familyId:string,respondentId:string,region:"CN"|"HK",role:RespondentRole,age:number){
+  const held=await query("SELECT a.id FROM assessments a JOIN scales s ON s.id=a.scale_version_id WHERE a.family_id=$1 AND a.respondent_id=$2 AND a.region=$3 AND COALESCE(s.definition->>'demo','false')<>'true' LIMIT 1",[familyId,respondentId,region]);
+  if(held[0])throw new HttpError(409,"这位成员已经有正式问卷，不能再加一份演示卷。","DEMO_NOT_ASSIGNABLE");
+  const official=await query("SELECT id FROM scales WHERE status='active' AND COALESCE(definition->>'demo','false')<>'true' AND (definition->'regions') ? $1 AND (definition->'roles') ? $2 AND (definition->>'minAge')::int<=$3 AND (definition->>'maxAge')::int>=$3 LIMIT 1",[region,role,age]);
+  if(official[0])throw new HttpError(409,"正式问卷已经可以使用，不能再分配演示题。","DEMO_NOT_ASSIGNABLE");
+}
 export async function createAssessment(actor:Actor,input:unknown){
   requireRole(actor.role,["admin","staff","parent"]);
   const d=z.object({familyId:z.string().uuid(),respondentId:z.string().uuid(),scaleVersionId:z.string().max(100),locale:z.enum(["zh-CN","zh-HK"])}).strict().parse(input);
@@ -20,7 +39,9 @@ export async function createAssessment(actor:Actor,input:unknown){
   const members=await query("SELECT m.role FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.family_id=$1 AND m.user_id=$2 AND NOT u.disabled AND u.region=$3",[d.familyId,d.respondentId,actor.region]);
   if(!members[0])throw new HttpError(422,"填答者未与此家庭建立授权关系。","INVALID_RESPONDENT");
   const role=members[0].role as RespondentRole;
-  if(scoreAssessment(scale.definition,{}, {age:ageAt(family.birth_date),region:actor.region,role}).status==="ineligible")throw new HttpError(422,"该量表不适用于孩子年龄、地区或填答者角色。","INELIGIBLE");
+  const age=ageAt(family.birth_date);
+  if(scoreAssessment(scale.definition,{}, {age,region:actor.region,role}).status==="ineligible")throw new HttpError(422,"该量表不适用于孩子年龄、地区或填答者角色。","INELIGIBLE");
+  if(scale.definition.demo)await refuseDemoBesideOfficial(family.id,d.respondentId,actor.region,role,age);
   return transaction(async client=>{
     // Serialize new tasks per family to enforce retake/pending rules under concurrent requests.
     const lock=await client.query("SELECT id FROM families WHERE id=$1 FOR UPDATE",[family.id]);
@@ -39,12 +60,6 @@ export async function createAssessment(actor:Actor,input:unknown){
 async function ownAssessment(actor:Actor,id:string){
   validateId(id);const r=await query("SELECT a.*,s.definition,f.child_name,f.birth_date FROM assessments a JOIN scales s ON s.id=a.scale_version_id JOIN families f ON f.id=a.family_id JOIN memberships m ON m.family_id=f.id AND m.user_id=a.respondent_id WHERE a.id=$1 AND a.respondent_id=$2 AND a.region=$3 AND f.region=$3 AND m.role=$4",[id,actor.id,actor.region,actor.role]);
   if(!r[0])throw new HttpError(404,"未找到分配给您的测评。","NOT_FOUND");return r[0];
-}
-export function surveyDefinition(s:ScaleDefinition,role:RespondentRole,locale:Locale){
-  const hk=locale==="zh-HK";return {
-    title:text(s.title,locale),description:text(s.description,locale),locale:hk?"zh-tw":"zh-cn",showQuestionNumbers:"on",showProgressBar:"top",progressBarType:"questions",showCompletedPage:false,completeText:hk?"提交並生成報告":"提交并生成报告",pageNextText:hk?"下一頁":"下一页",pagePrevText:hk?"上一頁":"上一页",
-    pages:[{name:"assessment",elements:s.items.map(item=>({type:"radiogroup",name:item.id,title:text(role==="student"||!item.observerLabel?item.label:item.observerLabel,locale),isRequired:item.required,choices:item.choices.map(c=>({value:c.value,text:text(c.label,locale)})),colCount:item.choices.length<=4?item.choices.length:1}))}]
-  };
 }
 export async function assessmentDetail(actor:Actor,id:string,locale:Locale){
   const a=await ownAssessment(actor,id),s=a.definition as ScaleDefinition;
@@ -74,6 +89,8 @@ export async function submitAssessment(actor:Actor,id:string,input:unknown){
     if(!scopes||!["assessment","parent_report","sensitive_data"].every(s=>scopes.includes(s)))throw new HttpError(409,"请先完成监护人授权。","GUARDIAN_CONSENT_REQUIRED");
     let score;try{score=scoreAssessment(scale,d.answers,{age:ageAt(family.birth_date),region:actor.region,role:a.respondent_role});}catch(e){if(e instanceof ScoringError)throw new HttpError(422,"答案格式不符合量表要求。","INVALID_ANSWERS");throw e;}
     if(score.status==="ineligible")throw new HttpError(422,"当前量表不适用于此孩子。","INELIGIBLE");
+    if(scale.items.some(item=>item.gate!==undefined&&d.answers[item.id]!==item.gate))throw new HttpError(422,"需要先同意参加这次了解，才能提交。","ENTRY_GATE");
+    if(scale.bundle===TRIAD_BUNDLE&&score.status!=="valid")throw new HttpError(422,"还有必答部分没完成，或某个方面的有效回答不足。选择“不确定或不适用”不会被算进分数。","INCOMPLETE_TRIAD");
     // Only a new submission depends on current content. Replays above retain the
     // accepted snapshot even when its retired scale's advice is later removed.
     await lockContent(client);
@@ -82,6 +99,7 @@ export async function submitAssessment(actor:Actor,id:string,input:unknown){
     const submittedAt=new Date().toISOString();
     const snapshot:AssessmentSnapshot={scale,advice,template,score,childName:family.child_name,grade:family.grade,submittedAt,aiConsented:scopes.includes("ai_processing")};
     await client.query("UPDATE assessments SET answers=$1,draft_answers='{}',snapshot=$2,status='queued',submitted_at=$3,acknowledged_at=COALESCE(acknowledged_at,$3) WHERE id=$4",[JSON.stringify(d.answers),JSON.stringify(snapshot),submittedAt,id]);
+    if(scale.bundle===TRIAD_BUNDLE){await queueTriadReport(client,a.family_id);return {id,status:"queued",reportId:null};}
     await client.query("INSERT INTO report_jobs(id,assessment_id) VALUES($1,$2) ON CONFLICT(assessment_id) DO NOTHING",[randomUUID(),id]);return {id,status:"queued",reportId:null};
   });await audit(actor,"assessment.submitted",id);return result;
 }

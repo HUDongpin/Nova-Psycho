@@ -103,6 +103,30 @@ describe("creating an assessment",()=>{
     client.query.mockImplementationOnce(async()=>({rows:[{id:ASSESSMENT_ID}]}));
     await expect(createAssessment(actor("admin"),createInput)).resolves.toEqual({id:ASSESSMENT_ID});
   });
+  const familyRow={id:FAMILY_ID,region:"CN",family_name:"Synthetic",child_name:"Synthetic child",birth_date:"2013-04-12",grade:"S2",guardian_label:"Mother",assigned_to:null,created_at:new Date()};
+  const withFamily=(extra:(sql:string)=>unknown[]|undefined)=>{
+    mockQuery.mockImplementation((async(sql:string)=>{
+      const text=String(sql);
+      if(text.includes("FROM families f WHERE f.id=$1"))return [familyRow];
+      if(text.includes("SELECT m.role FROM memberships"))return [{role:"parent"}];
+      return extra(text)??[];
+    }) as never);
+  };
+  it("still assigns the demo instrument when no official questionnaire is available",async()=>{
+    const created=await createAssessment(actor("admin"),createInput);
+    expect(created.id).toEqual(expect.any(String));
+    expect(clientCalls.some(sql=>sql.includes("INSERT INTO assessments"))).toBe(true);
+  });
+  it("refuses a demo instrument when this member already holds an official questionnaire",async()=>{
+    withFamily(sql=>sql.includes("s.definition->>'demo'")?[{id:"official-task"}]:undefined);
+    await expect(createAssessment(actor("staff"),createInput)).rejects.toMatchObject({status:409,code:"DEMO_NOT_ASSIGNABLE"});
+    expect(mockTransaction).not.toHaveBeenCalled();
+  });
+  it("refuses a demo instrument when an official questionnaire already fits this member",async()=>{
+    withFamily(sql=>sql.includes("FROM scales WHERE status='active'")?[{id:"growth-parent@1.0.0"}]:undefined);
+    await expect(createAssessment(actor("admin"),createInput)).rejects.toMatchObject({status:409,code:"DEMO_NOT_ASSIGNABLE"});
+    expect(mockTransaction).not.toHaveBeenCalled();
+  });
   it("enforces the retake interval for the same respondent and version",async()=>{
     const recent=new Date(Date.now()-2*86400000);
     client.query.mockImplementationOnce(async()=>({rows:[{id:FAMILY_ID}]}));

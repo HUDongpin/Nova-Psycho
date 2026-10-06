@@ -27,3 +27,9 @@ describe("Beijing workspace endpoint allowlist",()=>{
   it("rejects another region's workspace host",()=>{base();ai("https://llm-abc123def.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1");expect(()=>getConfig()).toThrow();});
   it("stays disabled rather than throwing when the key is missing",()=>{base();ai(BEIJING);vi.stubEnv("NOVA_AI_API_KEY","");expect(getConfig().ai.enabled).toBe(false);});
 });
+describe("DeepSeek flash endpoint",()=>{
+  const flash=()=>{base();vi.stubEnv("NOVA_AI_ENABLED","true");vi.stubEnv("NOVA_AI_BASE_URL","https://api.deepseek.com");vi.stubEnv("NOVA_AI_API_KEY","synthetic-key");vi.stubEnv("NOVA_AI_MODEL","deepseek-flash");vi.stubEnv("NOVA_AI_DEPLOYMENT_SCOPE","CN");};
+  it("accepts the official flash endpoint",()=>{flash();const config=getConfig();expect(config.ai.enabled).toBe(true);expect(config.ai.model).toBe("deepseek-flash");});
+  it("rejects a DeepSeek path other than the API origin",()=>{flash();vi.stubEnv("NOVA_AI_BASE_URL","https://api.deepseek.com/anthropic");expect(()=>getConfig()).toThrow();});
+  it("rejects a non-flash DeepSeek model",()=>{flash();vi.stubEnv("NOVA_AI_MODEL","deepseek-v4-pro");expect(()=>getConfig()).toThrow();});
+});

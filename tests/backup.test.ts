@@ -1,5 +1,5 @@
 import { describe,it,expect,afterEach,vi } from "vitest";
-import { mkdtempSync,readFileSync,rmSync,writeFileSync } from "node:fs";
+import { existsSync,mkdtempSync,readFileSync,rmSync,writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
@@ -81,6 +81,7 @@ describe("backup archive encryption",()=>{
     const restored=path.join(path.dirname(source),"out.bin");
     await encryptFile(source,encrypted,key);
     await expect(decryptFile(encrypted,restored,Buffer.from("ff".repeat(32),"hex"))).rejects.toThrow(/does not match, or the file is damaged/);
+    expect(existsSync(restored)).toBe(false);
   });
   it("rejects a file that is not in the expected format",async()=>{
     const source=tempFile(randomBytes(200));

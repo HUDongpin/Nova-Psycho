@@ -1,7 +1,7 @@
 "use client";
 import { cloneElement, isValidElement, useEffect, useId, useRef, useState, type ReactNode } from "react";
-import { ArrowClockwise, ArrowRight, CircleNotch, FlowerLotus, ShieldCheck, Sparkle, X } from "@phosphor-icons/react";
-import { api, errorMessage, type Locale, type Privacy, type Session } from "./api";
+import { ArrowClockwise, ArrowRight, CircleNotch, FlowerLotus, ShieldCheck, X } from "@phosphor-icons/react";
+import { api, errorMessage, type Locale, type Privacy } from "./api";
 import { copy, type CopyKey } from "./copy";
 
 export function useLocale() {
@@ -11,10 +11,8 @@ export function useLocale() {
   function changeLocale(value: Locale) { localStorage.setItem("nova-locale", value); setLocale(value); }
   return { locale, setLocale: changeLocale, t: copy(locale) };
 }
-export function Brand({ compact = false }: { compact?: boolean }) { return <div className={`brand ${compact ? "compact" : ""}`}><span className="brand-symbol"><FlowerLotus size={31} weight="duotone" /></span><div><strong>nova<span>心理助手</span></strong>{!compact && <small>FAMILY WELLBEING</small>}</div></div>; }
-export function LocaleSwitch({ locale, onChange }: { locale: Locale; onChange: (locale: Locale) => void }) { const t = copy(locale); return <div className="locale-control" role="group" aria-label={t("language")} title={t("regionNotice")}><button type="button" aria-pressed={locale === "zh-CN"} onClick={() => onChange("zh-CN")}>简</button><button type="button" aria-pressed={locale === "zh-HK"} onClick={() => onChange("zh-HK")}>繁</button></div>; }
-export function RegionLabel({ session, locale }: { session: Pick<Session, "region" | "mode">; locale: Locale }) { const t = copy(locale); return <span className="region-label"><span className="status-dot" /><span className="region-name">{t(session.region === "HK" ? "regionHK" : "regionCN")}</span><span className="region-divider">/</span><span className="region-mode">{t(session.mode === "demo" ? "demo" : "service")}</span></span>; }
-export function DemoBanner({ locale }: { locale: Locale }) { return <div className="demo-banner"><Sparkle size={16} weight="fill" /><span>{copy(locale)("demoNotice")}</span></div>; }
+export function Brand({ compact = false }: { compact?: boolean }) { return <div className={`brand ${compact ? "compact" : ""}`}><span className="brand-symbol"><FlowerLotus size={22} weight="regular" /></span><div><strong>TopE<span>心理助手</span></strong>{!compact && <small>FAMILY WELLBEING</small>}</div></div>; }
+export function LocaleSwitch({ locale, onChange }: { locale: Locale; onChange: (locale: Locale) => void }) { const t = copy(locale); return <div className="locale-control" role="group" aria-label={t("language")}><button type="button" aria-pressed={locale === "zh-CN"} onClick={() => onChange("zh-CN")}>简</button><button type="button" aria-pressed={locale === "zh-HK"} onClick={() => onChange("zh-HK")}>繁</button></div>; }
 export function Badge({ children, tone = "neutral" }: { children: ReactNode; tone?: "neutral" | "sage" | "peach" | "danger" | "teal" }) { return <span className={`badge badge-${tone}`}>{children}</span>; }
 export function Loading({ locale }: { locale: Locale }) { return <div className="loading-state" role="status"><CircleNotch size={28} className="spin" /><span>{copy(locale)("loading")}</span></div>; }
 export function ErrorNotice({ message, onRetry, locale }: { message: string; onRetry?: () => void; locale: Locale }) { return <div className="error-notice" role="alert"><span>{message}</span>{onRetry && <button className="button ghost small" onClick={onRetry}><ArrowClockwise />{copy(locale)("retry")}</button>}</div>; }

@@ -21,14 +21,15 @@ const admin:Actor={id:"99999999-8888-4777-8666-555555555555",name:"Admin",role:"
 const parent:Actor={...admin,role:"parent"};
 
 const clientCalls:string[]=[];
-const client={
-  query:vi.fn(async(sql:string)=>{
-    clientCalls.push(String(sql));
-    if(String(sql).includes("SELECT user_id FROM recovery_tokens"))return {rows:[{user_id:USER_ID}]};
-    if(String(sql).includes("FOR UPDATE OF r"))return {rows:[{user_id:USER_ID}]};
-    return {rows:[]};
-  })
-};
+async function defaultClientQuery(sql:string){
+  clientCalls.push(String(sql));
+  if(String(sql).includes("SELECT id,name,role,disabled FROM users"))return {rows:[{id:USER_ID,name:"Synthetic",role:"parent",disabled:false}]};
+  if(String(sql).includes("SELECT id FROM users"))return {rows:[{id:USER_ID}]};
+  if(String(sql).includes("SELECT user_id FROM recovery_tokens"))return {rows:[{user_id:USER_ID}]};
+  if(String(sql).includes("FOR UPDATE OF r"))return {rows:[{user_id:USER_ID}]};
+  return {rows:[]};
+}
+const client={query:vi.fn(defaultClientQuery)};
 
 beforeEach(()=>{
   vi.stubEnv("NOVA_REGION","CN");vi.stubEnv("NOVA_MODE","demo");
@@ -36,7 +37,8 @@ beforeEach(()=>{
   vi.stubEnv("NOVA_PUBLIC_URL","http://127.0.0.1:3100");
   vi.stubEnv("NOVA_REPORT_DIR","work/test-private");
   vi.stubEnv("NOVA_REPORT_KEY","0".repeat(64));
-  mockQuery.mockReset();mockTransaction.mockReset();client.query.mockClear();clientCalls.length=0;
+  mockQuery.mockReset();mockTransaction.mockReset();client.query.mockReset();clientCalls.length=0;
+  client.query.mockImplementation(defaultClientQuery);
   mockTransaction.mockImplementation((async(fn:(c:unknown)=>Promise<unknown>)=>fn(client)) as never);
 });
 afterEach(()=>vi.unstubAllEnvs());
@@ -51,7 +53,6 @@ describe("issuing a recovery link",()=>{
     expect(mockQuery).not.toHaveBeenCalled();
   });
   it("returns a single-use link carrying a 64-character token",async()=>{
-    mockQuery.mockResolvedValueOnce([{id:USER_ID,name:"Synthetic",role:"parent",disabled:false}]);
     const result=await createRecovery(admin,USER_ID);
     const token=result.url.split("token=")[1];
     expect(result.url.startsWith("http://127.0.0.1:3100/recover#token=")).toBe(true);
@@ -59,23 +60,45 @@ describe("issuing a recovery link",()=>{
     expect(Date.parse(result.expiresAt)).toBeGreaterThan(Date.now());
   });
   it("never puts the stored hash in the link",async()=>{
-    mockQuery.mockResolvedValueOnce([{id:USER_ID,name:"Synthetic",role:"parent",disabled:false}]);
     const result=await createRecovery(admin,USER_ID);
     const token=result.url.split("token=")[1];
     expect(result.url).not.toContain(hashToken(token));
   });
   it("retires an earlier outstanding link for the same account",async()=>{
-    mockQuery.mockResolvedValueOnce([{id:USER_ID,name:"Synthetic",role:"parent",disabled:false}]);
     await createRecovery(admin,USER_ID);
     expect(clientCalls.some(sql=>sql.includes("UPDATE recovery_tokens SET used_at=now() WHERE user_id=$1 AND used_at IS NULL"))).toBe(true);
   });
+  it("serializes issuance on the account row inside the transaction",async()=>{
+    await createRecovery(admin,USER_ID);
+    const lock=clientCalls.find(sql=>sql.includes("FROM users")&&sql.includes("FOR UPDATE"));
+    expect(lock).toContain("SELECT id,name,role,disabled FROM users WHERE id=$1 AND region=$2 FOR UPDATE");
+    expect(mockQuery.mock.calls.some(call=>String(call[0]).includes("FROM users"))).toBe(false);
+  });
+  it("locks the account before it writes recovery tokens",async()=>{
+    await createRecovery(admin,USER_ID);
+    const userLock=clientCalls.findIndex(sql=>sql.includes("FROM users")&&sql.includes("FOR UPDATE"));
+    const retire=clientCalls.findIndex(sql=>sql.includes("UPDATE recovery_tokens SET used_at=now() WHERE user_id=$1 AND used_at IS NULL"));
+    const insert=clientCalls.findIndex(sql=>sql.includes("INSERT INTO recovery_tokens"));
+    expect(userLock).toBeGreaterThanOrEqual(0);
+    expect(userLock).toBeLessThan(retire);
+    expect(retire).toBeLessThan(insert);
+  });
   it("refuses an account that does not exist in this region",async()=>{
-    mockQuery.mockResolvedValueOnce([]);
+    client.query.mockImplementation(async(sql:string)=>{
+      clientCalls.push(String(sql));
+      return {rows:[]};
+    });
     await expect(createRecovery(admin,USER_ID)).rejects.toMatchObject({code:"NOT_FOUND"});
+    expect(clientCalls.some(sql=>sql.includes("INSERT INTO recovery_tokens"))).toBe(false);
   });
   it("refuses a disabled account",async()=>{
-    mockQuery.mockResolvedValueOnce([{id:USER_ID,name:"Synthetic",role:"parent",disabled:true}]);
+    client.query.mockImplementation(async(sql:string)=>{
+      clientCalls.push(String(sql));
+      if(String(sql).includes("SELECT id,name,role,disabled FROM users"))return {rows:[{id:USER_ID,name:"Synthetic",role:"parent",disabled:true}]};
+      return {rows:[]};
+    });
     await expect(createRecovery(admin,USER_ID)).rejects.toMatchObject({code:"ACCOUNT_DISABLED"});
+    expect(clientCalls.some(sql=>sql.includes("INSERT INTO recovery_tokens"))).toBe(false);
   });
 });
 
@@ -127,9 +150,25 @@ describe("completing a recovery",()=>{
     await acceptRecovery({token:validToken,password:"a-long-enough-password"});
     expect(clientCalls.some(sql=>sql.includes("FOR UPDATE OF r"))).toBe(true);
   });
+  it("locks the account before the token when completing recovery",async()=>{
+    await acceptRecovery({token:validToken,password:"a-long-enough-password"});
+    const userLock=clientCalls.findIndex(sql=>sql.includes("SELECT id FROM users")&&sql.includes("FOR UPDATE"));
+    const tokenLock=clientCalls.findIndex(sql=>sql.includes("FOR UPDATE OF r"));
+    expect(userLock).toBeGreaterThanOrEqual(0);
+    expect(tokenLock).toBeGreaterThan(userLock);
+  });
+  it("revokes every other outstanding link for the account",async()=>{
+    await acceptRecovery({token:validToken,password:"a-long-enough-password"});
+    expect(client.query).toHaveBeenCalledWith(expect.stringContaining("UPDATE recovery_tokens SET used_at=now() WHERE user_id=$1 AND used_at IS NULL"),[USER_ID]);
+  });
   it("does nothing when the token is already spent or expired",async()=>{
-    client.query.mockImplementationOnce(async()=>({rows:[{user_id:USER_ID}]}));
-    client.query.mockImplementationOnce(async()=>({rows:[]}));
+    client.query.mockImplementation(async(sql:string)=>{
+      clientCalls.push(String(sql));
+      if(String(sql).includes("SELECT user_id FROM recovery_tokens"))return {rows:[{user_id:USER_ID}]};
+      if(String(sql).includes("SELECT id FROM users"))return {rows:[{id:USER_ID}]};
+      if(String(sql).includes("FOR UPDATE OF r"))return {rows:[]};
+      return {rows:[]};
+    });
     await expect(acceptRecovery({token:validToken,password:"a-long-enough-password"})).rejects.toMatchObject({code:"INVALID_RECOVERY"});
     expect(clientCalls.some(sql=>sql.includes("UPDATE users SET password_hash"))).toBe(false);
   });

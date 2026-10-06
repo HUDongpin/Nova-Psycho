@@ -4,10 +4,11 @@ import { Model } from "survey-core";
 import { Survey } from "survey-react-ui";
 import "survey-core/i18n/simplified-chinese";
 import "survey-core/i18n/traditional-chinese";
-import { ArrowClockwise, CheckCircle, CircleNotch, Copy, FloppyDisk, ShieldCheck, Warning } from "@phosphor-icons/react";
+import { ArrowClockwise, CheckCircle, CircleNotch, Copy, FloppyDisk, Warning } from "@phosphor-icons/react";
 import { ApiError, errorMessage, type Locale, type SurveyRecord } from "./api";
 import { AssessmentDraftSession } from "./draft-session";
 import { copy } from "./copy";
+import { bindChoiceAutoAdvance, CHOICE_AUTO_ADVANCE_MS, focusFirstUnanswered, questionProgressLabel } from "./survey-navigation";
 import { ErrorNotice, Field } from "./ui";
 
 export default function SurveyRunner({ record, draft, locale, onSubmitted, onReloadLatest, openPrivacy }: {
@@ -26,22 +27,69 @@ export default function SurveyRunner({ record, draft, locale, onSubmitted, onRel
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
   const [reloading, setReloading] = useState(false);
+  const [advancePending, setAdvancePending] = useState(false);
+  const [advanceToken, setAdvanceToken] = useState(0);
+  const advanceSeconds = String(CHOICE_AUTO_ADVANCE_MS / 1000);
+  const submitRef = useRef<() => void>(() => undefined);
   const locked = record.consentRequired || !acknowledged || snapshot.conflict || snapshot.submitting;
 
   const model = useMemo(() => {
     const survey = new Model(record.surveyJson);
     survey.locale = locale === "zh-HK" ? "zh-tw" : "zh-cn";
-    survey.data = draft.getSnapshot().answers;
     survey.showTitle = false;
     survey.showCompleteButton = false;
     survey.showCompletedPage = false;
     survey.showProgressBar = false;
+    survey.showPrevButton = true;
+    survey.showNavigationButtons = true;
+    survey.questionsOnPageMode = "inputPerPage";
+    survey.progressBarType = "questions";
+    survey.pagePrevText = t("previousQuestion");
+    survey.pageNextText = t("nextQuestion");
+    survey.addNavigationItem({
+      id: "nova-submit",
+      title: t("submit"),
+      visibleIndex: 35,
+      disableShrink: true,
+      disableHide: true,
+      css: "nova-submit-item",
+      innerCss: "nova-nav-submit",
+      iconName: "icon-check-24x24",
+      iconSize: 18,
+      // A real tooltip would be read twice with the visible label. This keeps the check icon and drops the extra name.
+      tooltip: "\u200b",
+      action: () => { submitRef.current(); }
+    });
+    survey.data = draft.getSnapshot().answers;
+    focusFirstUnanswered(survey);
+    survey.onGetProgressText.add((_sender, options) => {
+      options.text = questionProgressLabel(survey, locale === "zh-HK");
+    });
     survey.mode = "display";
-    survey.applyTheme({ cssVariables: { "--sjs-primary-backcolor": "#2c6058", "--sjs-primary-backcolor-dark": "#214d47", "--sjs-primary-backcolor-light": "#edf3ef", "--sjs-general-backcolor": "#ffffff", "--sjs-general-backcolor-dim": "#f7f8f4", "--sjs-general-forecolor": "#263e38", "--sjs-general-forecolor-light": "#687c74", "--sjs-font-family": "-apple-system, BlinkMacSystemFont, 'PingFang SC', 'PingFang HK', 'Microsoft YaHei', sans-serif", "--sjs-corner-radius": "12px" } });
+    survey.applyTheme({ cssVariables: { "--sjs-primary-backcolor": "#2c6058", "--sjs-primary-backcolor-dark": "#1e4c45", "--sjs-primary-backcolor-light": "#e6f0ea", "--sjs-general-backcolor": "#ffffff", "--sjs-general-backcolor-dim": "#f4f7f4", "--sjs-general-forecolor": "#243833", "--sjs-general-forecolor-light": "#526860", "--sjs-font-family": "'PingFang SC', 'PingFang HK', 'Hiragino Sans GB', 'Noto Sans SC', 'Microsoft YaHei', sans-serif", "--sjs-corner-radius": "10px", "--sjs-border-default": "#dde6e0", "--sjs-font-questiontitle-size": "16px" } });
     return survey;
   }, [record, locale, draft]);
 
   useEffect(() => { model.mode = locked ? "display" : "edit"; model.showProgressBar = !locked; }, [model, locked]);
+  useEffect(() => {
+    const action = model.navigationBar.getActionById("nova-submit");
+    if (!action) return;
+    action.title = t(snapshot.submitting ? "submitting" : "submit");
+    action.enabled = !locked && !reloading;
+  }, [model, locked, reloading, snapshot.submitting, t]);
+  useEffect(() => {
+    if (locked) {
+      setAdvancePending(false);
+      return;
+    }
+    return bindChoiceAutoAdvance(model, {
+      onPending: () => {
+        setAdvancePending(true);
+        setAdvanceToken(value => value + 1);
+      },
+      onClear: () => setAdvancePending(false)
+    });
+  }, [model, locked]);
   useEffect(() => {
     draft.setAcknowledged(false, locale);
     const change = () => {
@@ -69,12 +117,15 @@ export default function SurveyRunner({ record, draft, locale, onSubmitted, onRel
       if (!(err instanceof ApiError && err.code === "DRAFT_CONFLICT")) setError(errorMessage(err));
     }
   }
+  submitRef.current = () => { void submit(); };
+  const submitError = error || (!snapshot.conflict && snapshot.status === "failed" ? snapshot.error : "") || "";
 
   return <div className="survey-container">
     <div className="survey-assent-panel">
-      <button type="button" className="text-link" onClick={openPrivacy}><ShieldCheck />{t("privacy")}</button>
-      <p className="small-text muted">{t("assentFirst")}</p>
-      <label className="checkbox-label"><input type="checkbox" checked={acknowledged} onChange={event => { const value = event.target.checked; setAcknowledged(value); draft.setAcknowledged(value, locale); }} disabled={snapshot.submitting || snapshot.conflict || record.consentRequired} /><span>{t("acknowledge")}</span></label>
+      <label className="checkbox-label">
+        <input type="checkbox" checked={acknowledged} onChange={event => { const value = event.target.checked; setAcknowledged(value); draft.setAcknowledged(value, locale); }} disabled={snapshot.submitting || snapshot.conflict || record.consentRequired} />
+        <span>{t("acknowledgeLead")}<button type="button" className="assent-link" onClick={event => { event.preventDefault(); openPrivacy(); }}>{t("privacy")}</button>{t("acknowledgeTail")}{t("answerNotice")}</span>
+      </label>
       {record.consentRequired && <div className="warning-note">{t("consentNeeded")}</div>}
     </div>
     {snapshot.conflict && <section className="draft-conflict" role="alert">
@@ -91,10 +142,9 @@ export default function SurveyRunner({ record, draft, locale, onSubmitted, onRel
       <span>{t(snapshot.status === "saved" ? "savedDraft" : snapshot.status === "saving" || snapshot.submitting ? "saving" : snapshot.status === "failed" ? "saveFailed" : "unsaved")}</span>
       {snapshot.status === "failed" && <button className="text-link" onClick={() => void draft.save(locale).catch(() => undefined)}>{t("saveDraft")}</button>}
     </div>
+    <p className="survey-nav-hint" aria-live="polite">{(advancePending ? t("autoAdvanceSoon") : t("autoAdvanceHint")).replaceAll("{seconds}", advanceSeconds)}</p>
+    {advancePending && <div key={advanceToken} className="survey-advance-track" aria-hidden="true"><span style={{ animationDuration: `${CHOICE_AUTO_ADVANCE_MS}ms` }} /></div>}
     <fieldset className="survey-questions" disabled={locked}><Survey model={model} /></fieldset>
-    <div className="survey-submit-panel">
-      {(error || (!snapshot.conflict && snapshot.status === "failed" && snapshot.error)) && <ErrorNotice locale={locale} message={error || snapshot.error!} />}
-      <button className="button primary" disabled={locked || reloading} onClick={() => void submit()}>{snapshot.submitting ? <CircleNotch className="spin" /> : <CheckCircle />}{t(snapshot.submitting ? "submitting" : "submit")}</button>
-    </div>
+    {submitError && <div className="survey-submit-panel"><ErrorNotice locale={locale} message={submitError} /></div>}
   </div>;
 }

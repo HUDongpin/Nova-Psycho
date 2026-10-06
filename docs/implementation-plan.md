@@ -25,6 +25,6 @@ v1 base is locally implemented in this source. The retry/reactivation UI in this
 - Local ports: CN web 3100/database 55431; HK web 3101/database 55432. Bind to 127.0.0.1.
 - Explicit demo mode only; demo sessions and synthetic seeding are disabled in service mode.
 - AI is off without a configured, region-restricted provider; reports still publish from templates. Live AI credentials have not been supplied.
-- Real scales require digital/commercial rights, applicable norms, and complete scoring configuration. Demo data does not prove clinical validity.
+- Real scales need a complete scoring configuration; `rights` / `norm.validated` are operator notes and are not import blockers. Demo data does not prove clinical validity.
 - User updates supersede earlier choices: no per-report human review; both mainland and Hong Kong included.
 - Source resides in `/Volumes/Starship/Nova Psycho Helper`; no public deployment is assumed.

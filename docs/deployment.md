@@ -49,8 +49,8 @@ When AI is not enabled, or credentials are incomplete, the rule template continu
 
 - `NOVA_AI_ENABLED=true`
 - `NOVA_AI_DEPLOYMENT_SCOPE=CN` or `HK`, which must equal the deployment region.
-- `NOVA_AI_BASE_URL`: the HTTPS OpenAI-compatible address of the corresponding regional business workspace, with path `/compatible-mode/v1`.
-- `NOVA_AI_MODEL`, and this business workspace's `NOVA_AI_API_KEY`.
+- `NOVA_AI_BASE_URL`: either the HTTPS OpenAI-compatible address of the corresponding regional business workspace, with path `/compatible-mode/v1`, or `https://api.deepseek.com` when `NOVA_AI_MODEL` is exactly `deepseek-flash`.
+- `NOVA_AI_MODEL`, and this workspace's or DeepSeek account's `NOVA_AI_API_KEY`.
 
 The software restricts the configured address to regional domains and rejects cross-region and global domains, but **a domain name and environment variables alone cannot prove that the business workspace actually used in-region inference nodes**. Before enabling real data, verify that workspace's actual inference scope, storage, logging and data-use terms in the Model Studio console, and retain the deployment configuration as evidence. Per the official documentation, the access/storage region and the service deployment scope are separate settings: https://help.aliyun.com/zh/model-studio/hong-kong-china-global
 
@@ -88,13 +88,20 @@ npm run backup:cn
 npm run backup:hk
 ```
 
-This writes `work/backups/<REGION>/<timestamp>/` (override with `NOVA_BACKUP_DIR`) containing a `pg_dump` custom-format dump, an archive of the private report directory, and a `manifest.json` holding sizes, SHA-256 checksums, per-table row counts, the region and mode, and a **fingerprint** of the report key.
+This writes `work/backups/<REGION>/<timestamp>/` (override with `NOVA_BACKUP_DIR`) containing a `pg_dump` custom-format dump, an archive of the **report files referenced by that dump**, and a `manifest.json` holding sizes, SHA-256 checksums, per-table row counts taken from the same snapshot, the region and mode, and a **fingerprint** of the report key.
+
+Consistency guarantees:
+
+- The backup takes an exclusive PostgreSQL advisory session lock (`807001, 1`) before opening a `REPEATABLE READ READ ONLY` transaction, then exports that snapshot with `pg_export_snapshot()` and passes it to `pg_dump --snapshot`. Manifest row counts and `reports.pdf_keys` are read from the same transaction, which stays open through dump and file copy.
+- Worker deletion, orphan cleanup and failed-render cleanup all take the matching shared transaction lock inside `removePrivatePdf`. They wait until the backup has copied the referenced files, then resume. Report generation itself is not locked.
+- The archive contains exactly those referenced files, not whatever happens to sit in the live report directory. A missing referenced file fails the backup rather than recording success. Stray or later-written files are left on disk; unpublished jobs can regenerate after restore, and deletion of an already-absent file stays idempotent.
+- The exclusive lock is acquired with `lock_timeout = 60s`. If a deletion or another backup still holds it after that, this backup fails instead of claiming a consistent copy. Expect deletions to pause for the duration of dump-plus-copy, typically seconds, longer on a large region.
 
 The report key itself is never included. The fingerprint exists so that a restore can detect a mismatched key, which would otherwise produce silently unreadable PDFs.
 
 The dump contains answer and snapshot data in plaintext. Set `NOVA_BACKUP_KEY` (64 hex characters) to encrypt both archives with AES-256-GCM; without it the command warns loudly and protection rests entirely on the storage medium. Files are written `0600` inside a `0700` directory. The database password is passed through the environment rather than as a command argument, so it does not appear in the process table.
 
-A backup is refused if `pg_restore --list` reports no table data, so an empty or failed dump is never recorded as a valid backup.
+A backup is refused if `pg_restore --list` reports no table data, so an empty or failed dump is never recorded as a valid backup. Private staging directories and plaintext dumps are removed if encryption or a later step fails.
 
 ### Restoring
 
@@ -120,10 +127,10 @@ The restore refuses to proceed when any of the following holds. Each refusal is 
 - the target database already contains tables in the `public` schema
 - the target report directory is not empty
 
-After restoring it verifies the region, the mode, every per-table row count and the report file count against the manifest, and exits non-zero if any check fails. Stop the report worker before restoring and start it afterwards: it is also the service that completes physical deletion. Switch service traffic only after that verification.
+After restoring it verifies the region, the mode, every known per-table row count, the report file count, and **each `reports.pdf_keys` filename against the restored directory**. A matching total file count is not enough: a missing referenced PDF fails the drill. Manifest table names are matched against an allowlist; unknown names are not interpolated into SQL. Stop the report worker before restoring and start it afterwards: it is also the service that completes physical deletion. Switch service traffic only after that verification.
 
 A restore drill was run against the local CN environment on 2026-09-15. Seventeen tables and twelve report files were restored into a throwaway database; every row count matched the manifest, and all twelve restored report files decrypted back to valid PDFs with the report key. The live database was not modified, and the drill database was dropped afterwards.
 
 ## External inputs required for production
 
-Code, partial tests and local runs are no substitute for: professional instruments and standard worked examples, electronic and commercial licensing, mainland/Hong Kong applicability evidence, real domains and cloud environments, the institution's information notice and service-responsibility arrangements, and real region-restricted inference credentials and acceptance. The v1 base capabilities are implemented in this source; the retry/reactivation interface in this batch passed central tests and local browser verification on 2026-09-15 (see `docs/grok-batch-20260915.md`). Professional instruments, licensing, cloud residency, Bailian regional inference and device acceptance are not yet complete, and the current source state must not be written up as having passed them.
+Code, partial tests and local runs are no substitute for: professional instruments and standard worked examples, operator-managed acquisition of those instruments, real domains and cloud environments, the institution's information notice and service-responsibility arrangements, and real region-restricted inference credentials and acceptance. The importer does not treat `rights` / `norm.validated` as hard blockers. The v1 base capabilities are implemented in this source; the retry/reactivation interface in this batch passed central tests and local browser verification on 2026-09-15 (see `docs/grok-batch-20260915.md`). Professional instruments, cloud residency, Bailian regional inference and device acceptance are not yet complete, and the current source state must not be written up as having passed them.

@@ -23,24 +23,27 @@ export async function createRecovery(actor: Actor, userId: string) {
   requireRole(actor.role, ["admin"]);
   validateId(userId);
 
-  const users = await query<{ id: string; name: string; role: Role; disabled: boolean }>(
-    "SELECT id,name,role,disabled FROM users WHERE id=$1 AND region=$2",
-    [userId, actor.region]
-  );
-  const user = users[0];
-  if (!user) throw new HttpError(404, "未找到该账号。", "NOT_FOUND");
-  if (user.disabled) throw new HttpError(409, "该账号已停用，请先恢复账号。", "ACCOUNT_DISABLED");
-
   const token = randomBytes(32).toString("hex");
   const expiresAt = new Date(Date.now() + RECOVERY_MINUTES * 60000);
 
-  await transaction(async client => {
+  const user = await transaction(async client => {
+    // Serialize on the account first. Two issuers sharing this row must not both
+    // leave an outstanding token, and acceptance uses the same users-then-token order.
+    const users = await client.query<{ id: string; name: string; role: Role; disabled: boolean }>(
+      "SELECT id,name,role,disabled FROM users WHERE id=$1 AND region=$2 FOR UPDATE",
+      [userId, actor.region]
+    );
+    const found = users.rows[0];
+    if (!found) throw new HttpError(404, "未找到该账号。", "NOT_FOUND");
+    if (found.disabled) throw new HttpError(409, "该账号已停用，请先恢复账号。", "ACCOUNT_DISABLED");
+
     // Issuing a new link retires any earlier outstanding one for the same account.
     await client.query("UPDATE recovery_tokens SET used_at=now() WHERE user_id=$1 AND used_at IS NULL", [userId]);
     await client.query(
       "INSERT INTO recovery_tokens(token_hash,user_id,region,expires_at,created_by) VALUES($1,$2,$3,$4,$5)",
       [hashToken(token), userId, actor.region, expiresAt, actor.id]
     );
+    return found;
   });
 
   await audit(actor, "user.recovery_issued", userId);
@@ -69,6 +72,12 @@ export async function acceptRecovery(input: unknown): Promise<{ ok: true }> {
   await transaction(async client => {
     const candidate = await client.query("SELECT user_id FROM recovery_tokens WHERE token_hash=$1", [tokenHash]);
     if (!candidate.rows[0]) throw new HttpError(404, "链接无效或已过期。", "INVALID_RECOVERY");
+    // Users before tokens, matching issuance, so concurrent issue/accept cannot deadlock.
+    const userLock = await client.query(
+      "SELECT id FROM users WHERE id=$1 AND region=$2 AND NOT disabled FOR UPDATE",
+      [candidate.rows[0].user_id, getConfig().region]
+    );
+    if (!userLock.rows[0]) throw new HttpError(404, "链接无效或已过期。", "INVALID_RECOVERY");
     // Lock the token row so two simultaneous submissions cannot both succeed.
     const locked = await client.query(
       `SELECT r.user_id FROM recovery_tokens r JOIN users u ON u.id=r.user_id
@@ -80,7 +89,8 @@ export async function acceptRecovery(input: unknown): Promise<{ ok: true }> {
     if (!row) throw new HttpError(404, "链接无效或已过期。", "INVALID_RECOVERY");
 
     await client.query("UPDATE users SET password_hash=$1 WHERE id=$2", [passwordHash, row.user_id]);
-    await client.query("UPDATE recovery_tokens SET used_at=now() WHERE token_hash=$1", [tokenHash]);
+    // Consume this link and retire any other outstanding one for the same account.
+    await client.query("UPDATE recovery_tokens SET used_at=now() WHERE user_id=$1 AND used_at IS NULL", [row.user_id]);
     // Changing a password must end every existing session: a recovery is often
     // triggered precisely because someone else may have had access.
     await client.query("DELETE FROM sessions WHERE user_id=$1", [row.user_id]);

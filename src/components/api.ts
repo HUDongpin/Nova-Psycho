@@ -3,16 +3,29 @@ export type Role = "admin" | "staff" | "parent" | "student" | "teacher";
 export type Region = "CN" | "HK";
 export interface User { id: string; name: string; role: Role; region: Region }
 export interface Session { user: User | null; region: Region; mode: "demo" | "service"; demoAccounts: Pick<User, "id" | "name" | "role">[]; siblingUrl: string | null }
-export interface Family { id: string; familyName: string; childName: string; age: number; birthDate: string; grade: string; region: Region; guardianLabel: string; assignedTo: string | null; createdAt: string; consent: boolean; members: { id: string; name: string; role: Role }[] }
+export interface Family { id: string; familyName: string; childName: string; age: number; birthDate: string; grade: string; region: Region; guardianLabel: string; assignedTo: string | null; joinCode?: string | null; createdAt: string; consent: boolean; members: { id: string; name: string; role: Role }[] }
 export type AssessmentStatus = "pending" | "queued" | "published" | "failed";
-export interface Assessment { id: string; familyId: string; childName: string; respondentId: string; respondentName: string; respondentRole: Role; scaleVersionId: string; scaleTitle: string; status: AssessmentStatus; createdAt: string; submittedAt?: string; reportId: string | null; canRespond: boolean }
-export interface Report { id: string; familyId: string; childName: string; title: string; respondentRole: Role; scaleTitle: string; createdAt: string; generationMode: "template" | "ai"; risk: boolean; demo: boolean; dimensions: { key: string; label: string; raw: number | null; max: number; band: string }[]; assessmentId: string; comparison: { available: boolean; previousDate?: string; changes?: { key: string; label: string; delta: number }[]; reason?: string } }
+export interface Assessment { id: string; familyId: string; childName: string; respondentId: string; respondentName: string; respondentRole: Role; scaleVersionId: string; scaleTitle: string; status: AssessmentStatus; phase?: "waiting" | "reporting" | null; createdAt: string; submittedAt?: string; reportId: string | null; canRespond: boolean }
+export interface Report { id: string; familyId: string; childName: string; title: string; respondentRole: Role; scaleTitle: string; combined?: boolean; createdAt: string; generationMode: "template" | "ai"; risk: boolean; demo: boolean; dimensions: { key: string; label: string; raw: number | null; max: number; band: string }[]; assessmentId: string; comparison: { available: boolean; previousDate?: string; changes?: { key: string; label: string; delta: number }[]; reason?: string } }
 export interface Scale { id: string; scaleId: string; version: string; title: string; description: string; demo: boolean; minAge: number; maxAge: number; roles: Role[]; retakeDays: number; source: string; rights: string | { digital: boolean; commercial: boolean; reference: string }; status: "active" | "retired" }
 export interface Goal { id: string; familyId: string; title: string; detail: string; status: "active" | "completed"; createdAt: string }
 export interface Observation { id: string; familyId: string; body: string; createdAt: string; authorName: string }
-export interface Workspace { user: User; region: Region; mode: "demo" | "service"; families: Family[]; assessments: Assessment[]; reports: Report[]; scales: Scale[]; goals: Goal[]; observations: Observation[]; staff: { id: string; name: string }[]; contentVersions: { id: string; kind: string; version: string; createdAt: string }[]; summary: Record<string, number> }
-export interface SurveyRecord { id: string; status: AssessmentStatus; childName: string; scaleTitle: string; demo: boolean; description: string; surveyJson: Record<string, unknown>; draftAnswers: Record<string, number>; draftRevision: number; consentRequired: boolean }
+export interface Workspace { user: User; region: Region; mode: "demo" | "service"; families: Family[]; assessments: Assessment[]; reports: Report[]; scales: Scale[]; goals: Goal[]; observations: Observation[]; staff: { id: string; name: string }[]; contentVersions: { id: string; kind: string; version: string; createdAt: string }[]; alerts: { id: string; familyId: string; childName: string; createdAt: string | null }[]; staffNotes: { familyId: string; label: string; value: string }[]; summary: Record<string, number> }
+export interface SurveyRecord { id: string; status: AssessmentStatus; childName: string; scaleTitle: string; demo: boolean; description: string; surveyJson: Record<string, unknown>; draftAnswers: Record<string, number | number[] | string>; draftRevision: number; consentRequired: boolean }
 export interface Privacy { version: string; title: string; sections: { title: string; body: string }[] }
+/** Report-pipeline status from GET /api/ops/status (admin only). */
+export interface OpsStatus {
+  region: Region;
+  mode: "demo" | "service";
+  checkedAt: string;
+  jobs: { ready: number; running: number; done: number; failed: number };
+  oldestReadySeconds: number | null;
+  expiredLeases: number;
+  worker: { alive: boolean; workerId: string | null; heartbeatAgeSeconds: number | null; uptimeSeconds: number | null; cycles: number | null };
+  warnings: string[];
+}
+/** Unauthenticated liveness probe from GET /api/health. */
+export interface HealthStatus { ok: boolean; region: Region; mode: "demo" | "service" }
 /** Identifies an existing account that an administrator is issuing a recovery link for. */
 export interface RecoveryTarget { memberId: string; memberName: string }
 export class ApiError extends Error { constructor(message: string, public code: string, public status: number) { super(message); this.name = "ApiError"; } }
@@ -31,5 +44,8 @@ export function isStaff(role: Role) { return role === "admin" || role === "staff
 export function isAdult(role: Role) { return isStaff(role) || role === "parent"; }
 export function eligibleScales(scales: Scale[], family: Family | undefined, respondentId: string): Scale[] {
   const member = family?.members.find(person => person.id === respondentId);
-  return family && member ? scales.filter(scale => scale.status === "active" && scale.roles.includes(member.role) && family.age >= scale.minAge && family.age <= scale.maxAge) : [];
+  if (!family || !member) return [];
+  const matching = scales.filter(scale => scale.status === "active" && scale.roles.includes(member.role) && family.age >= scale.minAge && family.age <= scale.maxAge);
+  const official = matching.filter(scale => !scale.demo);
+  return official.length ? official : matching;
 }

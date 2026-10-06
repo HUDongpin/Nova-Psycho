@@ -3,7 +3,7 @@ const l=(cn:string,hk=cn):TextPair=>({"zh-CN":cn,"zh-HK":hk});
 const choices=[l("从不","從不"),l("偶尔","偶爾"),l("有时","有時"),l("经常","經常")].map((label,value)=>({value,label}));
 export const demoScale:ScaleDefinition={
   id:"nova-family-demo",version:"1.0.0",title:l("家庭沟通与日常感受 · 演示","家庭溝通與日常感受 · 示範"),
-  description:l("9 道虚构示例题，用于体验作答、规则计分和自动报告。不是心理健康量表，没有临床常模，不用于判断孩子的心理健康状态。","9 道虛構示例題，用於體驗作答、規則計分和自動報告。不是心理健康量表，沒有臨床常模，不用於判斷孩子的心理健康狀態。"),
+  description:l("演示作答。","示範作答。"),
   demo:true,source:"Nova 原创流程演示；无临床验证",rights:{digital:true,commercial:true,reference:"Nova original demonstration content. Not a validated clinical instrument."},
   minAge:6,maxAge:18,regions:["CN","HK"],roles:["student","parent","teacher"],retakeDays:14,
   norm:{label:l("演示规则，无临床常模","示範規則，沒有臨床常模"),source:"Synthetic workflow demonstration only",regions:["CN","HK"],minAge:6,maxAge:18,validated:false},

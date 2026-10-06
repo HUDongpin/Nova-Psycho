@@ -4,13 +4,26 @@ export type Role = "admin" | "staff" | "parent" | "student" | "teacher";
 export type RespondentRole = "parent" | "student" | "teacher";
 export type TextPair = Record<Locale, string>;
 export const text = (value: TextPair, locale: Locale) => value[locale];
+export type ItemKind = "single" | "multi" | "text";
+export type ItemReport = "omit" | "words" | "situation" | "priorities" | "staff";
+export type StoredAnswer = number | number[] | string;
 export interface ScaleItem {
   id: string;
   label: TextPair;
   observerLabel?: TextPair;
+  kind?: ItemKind;
   choices: { value: number; label: TextPair }[];
   reverse: boolean;
   required: boolean;
+  excludeValues?: number[];
+  maxChoices?: number;
+  showIf?: { itemId: string; anyOf: number[] };
+  page?: string;
+  pageTitle?: TextPair;
+  panel?: TextPair;
+  shuffle?: boolean;
+  gate?: number;
+  report?: ItemReport;
 }
 export interface ScaleBand {
   minimum: number;
@@ -28,6 +41,8 @@ export interface ScaleDimension {
   prorate: boolean;
   higherMeans: "more_support" | "more_strength";
   bands: ScaleBand[];
+  optional?: boolean;
+  domain?: string;
 }
 export interface ScaleDefinition {
   id: string;
@@ -46,6 +61,23 @@ export interface ScaleDefinition {
   items: ScaleItem[];
   dimensions: ScaleDimension[];
   riskRules: { itemId: string; values: number[]; message: TextPair }[];
+  bundle?: string;
+}
+export interface TriadView {
+  role: RespondentRole;
+  label: TextPair;
+  body: TextPair;
+  raw: number | null;
+}
+export interface TriadReport {
+  title: TextPair;
+  sources: { role: RespondentRole; submittedAt: string }[];
+  safety: TextPair[];
+  domains: { key: string; label: TextPair; note: TextPair | null; views: TriadView[] }[];
+  portrait: { heading: TextPair; body: TextPair }[];
+  situations: { role: RespondentRole; prompt: TextPair; choice: TextPair }[];
+  priorities: { role: RespondentRole; prompt: TextPair; choices: TextPair[] }[];
+  words: { role: RespondentRole; prompt: TextPair; value: string }[];
 }
 export interface DimensionScore {
   key: string;
@@ -108,6 +140,7 @@ export interface ReportPayload extends AssessmentSnapshot {
   fallbackReason: string | null;
   aiModel: string | null;
   comparison: Comparison;
+  triad?: TriadReport;
 }
 export interface Comparison {
   available: boolean;

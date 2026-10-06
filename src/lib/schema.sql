@@ -60,6 +60,16 @@ CREATE TABLE IF NOT EXISTS audit_events(id bigserial PRIMARY KEY,region text NOT
 CREATE TABLE IF NOT EXISTS file_deletion_jobs(file_key text PRIMARY KEY,created_at timestamptz NOT NULL DEFAULT now());
 -- One row per region. The report worker refreshes it every few seconds so that
 -- "is the report pipeline actually running?" is answerable without inspecting hosts.
+ALTER TABLE families ADD COLUMN IF NOT EXISTS join_code text;
+CREATE UNIQUE INDEX IF NOT EXISTS families_join_code ON families(join_code) WHERE join_code IS NOT NULL;
+CREATE TABLE IF NOT EXISTS staff_alerts(
+ id uuid PRIMARY KEY,family_id uuid NOT NULL REFERENCES families(id) ON DELETE CASCADE,region text NOT NULL,
+ assessment_id uuid,created_at timestamptz NOT NULL DEFAULT now(),
+ viewed_at timestamptz,viewed_by uuid
+);
+ALTER TABLE staff_alerts ADD COLUMN IF NOT EXISTS viewed_at timestamptz;
+ALTER TABLE staff_alerts ADD COLUMN IF NOT EXISTS viewed_by uuid;
+CREATE UNIQUE INDEX IF NOT EXISTS staff_alerts_assessment ON staff_alerts(assessment_id) WHERE assessment_id IS NOT NULL;
 CREATE TABLE IF NOT EXISTS worker_heartbeats(
  region text PRIMARY KEY CHECK(region IN ('CN','HK')),worker_id text NOT NULL,
  started_at timestamptz NOT NULL DEFAULT now(),heartbeat_at timestamptz NOT NULL DEFAULT now(),cycles bigint NOT NULL DEFAULT 0

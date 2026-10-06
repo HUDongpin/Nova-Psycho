@@ -1,9 +1,13 @@
 import { createHash,createCipheriv,createDecipheriv,randomBytes } from "node:crypto";
 import { createReadStream,createWriteStream } from "node:fs";
-import { appendFile,open,stat,writeFile } from "node:fs/promises";
+import { appendFile,chmod,copyFile,mkdir,mkdtemp,open,readdir,rm,stat,writeFile } from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import path from "node:path";
+import pg from "pg";
+import { getConfig } from "../src/lib/config";
+import { acquireExclusiveReportRetentionLock,assertPrivatePdfKey,privatePdfPath,releaseExclusiveReportRetentionLock } from "../src/lib/report-retention";
 
 // Shared helpers for the backup and restore scripts. Kept out of src/ because this
 // is operational tooling that never runs inside the Next.js application.
@@ -98,6 +102,7 @@ export async function decryptFile(source: string, destination: string, key: Buff
   try {
     await pipeline(createReadStream(source, { start: FRONT_BYTES, end: size - TAG_BYTES - 1 }), decipher, createWriteStream(destination, { mode: 0o600 }));
   } catch (error) {
+    await rm(destination, { force: true });
     // A wrong key surfaces as an authentication failure, not as readable output.
     throw new Error(`Could not decrypt ${source}. The backup key does not match, or the file is damaged. (${(error as Error).message})`);
   }
@@ -118,4 +123,237 @@ export function requireReportKey(): Buffer {
 
 export function timestampSlug(date = new Date()): string {
   return date.toISOString().replace(/[:.]/g, "-").replace("Z", "Z");
+}
+
+export const COUNTED_TABLES = [
+  "users","families","memberships","consents","invitations","scales","content_versions",
+  "assessments","reports","report_jobs","goals","observations","audit_events","file_deletion_jobs"
+] as const;
+export type CountedTable = typeof COUNTED_TABLES[number];
+
+export function isCountedTable(name: string): name is CountedTable {
+  return (COUNTED_TABLES as readonly string[]).includes(name);
+}
+
+export function countedTableSql(table: string): string {
+  if (!isCountedTable(table)) throw new Error(`Unsupported table name: ${table}`);
+  return `SELECT count(*)::int AS n FROM ${table}`;
+}
+
+export function collectReferencedPdfKeys(rows: { pdf_keys: unknown }[]): string[] {
+  const keys = new Set<string>();
+  for (const row of rows) {
+    const value = row.pdf_keys;
+    if (value == null) continue;
+    if (typeof value !== "object" || Array.isArray(value)) throw new Error("reports.pdf_keys must be an object of filenames");
+    for (const entry of Object.values(value as Record<string, unknown>)) {
+      if (typeof entry !== "string") throw new Error("reports.pdf_keys must contain filename strings");
+      keys.add(assertPrivatePdfKey(entry));
+    }
+  }
+  return [...keys].sort();
+}
+
+export async function stageReferencedReports(reportDir: string, stagingDir: string, keys: string[]): Promise<number> {
+  await mkdir(stagingDir, { recursive: true, mode: 0o700 });
+  for (const key of keys) {
+    const source = privatePdfPath(reportDir, key);
+    const destination = privatePdfPath(stagingDir, key);
+    try {
+      await copyFile(source, destination);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new Error(`Referenced report file is missing: ${key}`);
+      throw error;
+    }
+    await chmod(destination, 0o600);
+  }
+  const staged = (await readdir(stagingDir)).filter(name => {
+    try { assertPrivatePdfKey(name); return true; } catch { return false; }
+  });
+  if (staged.length !== keys.length) throw new Error(`Staged ${staged.length} report files, expected ${keys.length}`);
+  return staged.length;
+}
+
+export async function missingRestoredReportKeys(reportDir: string, rows: { pdf_keys: unknown }[]): Promise<string[]> {
+  const missing: string[] = [];
+  for (const key of collectReferencedPdfKeys(rows)) {
+    try {
+      await stat(privatePdfPath(reportDir, key));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") missing.push(key);
+      else throw error;
+    }
+  }
+  return missing;
+}
+
+export interface BackupSnapshotContext {
+  snapshotId: string;
+  counts: Record<CountedTable, number>;
+  pdfKeys: string[];
+}
+
+export async function withConsistentBackupSnapshot<T>(fn: (ctx: BackupSnapshotContext) => Promise<T>): Promise<T> {
+  const config = getConfig();
+  const lockClient = new pg.Client({ connectionString: config.databaseUrl });
+  const snapshotClient = new pg.Client({ connectionString: config.databaseUrl });
+  let lockHeld = false;
+  let snapshotOpen = false;
+  try {
+    await lockClient.connect();
+    try {
+      await acquireExclusiveReportRetentionLock(lockClient);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Could not acquire the report retention lock within 60s. ${message}`);
+    }
+    lockHeld = true;
+
+    await snapshotClient.connect();
+    await snapshotClient.query("SET statement_timeout = 0");
+    await snapshotClient.query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
+    snapshotOpen = true;
+    const exported = await snapshotClient.query<{ snapshot_id: string }>("SELECT pg_export_snapshot() AS snapshot_id");
+    const settings = await snapshotClient.query<{ region: string; mode: string }>("SELECT region, mode FROM deployment_settings WHERE singleton=true");
+    if (settings.rows[0]?.region !== config.region) throw new Error("Database region does not match process region");
+    if (settings.rows[0]?.mode !== config.mode) throw new Error("Database data classification does not match process mode");
+
+    const counts = {} as Record<CountedTable, number>;
+    for (const table of COUNTED_TABLES) {
+      const counted = await snapshotClient.query<{ n: number }>(countedTableSql(table));
+      if (counted.rows[0] == null) throw new Error(`Could not count ${table}`);
+      counts[table] = counted.rows[0].n;
+    }
+    const pdfRows = await snapshotClient.query<{ pdf_keys: unknown }>("SELECT pdf_keys FROM reports");
+    const result = await fn({
+      snapshotId: exported.rows[0].snapshot_id,
+      counts,
+      pdfKeys: collectReferencedPdfKeys(pdfRows.rows)
+    });
+    await snapshotClient.query("COMMIT");
+    snapshotOpen = false;
+    return result;
+  } finally {
+    if (snapshotOpen) {
+      try { await snapshotClient.query("ROLLBACK"); } catch { /* closing */ }
+    }
+    try { await snapshotClient.end(); } catch { /* closed */ }
+    if (lockHeld) {
+      try { await releaseExclusiveReportRetentionLock(lockClient); } catch { /* closing */ }
+    }
+    try { await lockClient.end(); } catch { /* closed */ }
+  }
+}
+
+export interface CreatedBackup {
+  target: string;
+  manifest: BackupManifest;
+}
+
+export async function createExclusiveBackupTarget(target: string): Promise<void> {
+  await mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
+  try {
+    await mkdir(target, { mode: 0o700 });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      throw new Error(`Backup directory already exists: ${target}`);
+    }
+    throw error;
+  }
+}
+
+export async function createRegionalBackup(): Promise<CreatedBackup> {
+  const config = getConfig();
+  const backupKey = backupKeyFromEnv();
+  const reportKey = requireReportKey();
+  const root = path.resolve(process.env.NOVA_BACKUP_DIR ?? "work/backups");
+  const publicAssets = path.resolve("public");
+  if (root === publicAssets || root.startsWith(publicAssets + path.sep)) {
+    throw new Error("Backups must not be written inside public assets");
+  }
+
+  const connection = pgConnection(config.databaseUrl);
+  const { stdout: pgDumpVersion } = await run("pg_dump", ["--version"]);
+  const target = path.join(root, config.region, timestampSlug());
+  let finalized = false;
+  let targetCreated = false;
+
+  try {
+    const dumpPath = path.join(target, "database.dump");
+    const reportArchivePath = path.join(target, "reports.tar.gz");
+    const snapshotResult = await withConsistentBackupSnapshot(async ctx => {
+      await createExclusiveBackupTarget(target);
+      targetCreated = true;
+      console.log(`Backing up ${config.region} (${config.mode}) from ${connection.label}`);
+      console.log(`Destination: ${target}`);
+
+      await run("pg_dump", [...connection.args, "--format=custom", "--no-owner", "--no-acl", `--snapshot=${ctx.snapshotId}`, "--file", dumpPath], { env: connection.env });
+      await chmod(dumpPath, 0o600);
+
+      const { stdout: dumpContents } = await run("pg_restore", ["--list", dumpPath]);
+      const archivedTables = (dumpContents.match(/TABLE DATA/g) ?? []).length;
+      if (archivedTables === 0) throw new Error("The dump contains no table data; refusing to record a backup that would restore nothing");
+
+      const stagingDir = await mkdtemp(path.join(target, ".staging-"));
+      try {
+        const fileCount = await stageReferencedReports(config.reportDir, stagingDir, ctx.pdfKeys);
+        await run("tar", ["-czf", reportArchivePath, "-C", stagingDir, "."]);
+        await chmod(reportArchivePath, 0o600);
+        return { counts: ctx.counts, fileCount, archivedTables };
+      } finally {
+        await rm(stagingDir, { recursive: true, force: true });
+      }
+    });
+
+    let databaseFile = "database.dump";
+    let reportsFile = "reports.tar.gz";
+    if (backupKey) {
+      databaseFile = "database.dump.enc";
+      reportsFile = "reports.tar.gz.enc";
+      try {
+        await encryptFile(dumpPath, path.join(target, databaseFile), backupKey);
+        await encryptFile(reportArchivePath, path.join(target, reportsFile), backupKey);
+      } finally {
+        await rm(dumpPath, { force: true });
+        await rm(reportArchivePath, { force: true });
+      }
+    }
+
+    const databaseBytes = (await stat(path.join(target, databaseFile))).size;
+    const reportsBytes = (await stat(path.join(target, reportsFile))).size;
+    const manifest: BackupManifest = {
+      formatVersion: 1,
+      region: config.region,
+      mode: config.mode,
+      createdAt: new Date().toISOString(),
+      encrypted: Boolean(backupKey),
+      reportKeyFingerprint: fingerprintKey(reportKey),
+      database: { file: databaseFile, bytes: databaseBytes, sha256: await sha256File(path.join(target, databaseFile)), tables: snapshotResult.counts },
+      reports: { file: reportsFile, bytes: reportsBytes, sha256: await sha256File(path.join(target, reportsFile)), fileCount: snapshotResult.fileCount },
+      tools: { node: process.version, pgDump: pgDumpVersion.trim() }
+    };
+    await writeFile(path.join(target, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
+    finalized = true;
+
+    console.log("");
+    console.log(`  database    ${databaseFile}  ${databaseBytes} bytes  ${snapshotResult.archivedTables} table(s)`);
+    console.log(`  reports     ${reportsFile}  ${reportsBytes} bytes  ${snapshotResult.fileCount} referenced encrypted file(s)`);
+    console.log(`  encrypted   ${manifest.encrypted ? "yes (AES-256-GCM)" : "NO"}`);
+    console.log(`  key print   ${manifest.reportKeyFingerprint}`);
+    console.log("");
+    console.log(`Rows: ${Object.entries(snapshotResult.counts).map(([table, n]) => `${table}=${n}`).join(" ")}`);
+    if (!manifest.encrypted) {
+      console.log("");
+      console.log("WARNING: NOVA_BACKUP_KEY was not set, so this backup is not encrypted at the file level.");
+      console.log("The database dump contains answer and snapshot data in plaintext. Store it only on");
+      console.log("encrypted, access-controlled media, or set NOVA_BACKUP_KEY and take the backup again.");
+    }
+    console.log("");
+    console.log("The report encryption key is NOT in this backup, by design. Back it up separately:");
+    console.log("without the matching key, every restored PDF is permanently unreadable.");
+    console.log(`Restore with: node scripts/run-region.mjs ${config.region} restore ${target}`);
+    return { target, manifest };
+  } finally {
+    if (!finalized && targetCreated) await rm(target, { recursive: true, force: true });
+  }
 }

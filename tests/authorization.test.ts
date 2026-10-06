@@ -19,7 +19,7 @@ describe("family scope by role",()=>{
   });
   it("scopes staff to the families assigned to them",()=>{
     const scope=familyScope(actor("staff"));
-    expect(scope.sql).toBe("f.region=$1 AND f.assigned_to=$2");
+    expect(scope.sql).toBe("f.region=$1 AND (f.assigned_to=$2 OR EXISTS(SELECT 1 FROM staff_alerts sa WHERE sa.family_id=f.id AND sa.region=$1))");
     expect(scope.values).toEqual(["CN",actor("staff").id]);
   });
   it.each(["parent","student","teacher"] as const)("scopes a %s through their membership, including the role",role=>{
@@ -36,7 +36,7 @@ describe("family scope by role",()=>{
   });
   it("shifts every placeholder when the caller reserves earlier parameters",()=>{
     expect(familyScope(actor("admin"),2).sql).toBe("f.region=$2");
-    expect(familyScope(actor("staff"),2).sql).toBe("f.region=$2 AND f.assigned_to=$3");
+    expect(familyScope(actor("staff"),2).sql).toBe("f.region=$2 AND (f.assigned_to=$3 OR EXISTS(SELECT 1 FROM staff_alerts sa WHERE sa.family_id=f.id AND sa.region=$2))");
     const parent=familyScope(actor("parent"),2);
     expect(parent.sql).toContain("m.user_id=$3");
     expect(parent.sql).toContain("m.role=$4");

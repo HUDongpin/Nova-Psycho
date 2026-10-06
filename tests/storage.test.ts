@@ -3,7 +3,16 @@ import { mkdtempSync,readFileSync,readdirSync,rmSync,statSync,writeFileSync } fr
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
+
+const lockCalls:string[]=[];
+const lockClient={query:vi.fn(async(sql:string)=>{lockCalls.push(String(sql));return {rows:[]};})};
+vi.mock("../src/lib/db",()=>({
+  query:vi.fn(),
+  transaction:vi.fn(async(fn:(c:unknown)=>Promise<unknown>)=>fn(lockClient))
+}));
+
 import { listPrivatePdfKeys,readPrivatePdf,removePrivatePdf,writePrivatePdf } from "../src/lib/storage";
+import { REPORT_RETENTION_LOCK_CLASS,REPORT_RETENTION_LOCK_ID } from "../src/lib/report-retention";
 
 // The private report store. Two things matter here beyond round-tripping: the key is
 // used to build a filesystem path, so it must not be able to escape the report
@@ -20,6 +29,7 @@ beforeEach(()=>{
   vi.stubEnv("NOVA_PUBLIC_URL","http://127.0.0.1:3100");
   vi.stubEnv("NOVA_REPORT_DIR",dir);
   vi.stubEnv("NOVA_REPORT_KEY",REPORT_KEY);
+  lockCalls.length=0;lockClient.query.mockClear();
 });
 afterEach(()=>{rmSync(dir,{recursive:true,force:true});vi.unstubAllEnvs();});
 
@@ -102,5 +112,15 @@ describe("listing and removal",()=>{
   });
   it("removing a missing report is not an error",async()=>{
     await expect(removePrivatePdf(KEY)).resolves.toBeUndefined();
+  });
+  it("takes a shared advisory transaction lock before unlinking",async()=>{
+    await writePrivatePdf(KEY,Buffer.from("%PDF"));
+    await removePrivatePdf(KEY);
+    expect(lockCalls.some(sql=>sql.includes("pg_advisory_xact_lock_shared"))).toBe(true);
+    expect(lockClient.query).toHaveBeenCalledWith("SELECT pg_advisory_xact_lock_shared($1, $2)",[REPORT_RETENTION_LOCK_CLASS,REPORT_RETENTION_LOCK_ID]);
+  });
+  it("does not take the retention lock for an invalid key",async()=>{
+    await expect(removePrivatePdf("../escaped.pdf.enc")).rejects.toThrow(/Invalid private report key/);
+    expect(lockClient.query).not.toHaveBeenCalled();
   });
 });

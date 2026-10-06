@@ -4,7 +4,15 @@ const key=z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/).refine(v=>!["constructor",
 const localized=z.object({"zh-CN":z.string().trim().min(1).max(4000),"zh-HK":z.string().trim().min(1).max(4000)}).strict();
 const roles=z.enum(["student","parent","teacher"]);
 const regions=z.enum(["CN","HK"]);
-const item=z.object({id:key,label:localized,observerLabel:localized.optional(),choices:z.array(z.object({value:z.number().int().min(-100).max(100),label:localized}).strict()).min(2).max(20),reverse:z.boolean(),required:z.boolean()}).strict();
+const item=z.object({
+  id:key,label:localized,observerLabel:localized.optional(),kind:z.enum(["single","multi","text"]).optional(),
+  choices:z.array(z.object({value:z.number().int().min(-100).max(100),label:localized}).strict()).max(20),
+  reverse:z.boolean(),required:z.boolean(),excludeValues:z.array(z.number().int()).max(10).optional(),
+  maxChoices:z.number().int().min(1).max(20).optional(),
+  showIf:z.object({itemId:key,anyOf:z.array(z.number().int()).min(1).max(20)}).strict().optional(),
+  page:z.string().trim().min(1).max(80).optional(),pageTitle:localized.optional(),panel:localized.optional(),
+  shuffle:z.boolean().optional(),gate:z.number().int().optional(),report:z.enum(["omit","words","situation","priorities","staff"]).optional()
+}).strict();
 const band=z.object({minimum:z.number().finite(),key,label:localized,explanation:localized,adviceIds:z.array(key).max(12)}).strict();
 export const scaleSchema=z.object({
   id:key,version:z.string().regex(/^\d+\.\d+\.\d+$/),title:localized,description:localized,demo:z.boolean(),source:z.string().trim().min(1).max(1000),
@@ -12,26 +20,49 @@ export const scaleSchema=z.object({
   minAge:z.number().int().min(3).max(25),maxAge:z.number().int().min(3).max(25),regions:z.array(regions).min(1).max(2),roles:z.array(roles).min(1).max(3),retakeDays:z.number().int().min(0).max(730),
   norm:z.object({label:localized,source:z.string().trim().min(1).max(1000),regions:z.array(regions).min(1).max(2),minAge:z.number().int().min(3).max(25),maxAge:z.number().int().min(3).max(25),validated:z.boolean()}).strict(),
   items:z.array(item).min(1).max(300),
-  dimensions:z.array(z.object({key,label:localized,items:z.array(key).min(1).max(300),aggregation:z.enum(["sum","mean"]),maxMissing:z.number().int().min(0).max(299),prorate:z.boolean(),higherMeans:z.enum(["more_support","more_strength"]),bands:z.array(band).max(20)}).strict()).min(1).max(40),
-  riskRules:z.array(z.object({itemId:key,values:z.array(z.number().int()).min(1).max(20),message:localized}).strict()).max(30)
+  dimensions:z.array(z.object({key,label:localized,items:z.array(key).min(1).max(300),aggregation:z.enum(["sum","mean"]),maxMissing:z.number().int().min(0).max(299),prorate:z.boolean(),higherMeans:z.enum(["more_support","more_strength"]),bands:z.array(band).max(20),optional:z.boolean().optional(),domain:z.string().regex(/^[a-z][a-z0-9_-]{0,40}$/).optional()}).strict()).min(1).max(40),
+  riskRules:z.array(z.object({itemId:key,values:z.array(z.number().int()).min(1).max(20),message:localized}).strict()).max(30),
+  bundle:z.string().regex(/^[a-z][a-z0-9-]{0,40}$/).optional()
 }).strict().superRefine((s,ctx)=>{
   const fail=(message:string)=>ctx.addIssue({code:"custom",message});
   if(s.minAge>s.maxAge||s.norm.minAge>s.norm.maxAge)fail("Age interval is invalid");
   if(s.norm.minAge>s.minAge||s.norm.maxAge<s.maxAge)fail("Norm age interval must cover the instrument");
   if(s.regions.some(r=>!s.norm.regions.includes(r)))fail("Norm region must cover the instrument");
-  if(!s.demo && (!s.rights.digital||!s.rights.commercial||!s.norm.validated))fail("Service instruments require electronic/commercial permission and verified applicable norms");
   if(new Set(s.items.map(i=>i.id)).size!==s.items.length)fail("Item IDs must be unique");
   if(new Set(s.dimensions.map(d=>d.key)).size!==s.dimensions.length)fail("Dimension IDs must be unique");
-  for(const i of s.items)if(new Set(i.choices.map(c=>c.value)).size!==i.choices.length)fail("Choice values must be unique");
+  for(const i of s.items){
+    if(new Set(i.choices.map(c=>c.value)).size!==i.choices.length)fail("Choice values must be unique");
+    const kind=i.kind??"single";
+    if(kind==="text"){
+      if(i.choices.length||i.reverse||i.excludeValues?.length||i.maxChoices!==undefined||i.gate!==undefined||i.shuffle)fail("Text items only store writing");
+      if(i.report==="situation"||i.report==="priorities")fail("Writing cannot be scored as a situation or checklist");
+    }else{
+      if(i.choices.length<2)fail("Choice items need at least two options");
+      if(i.excludeValues?.some(v=>!i.choices.some(c=>c.value===v)))fail("Excluded values must be choices");
+      if(i.gate!==undefined&&!i.choices.some(c=>c.value===i.gate))fail("Gate must be a choice");
+      if(kind==="single"&&i.maxChoices!==undefined)fail("Single items do not limit multiple selections");
+      if(kind==="multi"&&(i.reverse||i.gate!==undefined))fail("Multiple selection is not reverse scored and cannot be an entry gate");
+      if(i.report==="words"||i.report==="staff")fail("Only writing can be kept as words");
+      if(i.report==="situation"&&kind!=="single")fail("Situations are single choices");
+      if(i.report==="priorities"&&kind!=="multi")fail("Priorities are multiple choices");
+    }
+  }
   const items=new Map(s.items.map(i=>[i.id,i]));
+  for(const i of s.items)if(i.showIf){
+    if(i.showIf.itemId===i.id)fail("Item cannot depend on itself");
+    const target=items.get(i.showIf.itemId);
+    if(!target||(target.kind??"single")==="text")fail("Visibility refers to an unknown item");
+    if(target&&i.showIf.anyOf.some(v=>!target.choices.some(c=>c.value===v)))fail("Visibility refers to an unknown response");
+  }
   for(const d of s.dimensions){
     if(d.items.some(id=>!items.has(id)))fail("Dimension refers to an unknown item");
+    if(d.items.some(id=>{const item=items.get(id);return item?.kind==="multi"||item?.kind==="text";}))fail("Only single-choice items can be scored");
     if(new Set(d.items).size!==d.items.length)fail("Dimension contains duplicate items");
     if(d.maxMissing>=d.items.length)fail("Every dimension must require at least one answer");
     if(d.aggregation==="mean"&&d.prorate)fail("Mean aggregation does not require prorating");
     if(new Set(d.bands.map(b=>b.minimum)).size!==d.bands.length)fail("Band boundaries must be unique");
     if(new Set(d.bands.map(b=>b.key)).size!==d.bands.length)fail("Band IDs must be unique");
-    const ranges=d.items.map(id=>items.get(id)).filter(Boolean).map(i=>[Math.min(...i!.choices.map(c=>c.value)),Math.max(...i!.choices.map(c=>c.value))]);
+    const ranges=d.items.map(id=>items.get(id)).filter(Boolean).map(i=>{const usable=i!.choices.filter(c=>!i!.excludeValues?.includes(c.value));return [Math.min(...usable.map(c=>c.value)),Math.max(...usable.map(c=>c.value))];});
     const minimum=ranges.reduce((n,r)=>n+r[0],0)/(d.aggregation==="mean"?ranges.length:1);
     const maximum=ranges.reduce((n,r)=>n+r[1],0)/(d.aggregation==="mean"?ranges.length:1);
     if(d.bands.length && (Math.min(...d.bands.map(b=>b.minimum))!==minimum || d.bands.some(b=>b.minimum<minimum||b.minimum>maximum)))fail("Bands must start at the minimum score and remain in range");

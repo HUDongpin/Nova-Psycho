@@ -1,6 +1,6 @@
 import { api, ApiError, errorMessage, type Locale, type SurveyRecord } from "./api";
 
-type Answers = Record<string, number>;
+type Answers = Record<string, number | number[] | string>;
 export type DraftStatus = "saved" | "unsaved" | "saving" | "failed" | "conflict" | "submitting";
 export interface DraftSnapshot {
   status: DraftStatus;
@@ -12,8 +12,8 @@ export interface DraftSnapshot {
   error: string | null;
 }
 const sameAnswers = (left: Answers, right: Answers) => {
-  const keys = Object.keys(left);
-  return keys.length === Object.keys(right).length && keys.every(key => left[key] === right[key]);
+  const keys = new Set([...Object.keys(left), ...Object.keys(right)]);
+  return [...keys].every(key => JSON.stringify(left[key]) === JSON.stringify(right[key]));
 };
 
 /** One controller survives all language remounts of an open assessment. */

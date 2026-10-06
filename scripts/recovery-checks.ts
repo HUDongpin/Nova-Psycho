@@ -107,6 +107,65 @@ try{
     const actions=await query<{action:string}>("SELECT DISTINCT action FROM audit_events WHERE action LIKE 'user.recovery%'",[]);
     assert.deepEqual(actions.map(row=>row.action).sort(),["user.recovery_completed","user.recovery_issued"]);
   });
+
+  const outstandingOf=async(userId:string)=>query<{n:number}>("SELECT count(*)::int AS n FROM recovery_tokens WHERE user_id=$1 AND used_at IS NULL",[userId]);
+
+  await check("concurrent issuance leaves a single outstanding link",async()=>{
+    const [first,second]=await Promise.all([createRecovery(admin,student.id),createRecovery(admin,student.id)]);
+    const outstanding=await query<{token_hash:string}>("SELECT token_hash FROM recovery_tokens WHERE user_id=$1 AND used_at IS NULL",[student.id]);
+    assert.equal(outstanding.length,1);
+    const tokens=[tokenOf(first.url),tokenOf(second.url)];
+    const live=tokens.filter(value=>hashToken(value)===outstanding[0].token_hash);
+    assert.equal(live.length,1);
+    await recoveryInfo(live[0]);
+    const retired=tokens.find(value=>hashToken(value)!==outstanding[0].token_hash);
+    assert.ok(retired);
+    await assert.rejects(()=>recoveryInfo(retired),(e:unknown)=>(e as {code?:string}).code==="INVALID_RECOVERY");
+  });
+
+  await check("completing recovery retires every outstanding link for the account",async()=>{
+    const issued=await createRecovery(admin,student.id);
+    const extra=randomBytes(32).toString("hex");
+    await query("INSERT INTO recovery_tokens(token_hash,user_id,region,expires_at,created_by) VALUES($1,$2,$3,now()+interval '1 hour',$4)",[hashToken(extra),student.id,original.region,admin.id]);
+    assert.equal((await outstandingOf(student.id))[0].n,2);
+    await query("INSERT INTO sessions(token_hash,user_id,region,expires_at) VALUES($1,$2,$3,now()+interval '1 hour')",[hashToken("b".repeat(96)),student.id,original.region]);
+    await acceptRecovery({token:tokenOf(issued.url),password:"student-horse-battery-staple"});
+    assert.equal((await outstandingOf(student.id))[0].n,0);
+    await assert.rejects(()=>recoveryInfo(extra),(e:unknown)=>(e as {code?:string}).code==="INVALID_RECOVERY");
+    assert.equal((await query<{n:number}>("SELECT count(*)::int AS n FROM sessions WHERE user_id=$1",[student.id]))[0].n,0);
+  });
+
+  await check("simultaneous consume and supersession leave at most one live link",async()=>{
+    const issued=await createRecovery(admin,student.id);
+    await query("INSERT INTO sessions(token_hash,user_id,region,expires_at) VALUES($1,$2,$3,now()+interval '1 hour')",[hashToken("c".repeat(96)),student.id,original.region]);
+    const [consumed,superseded]=await Promise.allSettled([
+      acceptRecovery({token:tokenOf(issued.url),password:"student-second-password-ok"}),
+      createRecovery(admin,student.id)
+    ]);
+    const live=(await outstandingOf(student.id))[0].n;
+    assert.ok(live<=1);
+    if(consumed.status==="fulfilled"){
+      assert.equal((await query<{n:number}>("SELECT count(*)::int AS n FROM sessions WHERE user_id=$1",[student.id]))[0].n,0);
+    }else{
+      assert.equal(superseded.status,"fulfilled");
+      assert.equal(live,1);
+      await recoveryInfo(tokenOf((superseded as PromiseFulfilledResult<{url:string}>).value.url));
+    }
+  });
+
+  await check("concurrent consumes of two outstanding links succeed only once",async()=>{
+    const first=await createRecovery(admin,student.id);
+    const secondToken=randomBytes(32).toString("hex");
+    await query("INSERT INTO recovery_tokens(token_hash,user_id,region,expires_at,created_by) VALUES($1,$2,$3,now()+interval '1 hour',$4)",[hashToken(secondToken),student.id,original.region,admin.id]);
+    assert.equal((await outstandingOf(student.id))[0].n,2);
+    const results=await Promise.allSettled([
+      acceptRecovery({token:tokenOf(first.url),password:"student-third-password-ok"}),
+      acceptRecovery({token:secondToken,password:"student-fourth-password-ok"})
+    ]);
+    assert.equal(results.filter(result=>result.status==="fulfilled").length,1);
+    assert.equal(results.filter(result=>result.status==="rejected").length,1);
+    assert.equal((await outstandingOf(student.id))[0].n,0);
+  });
 }finally{
   await closeDatabase();process.env.DATABASE_URL=original.databaseUrl;
   if(created)await control.query(`DROP DATABASE "${database}"`);

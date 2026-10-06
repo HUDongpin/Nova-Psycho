@@ -50,7 +50,7 @@ For restart instructions see the root `README.md`; for the production content fo
 
 ## Still required for a service
 
-1. Provide the source text of the intended professional instrument, in simplified and traditional versions, with electronic and commercial licensing, age and region evidence, complete scoring rules and manual worked examples. Complex scoring that the current engine does not support requires new dedicated rules.
+1. Provide the source text of the intended professional instrument, in simplified and traditional versions, with complete scoring rules and manual worked examples. The importer records optional `rights` / `norm.validated` notes but does not block on them. Complex scoring that the current engine does not support requires new dedicated rules.
 2. Prepare domains, HTTPS, databases, private storage, backups and access environments separately in mainland China and Hong Kong, and complete real regional deployment acceptance.
 3. If enabling AI, provide the Bailian configuration for the corresponding regional business workspace, verify the actual inference scope, and validate the permissions and data scope of real calls.
 4. Confirm the institution's formal information notice and service-responsibility arrangements, and verify complete answering, login and report download on target phones and inside WeChat.

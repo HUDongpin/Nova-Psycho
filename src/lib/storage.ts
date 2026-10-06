@@ -1,10 +1,10 @@
 import { createCipheriv,createDecipheriv,randomBytes } from "node:crypto";
 import fs from "node:fs/promises";
-import path from "node:path";
 import { getConfig } from "./config";
+import { transaction } from "./db";
+import { acquireSharedReportRetentionLock,PRIVATE_PDF_KEY_PATTERN,privatePdfPath } from "./report-retention";
 function location(key:string):string{
-  if(!/^[0-9a-f-]{36}\.[0-9a-f-]{36}\.zh-(CN|HK)\.pdf\.enc$/.test(key))throw new Error("Invalid private report key");
-  return path.join(getConfig().reportDir,key);
+  return privatePdfPath(getConfig().reportDir,key);
 }
 export async function writePrivatePdf(key:string,pdf:Buffer):Promise<void>{
   const config=getConfig();await fs.mkdir(config.reportDir,{recursive:true,mode:0o700});
@@ -19,7 +19,13 @@ export async function readPrivatePdf(key:string):Promise<Buffer>{
   if(file.subarray(0,5).toString()!=="NOVA1")throw new Error("Invalid encrypted report");
   const decipher=createDecipheriv("aes-256-gcm",getConfig().reportKey,file.subarray(5,17));decipher.setAuthTag(file.subarray(17,33));return Buffer.concat([decipher.update(file.subarray(33)),decipher.final()]);
 }
-export async function removePrivatePdf(key:string):Promise<void>{await fs.rm(location(key),{force:true});}
+export async function removePrivatePdf(key:string):Promise<void>{
+  const dest=location(key);
+  await transaction(async client=>{
+    await acquireSharedReportRetentionLock(client);
+    await fs.rm(dest,{force:true});
+  });
+}
 export async function listPrivatePdfKeys():Promise<string[]>{
-  try{return (await fs.readdir(getConfig().reportDir)).filter(k=>/^[0-9a-f-]{36}\.[0-9a-f-]{36}\.zh-(CN|HK)\.pdf\.enc$/.test(k));}catch(e){if((e as NodeJS.ErrnoException).code==="ENOENT")return [];throw e;}
+  try{return (await fs.readdir(getConfig().reportDir)).filter(k=>PRIVATE_PDF_KEY_PATTERN.test(k));}catch(e){if((e as NodeJS.ErrnoException).code==="ENOENT")return [];throw e;}
 }

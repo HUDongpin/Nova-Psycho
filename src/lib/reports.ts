@@ -5,7 +5,8 @@ import { query } from "./db";
 import { HttpError,requireRole,validateId } from "./http";
 export function reportSummary(row:Record<string,unknown>,locale:Locale){
   const p=row.payload as ReportPayload;
-  return {id:row.id,familyId:row.family_id,childName:p.childName,title:text(p.template.content.title,locale),respondentRole:p.score.respondentRole,scaleTitle:text(p.scale.title,locale),createdAt:iso(row.created_at as Date),generationMode:p.generationMode,risk:p.score.risk,demo:p.score.demo,
+  const combined=Boolean(p.triad);
+  return {id:row.id,familyId:row.family_id,childName:p.childName,title:combined?text(p.triad!.title,locale):text(p.template.content.title,locale),respondentRole:p.score.respondentRole,scaleTitle:combined?(locale==="zh-HK"?"孩子、家長與教師":"孩子、家长与教师"):text(p.scale.title,locale),combined,createdAt:iso(row.created_at as Date),generationMode:p.generationMode,risk:combined?p.triad!.safety.length>0||p.score.risk:p.score.risk,demo:p.score.demo,
     dimensions:p.score.dimensions.map(d=>({key:d.key,label:text(d.label,locale),raw:d.raw,max:d.max,band:d.band?text(d.band.label,locale):locale==="zh-HK"?"資料不足":"资料不足"})),
     assessmentId:row.assessment_id,comparison:{...p.comparison,changes:p.comparison.changes?.map(c=>({...c,label:text(c.label,locale)}))}};
 }

@@ -4,7 +4,9 @@
 
 An assessment, automatic-reporting and ongoing-support workspace for K–12 families in mainland China and Hong Kong.
 
-**Project directory: `/Volumes/Starship/Nova Psycho Helper`.** Questionnaires use the MIT-licensed SurveyJS Form Library; Nova independently implements family management, rule-based scoring, automatic publication, private PDFs and retest comparison. LimeSurvey is retained as an option for a future full survey platform.
+**Project directory: `/Volumes/Mars/Nova Psycho Helper`.** Questionnaires use the MIT-licensed SurveyJS Form Library; Nova independently implements family management, rule-based scoring, automatic publication, private PDFs and retest comparison. LimeSurvey is retained as an option for a future full survey platform.
+
+On 2026-10-03 (Asia/Hong_Kong), the user designated the Mars copy as the working project after copying it from Starship. Use the Mars directory for subsequent work; Starship paths in older records are historical references.
 
 ## What works today
 
@@ -28,7 +30,7 @@ An assessment, automatic-reporting and ongoing-support workspace for K–12 fami
 Requires Node.js 24, npm and Docker. On macOS the report process uses Google Chrome directly; other environments can install Playwright Chromium, or point `NOVA_CHROMIUM_EXECUTABLE` at a supported Chromium build.
 
 ```sh
-cd '/Volumes/Starship/Nova Psycho Helper'
+cd '/Volumes/Mars/Nova Psycho Helper'
 npm ci
 npm run bootstrap:local
 npm run setup:cn
@@ -65,7 +67,7 @@ Report PDFs are stored server-side encrypted with AES-256-GCM. Role, family and 
 
 An administrator first creates the initial advice library and report template under "Report content", then imports full instrument definitions under "Instrument library". Downloading the example JSON shows the format; see `docs/scale-intake.md` for detail.
 
-Any instrument taken live must have applicable electronic / commercial usage rights, age and region evidence, a scoring specification, and an interpretive basis. The current engine supports discrete numeric options, reverse items, sum / mean aggregation, explicit missing-data rules, and raw-score threshold interpretation; it does not support arbitrary code or SQL scoring expressions. Instruments needing additional standard-score conversion or complex algorithms require new deterministic rules and standard worked examples first — they must not be approximated with a similar rule.
+Scale JSON still carries `rights` and `norm.validated` fields for operator notes, but the importer does not block on those flags. Age/region/role gates and a complete scoring specification remain required structurally. The current engine supports discrete numeric options, reverse items, sum / mean aggregation, explicit missing-data rules, and raw-score threshold interpretation; it does not support arbitrary code or SQL scoring expressions. Instruments needing additional standard-score conversion or complex algorithms require new deterministic rules and standard worked examples first — they must not be approximated with a similar rule. Clinical and licensing responsibility for imported instruments stays with the operator.
 
 ## Verification and deployment
 

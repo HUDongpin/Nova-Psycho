@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
-import type { AssessmentSnapshot,Locale,ReportPayload } from "../domain/types";
+import type { AssessmentSnapshot,Locale,ReportPayload,StoredAnswer } from "../domain/types";
 import { selectNarrative } from "../domain/narrative";
+import { composeTriad,TRIAD_BUNDLE } from "../domain/triad-report";
 import { compareResults } from "../domain/scoring";
 import { reportHtml } from "../domain/report-html";
 import { getConfig } from "./config";
@@ -43,11 +44,22 @@ export async function processOneJob():Promise<boolean>{
     const assessment=rows[0];if(!assessment?.snapshot)throw new Error("Missing assessment snapshot");
     const snapshot=assessment.snapshot as AssessmentSnapshot;
     if(snapshot.scale.demo&&getConfig().mode!=="demo")throw new Error("Demo snapshot rejected in service mode");
-    // Consent may be withdrawn after submission. Never contact AI without current permission too.
-    const consent=await query("SELECT id FROM consents WHERE family_id=$1 AND revoked_at IS NULL AND scopes @> '[\"ai_processing\"]'::jsonb LIMIT 1",[assessment.family_id]);
-    const selection=await selectNarrative({...snapshot,aiConsented:snapshot.aiConsented&&consent.length>0},getConfig().ai);
-    const previous=await query("SELECT snapshot,submitted_at FROM assessments WHERE family_id=$1 AND respondent_id=$2 AND scale_version_id=$3 AND submitted_at<$4 AND snapshot IS NOT NULL ORDER BY submitted_at DESC LIMIT 1",[assessment.family_id,assessment.respondent_id,assessment.scale_version_id,assessment.submitted_at]);
-    const prior=previous[0];const payload:ReportPayload={...snapshot,...selection,comparison:compareResults(snapshot.score,prior?(prior.snapshot as AssessmentSnapshot).score:null,prior?new Date(prior.submitted_at).toISOString():undefined)};
+    let payload:ReportPayload;
+    let publishIds=[assessment.id as string];
+    if(snapshot.scale.bundle===TRIAD_BUNDLE){
+      const siblings=await query("SELECT DISTINCT ON (a.respondent_role) a.id,a.respondent_role,a.answers,a.snapshot,a.submitted_at FROM assessments a JOIN scales s ON s.id=a.scale_version_id WHERE a.family_id=$1 AND a.region=$2 AND a.submitted_at IS NOT NULL AND s.definition->>'bundle'=$3 ORDER BY a.respondent_role,a.submitted_at DESC",[assessment.family_id,getConfig().region,TRIAD_BUNDLE]);
+      if(siblings.length<3)throw new Error("Triad incomplete");
+      const triad=composeTriad(siblings.map(row=>{const stored=row.snapshot as AssessmentSnapshot;return {role:row.respondent_role,scale:stored.scale,answers:row.answers as Record<string,StoredAnswer>,score:stored.score,submittedAt:new Date(row.submitted_at).toISOString()};}));
+      payload={...snapshot,selectedAdviceIds:[],generationMode:"template",fallbackReason:"triad_combined",aiModel:null,comparison:{available:false,reason:"first_assessment"},triad,score:{...snapshot.score,risk:triad.safety.length>0,riskMessages:triad.safety}};
+      publishIds=siblings.map(row=>row.id);
+    }else{
+      // Consent may be withdrawn after submission. Never contact AI without current permission too.
+      const consent=await query("SELECT id FROM consents WHERE family_id=$1 AND revoked_at IS NULL AND scopes @> '[\"ai_processing\"]'::jsonb LIMIT 1",[assessment.family_id]);
+      const selection=await selectNarrative({...snapshot,aiConsented:snapshot.aiConsented&&consent.length>0},getConfig().ai);
+      const previous=await query("SELECT snapshot,submitted_at FROM assessments WHERE family_id=$1 AND respondent_id=$2 AND scale_version_id=$3 AND submitted_at<$4 AND snapshot IS NOT NULL ORDER BY submitted_at DESC LIMIT 1",[assessment.family_id,assessment.respondent_id,assessment.scale_version_id,assessment.submitted_at]);
+      const prior=previous[0];
+      payload={...snapshot,...selection,comparison:compareResults(snapshot.score,prior?(prior.snapshot as AssessmentSnapshot).score:null,prior?new Date(prior.submitted_at).toISOString():undefined)};
+    }
     const htmlDocuments={"zh-CN":reportHtml(payload,"zh-CN"),"zh-HK":reportHtml(payload,"zh-HK")};
     for(const locale of ["zh-CN","zh-HK"] as const){
       const key=`${assessment.id}.${token}.${locale}.pdf.enc`;keys[locale]=key;
@@ -59,7 +71,7 @@ export async function processOneJob():Promise<boolean>{
       const claim=await client.query("SELECT id FROM report_jobs WHERE id=$1 AND claim_token=$2 AND state='running' AND lease_until>now() FOR UPDATE",[job.id,token]);
       if(!claim.rows[0])throw new Error("Report claim expired or family deleted");
       await client.query("INSERT INTO reports(id,assessment_id,family_id,region,payload,pdf_keys,created_at,html_documents) VALUES($1,$1,$2,$3,$4,$5,$6,$7) ON CONFLICT(assessment_id) DO NOTHING",[assessment.id,assessment.family_id,getConfig().region,JSON.stringify(payload),JSON.stringify(keys),assessment.submitted_at,JSON.stringify(htmlDocuments)]);
-      await client.query("UPDATE assessments SET status='published' WHERE id=$1",[assessment.id]);
+      await client.query("UPDATE assessments SET status='published' WHERE id=ANY($1::uuid[])",[publishIds]);
       await client.query("UPDATE report_jobs SET state='done',lease_until=NULL,last_error_code=NULL WHERE id=$1 AND claim_token=$2",[job.id,token]);
       await client.query("INSERT INTO audit_events(region,action,entity_id) VALUES($1,'report.auto_published',$2)",[getConfig().region,assessment.id]);
     });

@@ -1,7 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import pg from "pg";
-import { backupKeyFromEnv, decryptFile, fingerprintKey, pgConnection, requireReportKey, run, sha256File, type BackupManifest } from "./backup-lib";
+import { backupKeyFromEnv, collectReferencedPdfKeys, countedTableSql, fingerprintKey, isCountedTable, missingRestoredReportKeys, pgConnection, requireReportKey, run, sha256File, type BackupManifest } from "./backup-lib";
+import { withDecryptedBackup } from "./restore-lib";
 
 // Restores one regional backup into an ISOLATED environment.
 //
@@ -99,22 +100,11 @@ try {
   await client.end();
 }
 
-// 4. Restore. Decrypt to temporary files when the backup is encrypted.
-const temporaries: string[] = [];
-let dumpToRestore = databasePath;
-let reportsToRestore = reportsPath;
+// 4. Restore. Decrypt into a unique temp directory when the backup is encrypted.
+// Cleanup is armed before the first decrypt so a later failure cannot leave plaintext.
 const backupKey = backupKeyFromEnv();
-if (manifest.encrypted) {
-  if (!backupKey) throw new Error("This backup is encrypted. Set NOVA_BACKUP_KEY to the key used when it was taken.");
-  dumpToRestore = path.join(backupDir, ".restore-database.dump");
-  reportsToRestore = path.join(backupDir, ".restore-reports.tar.gz");
-  temporaries.push(dumpToRestore, reportsToRestore);
-  await decryptFile(databasePath, dumpToRestore, backupKey);
-  await decryptFile(reportsPath, reportsToRestore, backupKey);
-  console.log("  decrypted");
-}
-
-try {
+await withDecryptedBackup(backupDir, databasePath, reportsPath, manifest.encrypted, backupKey, async (dumpToRestore, reportsToRestore) => {
+  if (manifest.encrypted) console.log("  decrypted");
   await run("pg_restore", [...target.args, "--no-owner", "--no-acl", "--exit-on-error", dumpToRestore], { env: target.env });
   console.log("  database restored");
 
@@ -122,9 +112,7 @@ try {
   await run("tar", ["-xzf", reportsToRestore, "-C", path.resolve(targetReportDir)]);
   await fs.chmod(path.resolve(targetReportDir), 0o700);
   console.log("  report files restored");
-} finally {
-  for (const file of temporaries) await fs.rm(file, { force: true });
-}
+});
 
 // 5. Verify the result rather than trusting the exit codes.
 const verify = new pg.Client({ host: target.args[1], port: Number(target.args[3]), user: target.args[5], password: target.env.PGPASSWORD, database: target.args[7] });
@@ -141,11 +129,26 @@ try {
   if (!regionOk || !modeOk) failures += 1;
 
   for (const [table, expected] of Object.entries(manifest.database.tables)) {
-    const result = await verify.query(`SELECT count(*)::int AS n FROM ${table}`);
+    if (!isCountedTable(table)) {
+      failures += 1;
+      console.log(`  FAIL ${table} is not a known backup table`);
+      continue;
+    }
+    const result = await verify.query(countedTableSql(table));
     const actual = result.rows[0].n;
     const ok = actual === expected;
     if (!ok) failures += 1;
     console.log(`  ${ok ? "ok  " : "FAIL"} ${table} ${actual}${ok ? "" : ` expected ${expected}`}`);
+  }
+
+  const pdfRows = await verify.query("SELECT pdf_keys FROM reports");
+  const referenced = collectReferencedPdfKeys(pdfRows.rows);
+  const missing = await missingRestoredReportKeys(path.resolve(targetReportDir), pdfRows.rows);
+  if (missing.length) {
+    failures += missing.length;
+    for (const key of missing) console.log(`  FAIL missing report file ${key}`);
+  } else {
+    console.log(`  ok   ${referenced.length} referenced report file(s) present`);
   }
 } finally {
   await verify.end();

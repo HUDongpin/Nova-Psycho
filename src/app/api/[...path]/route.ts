@@ -9,6 +9,7 @@ import { opsStatus } from "@/lib/ops";
 import { acceptRecovery, createRecovery, recoveryInfo } from "@/lib/recovery";
 import { workspaceFor } from "@/lib/workspace";
 import { acceptInvitation,createFamily,createInvitation,deleteFamily,invitationInfo,recordConsent } from "@/lib/families";
+import { acknowledgeSafetyAlert,joinWithCode,startParentCase } from "@/lib/triad";
 import { assessmentDetail,createAssessment,retryReport,saveDraft,submitAssessment } from "@/lib/assessments";
 import { reportDetail,reportFor } from "@/lib/reports";
 import { readPrivatePdf } from "@/lib/storage";
@@ -46,8 +47,17 @@ async function dispatch(request:Request,context:Context):Promise<Response>{retur
   // create a session: the account holder signs in with the new password afterwards.
   if(method==="GET"&&route==="recovery")return json(await recoveryInfo(request.headers.get("x-recovery-token")??new URL(request.url).searchParams.get("token")));
   if(method==="POST"&&route==="recovery")return json(await acceptRecovery(await body(request)));
+  if(method==="POST"&&route==="triad/parent"){
+    const started=await startParentCase(await body(request),locale);
+    const response=json(started,201);await setSession(response,started.userId);return response;
+  }
+  if(method==="POST"&&route==="triad/join"){
+    const joined=await joinWithCode(await body(request),locale);
+    const response=json(joined,201);await setSession(response,joined.userId);return response;
+  }
   const actor=await requireActor(request);
   if(method==="GET"&&route==="workspace")return json(await workspaceFor(actor,locale));
+  if(method==="POST"&&path[0]==="alerts"&&path.length===3&&path[2]==="viewed")return json(await acknowledgeSafetyAlert(actor,path[1]));
   if(method==="POST"&&route==="families")return json(await createFamily(actor,await body(request)),201);
   if(path[0]==="families"&&path[1]){
     if(method==="POST"&&path.length===3&&path[2]==="consent")return json(await recordConsent(actor,path[1],await body(request)));

@@ -1,6 +1,8 @@
 # Nova Psycho Helper
 
-This is the user-designated project: `/Volumes/Starship/Nova Psycho Helper`.
+This is the user-designated project: `/Volumes/Mars/Nova Psycho Helper`.
+
+On 2026-10-03 (Asia/Hong_Kong), the user confirmed copying this project from the external drive Starship to the external drive Mars and designated the Mars copy for all subsequent work. Use `/Volumes/Mars/Nova Psycho Helper` as the canonical working directory. Older documents may retain `/Volumes/Starship/Nova Psycho Helper` as a historical path; they do not override this location. The copy's full integrity and runtime readiness have not been revalidated solely by this path confirmation.
 
 - Primary questionnaire engine: MIT SurveyJS Form Library. Keep LimeSurvey as a future alternative, not a v1 dependency.
 - V1 serves mainland China and Hong Kong with separate data regions and simplified/traditional Chinese.

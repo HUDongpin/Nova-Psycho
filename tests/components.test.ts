@@ -86,6 +86,21 @@ describe("eligibleScales",()=>{
     const teacherFamily=family({members:[{id:"u2",name:"T",role:"teacher"}]});
     expect(eligibleScales(all,teacherFamily,"u2").map(s=>s.id)).toEqual(["teacher_only"]);
   });
+  it("hides the 9-item demo instrument when an official questionnaire matches the same person",()=>{
+    const listed=[
+      scale({id:"demo9",roles:["student","parent","teacher"]}),
+      scale({id:"parent",demo:false,roles:["parent"],minAge:8,maxAge:17}),
+      scale({id:"child",demo:false,roles:["student"],minAge:8,maxAge:17}),
+      scale({id:"teacher",demo:false,roles:["teacher"],minAge:8,maxAge:17})
+    ];
+    const parentFamily=family({age:12,members:[{id:"p1",name:"P",role:"parent"}]});
+    expect(eligibleScales(listed,parentFamily,"p1").map(item=>item.id)).toEqual(["parent"]);
+    expect(eligibleScales(listed,family(),"u1").map(item=>item.id)).toEqual(["child"]);
+  });
+  it("keeps the demo instrument when no official questionnaire fits",()=>{
+    const listed=[scale({id:"demo9"}),scale({id:"official",demo:false,minAge:8,maxAge:17})];
+    expect(eligibleScales(listed,family({age:6}),"u1").map(item=>item.id)).toEqual(["demo9"]);
+  });
 });
 
 describe("bilingual copy",()=>{
