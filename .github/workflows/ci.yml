@@ -8,6 +8,8 @@ on:
 
 permissions:
   contents: read
+  # Saving the Playwright browser cache needs this scope on the workflow token.
+  actions: write
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -41,20 +43,59 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      # npm test includes PDF renderer tests. Those skip when Chromium is
-      # unavailable or when NOVA_SKIP_PDF_RENDER=1|true. A skip is not PDF
-      # coverage; CI must not treat skipped PDF tests as evidence that
-      # rendering was verified.
+      # tests/pdf.test.ts launches Playwright Chromium (src/lib/pdf.ts). The
+      # suite skips unless NOVA_CHROMIUM_EXECUTABLE is set, macOS Chrome is
+      # present, or Playwright's browser cache (~/.cache/ms-playwright) exists,
+      # and a failed launch probe skips again. A skip is not coverage. This job
+      # installs Chromium the same way (`npx playwright install --with-deps chromium`)
+      # and fails if any of those tests did not pass. Do not set NOVA_SKIP_PDF_RENDER.
+      # The browser download is cached by Playwright version; OS libraries are
+      # installed on every run because they are not in that cache.
+      - name: Resolve Playwright version
+        id: playwright-version
+        run: echo "version=$(npx playwright --version | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright Chromium
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ steps.playwright-version.outputs.version }}
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
       - name: Unit tests
-        run: npm test
+        run: npm test -- --reporter=default --reporter=github-actions --reporter=json --outputFile=work/ci/vitest-results.json
+
+      - name: Require PDF renderer tests to run
+        run: |
+          node --input-type=module <<'EOF'
+          import { readFileSync } from "node:fs";
+
+          const report = JSON.parse(readFileSync("work/ci/vitest-results.json", "utf8"));
+          const file = report.testResults.find((item) => item.name.endsWith("/tests/pdf.test.ts") || item.name.endsWith("\\tests\\pdf.test.ts"));
+          if (!file) {
+            console.error("tests/pdf.test.ts was not part of the Vitest run.");
+            process.exit(1);
+          }
+          const cases = file.assertionResults ?? [];
+          const passed = cases.filter((item) => item.status === "passed");
+          console.log(`PDF renderer tests: ${passed.length} passed, ${cases.length - passed.length} not passed, ${cases.length} collected.`);
+          for (const item of cases) console.log(`- ${item.status}: ${item.fullName}`);
+          if (passed.length < 6 || passed.length !== cases.length) {
+            console.error("PDF renderer tests must run in CI. A skip is not coverage.");
+            process.exit(1);
+          }
+          EOF
 
       - name: Production build
         run: npm run build
 
 # The integration, database, content and retry checks are deliberately not run
-# here. They require two regional PostgreSQL instances, running web servers and
-# a Chromium build, and they are documented as local-only against explicitly
-# classified demo environments. Run them locally:
+# here. They require two regional PostgreSQL instances and running web servers,
+# and they are documented as local-only against explicitly classified demo
+# environments. The unit PDF renderer tests do run in this job. Run the others
+# locally:
 #   npm run test:integration
 #   node scripts/run-region.mjs CN database-checks
 #   node scripts/run-region.mjs CN content-regressions
