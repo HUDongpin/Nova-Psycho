@@ -27,4 +27,4 @@ v1 base is locally implemented in this source. The retry/reactivation UI in this
 - AI is off without a configured, region-restricted provider; reports still publish from templates. Live AI credentials have not been supplied.
 - Real scales need a complete scoring configuration; `rights` / `norm.validated` are operator notes and are not import blockers. Demo data does not prove clinical validity.
 - User updates supersede earlier choices: no per-report human review; both mainland and Hong Kong included.
-- Source resides in `/Volumes/Starship/Nova Psycho Helper`; no public deployment is assumed.
+- Source resides in `/Volumes/Mars/Nova Psycho Helper`; no public deployment is assumed.

@@ -19,4 +19,4 @@ Survey Creator/PDF Generator/Dashboard have separate commercial licenses; none a
 
 Sources: [SurveyJS licensing](https://surveyjs.io/licensing), [LimeSurvey assessments](https://www.limesurvey.org/manual/Assessments), [Formbricks licensing](https://formbricks.com/docs/self-hosting/advanced/license), [Wzy deployment guide](https://github.com/bonyren/wzy-xl/blob/master/独立部署源代码指南.md).
 
-Latest user choices supersede earlier planning: automatic parent delivery without per-report human review; both mainland China and Hong Kong included; all development in `/Volumes/Starship/Nova Psycho Helper`.
+Latest user choices supersede earlier planning: automatic parent delivery without per-report human review; both mainland China and Hong Kong included; all development in `/Volumes/Mars/Nova Psycho Helper`.
