@@ -1,7 +1,7 @@
 import type { NextConfig } from "next";
 const config: NextConfig = {
   distDir: process.env.NOVA_DIST_DIR ?? (process.env.NOVA_REGION === "HK" ? ".next-hk" : ".next"),
-  output: "standalone",
+  output: process.env.VERCEL === "1" ? undefined : "standalone",
   serverExternalPackages: ["pg", "playwright"],
   poweredByHeader: false,
   agentRules: false,
