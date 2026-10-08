@@ -172,6 +172,13 @@ describe("recording guardian consent",()=>{
 });
 
 describe("deleting a family",()=>{
+  it("uses transactional database cascading instead of leaving a filesystem deletion job",async()=>{
+    vi.stubEnv("NOVA_REPORT_STORAGE","database");
+    await deleteFamily(actor("admin"),FAMILY_ID,{confirmation:"Synthetic child"});
+    expect(clientCalls.some(sql=>sql.includes("DELETE FROM families"))).toBe(true);
+    expect(clientCalls.some(sql=>sql.includes("file_deletion_jobs")||sql.includes("SELECT pdf_keys"))).toBe(false);
+    expect(clientCalls.some(sql=>sql.includes("DELETE FROM sessions"))).toBe(true);
+  });
   it("refuses staff and students",async()=>{
     for(const role of ["staff","student","teacher"] as const){
       await expect(deleteFamily(actor(role),FAMILY_ID,{confirmation:"Synthetic child"})).rejects.toMatchObject({code:"ROLE_DENIED"});

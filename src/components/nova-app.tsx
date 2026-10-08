@@ -7,6 +7,7 @@ import { Brand, Empty, ErrorNotice, Loading, LocaleSwitch, PrivacyModal, useLoca
 import { Login } from "./login";
 import { AssessmentView, ReportView } from "./documents";
 import { AccountDraftStore, type DraftOwner } from "./account-drafts";
+import { hasGeneratingReports, nextReportRefreshDelay } from "./report-refresh";
 import { AssessmentForm, ConsentForm, DeleteFamilyForm, FamilyAssignmentForm, FamilyForm, GoalForm, InvitationForm, ObservationForm, RecoveryForm, RetireScaleForm, ScaleImportForm } from "./forms";
 import { AssessmentList, AuditView, ContentView, Dashboard, FamiliesView, FamilyView, GoalList, OpsView, ReportCards, ScalesView, type OpenForm, type Route } from "./workspace-views";
 function readRoute(): Route { const parts = window.location.hash.replace(/^#\/?/, "").split("/"); return { page: parts[0] || "dashboard", id: parts[1] ? decodeURIComponent(parts[1]) : undefined }; }
@@ -111,20 +112,52 @@ export default function NovaApp() {
   useEffect(() => { void loadSession(); return cancelRequests; }, [loadSession, cancelRequests]);
   useEffect(() => { if (session?.user && draftSessions.state !== "mismatch" && !isAdult(session.user.role) && route.page !== "assessments" && route.page !== "assessment") navigate({ page: "assessments" }); }, [session, route.page, navigate, draftSessions]);
   useEffect(() => { const target = form?.target; if (workspace && isFamilyTarget(target) && !workspace.families.some(family => family.id === target.id)) setForm(null); }, [workspace, form]);
-  const awaitingReport = Boolean(workspace?.assessments.some(item => item.status === "queued"));
-  const userId = session?.user?.id;
+  const generatingReport = hasGeneratingReports(workspace?.assessments ?? []);
+  const refreshOwner = owner ? `${owner.region}:${owner.id}` : null;
+  const reportRefreshWindow = useRef<{ owner: string; startedAt: number; attempts: number } | null>(null);
+  const lastForegroundRefresh = useRef<{ owner: string; at: number } | null>(null);
   useEffect(() => {
-    if (!userId || !awaitingReport || loggingOut) return;
+    if (!refreshOwner) { reportRefreshWindow.current = null; lastForegroundRefresh.current = null; return; }
+    if (loggingOut) return;
+    const currentOwner = refreshOwner;
+    if (!generatingReport) reportRefreshWindow.current = null;
+    else if (reportRefreshWindow.current?.owner !== refreshOwner) reportRefreshWindow.current = { owner: refreshOwner, startedAt: Date.now(), attempts: 0 };
     let stopped = false;
-    let timer: ReturnType<typeof setTimeout>;
-    async function poll() {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const visible = () => document.visibilityState === "visible";
+    const clearTimer = () => { clearTimeout(timer); timer = undefined; };
+    async function readWorkspace() {
       try { await loadWorkspace(); }
       catch (err) { if (!stopped) setError(errorMessage(err)); }
-      finally { if (!stopped) timer = setTimeout(poll, 3500); }
     }
-    timer = setTimeout(poll, 3500);
-    return () => { stopped = true; clearTimeout(timer); };
-  }, [userId, awaitingReport, loggingOut, loadWorkspace]);
+    function schedule() {
+      clearTimer();
+      const budget = reportRefreshWindow.current;
+      if (stopped || !visible() || !generatingReport || !budget || budget.owner !== refreshOwner) return;
+      const delay = nextReportRefreshDelay(budget.startedAt, budget.attempts, Date.now());
+      if (delay === null) return;
+      timer = setTimeout(async () => {
+        timer = undefined;
+        if (stopped || !visible() || reportRefreshWindow.current !== budget) return;
+        budget.attempts++;
+        await readWorkspace();
+        schedule();
+      }, delay);
+    }
+    function refreshOnReturn() {
+      if (stopped || !visible()) return;
+      const now = Date.now(), previous = lastForegroundRefresh.current;
+      if (previous?.owner === refreshOwner && now - previous.at < 1000) return;
+      lastForegroundRefresh.current = { owner: currentOwner, at: now };
+      clearTimer();
+      void readWorkspace().then(schedule);
+    }
+    const visibilityChanged = () => { if (visible()) refreshOnReturn(); else clearTimer(); };
+    document.addEventListener("visibilitychange", visibilityChanged);
+    window.addEventListener("focus", refreshOnReturn);
+    schedule();
+    return () => { stopped = true; clearTimer(); document.removeEventListener("visibilitychange", visibilityChanged); window.removeEventListener("focus", refreshOnReturn); };
+  }, [refreshOwner, generatingReport, loggingOut, loadWorkspace]);
   useEffect(() => { if (!mobileMenu) return; const previousFocus = document.activeElement as HTMLElement | null; const sidebar = document.querySelector<HTMLElement>(".sidebar"); const focusable = () => Array.from(sidebar?.querySelectorAll<HTMLElement>("a[href],button:not([disabled])") || []).filter(element => element.offsetParent !== null); (sidebar?.querySelector<HTMLElement>("nav a[aria-current=page]") || focusable()[0])?.focus({ preventScroll: true }); const close = (event: KeyboardEvent) => { if (event.key === "Escape") setMobileMenu(false); if (event.key === "Tab") { const items = focusable(); const first = items[0]; const last = items.at(-1); if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); } else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); } } }; window.addEventListener("keydown", close); return () => { window.removeEventListener("keydown", close); if (sidebar?.contains(document.activeElement)) previousFocus?.focus({ preventScroll: true }); }; }, [mobileMenu]);
   async function refresh() {
     const pending = loadWorkspace();

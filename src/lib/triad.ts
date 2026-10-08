@@ -98,7 +98,6 @@ export async function startParentCase(input: unknown, locale: "zh-CN" | "zh-HK")
   const data = z.object({ parentName: short, username, password, relationship: z.enum(relationships), childName: short, birthDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), grade: z.enum(grades), accepted: z.literal(true) }).strict().parse(input);
   assertChildAge(data.birthDate);
   await limitLogin(data.username);
-  await ensureTriadInstruments();
   const passwordHash = await hashPassword(data.password);
   const created = await transaction(async client => {
     const scale = await client.query("SELECT id FROM scales WHERE id=$1 AND status='active'", [SCALE_ID.parent]);
@@ -122,7 +121,6 @@ export async function joinWithCode(input: unknown, locale: "zh-CN" | "zh-HK"): P
   const data = z.object({ code: z.string().trim().min(8).max(32), role: z.enum(["student", "teacher"]), name: short, username, password }).strict().parse(input);
   const code = normalizeCode(data.code);
   await limitLogin(data.username);
-  await ensureTriadInstruments();
   const passwordHash = await hashPassword(data.password);
   return transaction(async client => {
     const family = await client.query("SELECT id,birth_date FROM families WHERE join_code=$1 AND region=$2 FOR UPDATE", [code, getConfig().region]);

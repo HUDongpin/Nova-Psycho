@@ -1,87 +1,103 @@
-# Regional deployment and operations
+# Deployment and operations
 
-## Operating boundary
+## Deployment modes
 
-What is verified today is two independent local CN/HK sets of database, application and report directory. Production should deploy the same application image into two environments actually located in mainland China and Hong Kong. Two local ports, or two databases, do not by themselves prove real geographic residency.
+| Environment | Web/API | Reports | Private PDFs |
+| --- | --- | --- | --- |
+| Vercel + Neon | Next.js functions | Vercel Queue, one job per invocation | AES-GCM encrypted `bytea` rows in PostgreSQL |
+| Local or regional Docker | Next.js standalone server | Continuous worker container | Encrypted files in a shared private volume |
 
-Deployment mode is written into the database `deployment_settings`, and the application checks both the region and the `demo/service` classification. A demo database cannot be upgraded to a service database by changing one environment variable; create a new service database and use a verified professional instrument.
+The Vercel path needs no permanent worker, separate PDF bucket, or public PDF URL. Both report languages and the published report commit in one database transaction. Family deletion cascades to the encrypted PDF rows. Authentication, family permissions, region checks, and deterministic scoring remain server-side. Reports publish automatically without per-report human approval; AI can remain disabled.
 
-`deploy/Dockerfile` contains the Next.js application, the report-process runtime dependencies, Chromium and Noto CJK fonts. `deploy/compose.yml` starts the database, migration, web and report processes separately for each region. The database has no host public port; by default the web service listens only on host 127.0.0.1, fronted by that region's HTTPS reverse proxy.
+This document specifies the deployment contract. Local tests, PostgreSQL checks, and builds do not prove that the cloud queue, cron, database, or complete website workflow has passed acceptance.
 
-## Per-region configuration
+## Vercel + Neon configuration
 
-Prepare a permissions-600 environment file outside version control, following the root `.env.example`. Set these separately:
+Use a fresh service database. `deployment_settings` binds the database to `NOVA_REGION` and `NOVA_MODE`; changing an environment variable cannot convert a demo database into a service database. Do not copy local demo accounts, reports, or family records to production.
 
-- `NOVA_MODE=service`, and the correct `NOVA_REGION=CN` or `HK`.
-- A real HTTPS site origin `NOVA_PUBLIC_URL`; this is also the basis for server-side write-request origin validation.
-- This region's `DATABASE_URL`, plus the PostgreSQL settings needed to create the database on first run.
-- This region's independent `NOVA_REPORT_KEY` (a 32-byte random key expressed as 64 hex characters). The database and disk/backups also need the encryption and access control provided by the deployment environment.
-- A private report directory. Docker uses `/var/lib/nova/reports`; it must not be mapped to a public static directory or a public storage bucket.
-- `NOVA_DIST_DIR=.next`, so that CN and HK share one image build.
+Configure these production environment variables through secret input. Keep any local initialization file outside version control with mode `0600`.
 
-Replace the environment file paths in the example commands with the real paths for that region. No cloud resources are created, no services are purchased, and no real family data is sent:
+| Variable | Value or requirement |
+| --- | --- |
+| `NOVA_MODE` | `service` |
+| `NOVA_REGION` | `HK` for the TopE Hong Kong product partition |
+| `NOVA_DATA_REGION` | `SG` for the approved Singapore database and encrypted PDF storage |
+| `NOVA_PUBLIC_URL` | `https://www.tope.hk` |
+| `DATABASE_URL` | Neon pooled PostgreSQL connection string, with TLS |
+| `NOVA_REPORT_STORAGE` | `database` |
+| `NOVA_WORKER_MODE` | `queue` |
+| `NOVA_QUEUE_REGION` | `hkg1`, matching the currently committed Vercel function region |
+| `NOVA_REPORT_KEY` | Independent 32-byte random key encoded as 64 hexadecimal characters |
+| `CRON_SECRET` | Random secret of at least 32 characters |
+| `NOVA_AI_ENABLED` | `false` for initial deployment and synthetic verification |
+| `NOVA_DIST_DIR` | `.next` |
 
-```sh
-NOVA_ENV_FILE=/secure/nova-cn.env docker compose --env-file /secure/nova-cn.env -f deploy/compose.yml config --quiet
-NOVA_ENV_FILE=/secure/nova-cn.env docker compose --env-file /secure/nova-cn.env -f deploy/compose.yml up -d
-```
+`NOVA_REPORT_DIR` is unused and not required in database mode. `VERCEL` is provided by the platform; configuration rejects filesystem storage or continuous workers there. `next.config.ts` uses the Vercel adapter on Vercel and preserves standalone output for Docker.
 
-Compose builds both images itself, so there is no separate `docker build` step.
+**Approved deployment choice (2026-10-08):** the owner authorized Singapore Neon through the existing Launch installation, with exactly one primary compute, fixed at `0.25 CU` (minimum and maximum), and scale-to-zero after five minutes of inactivity. Set `NOVA_DATA_REGION=SG` and verify that the served privacy notice accurately describes database and encrypted report storage in Singapore and request handling through Vercel. `NOVA_REGION=HK`, a Hong Kong domain, or a Hong Kong function does not make a Singapore database Hong Kong-resident. This authorization is not evidence that provisioning or cloud acceptance has completed. See the [official Neon region list](https://neon.com/docs/introduction/regions).
 
-### Two images, not one
+Attach both `www.tope.hk` and `tope.hk` to the same Vercel project, with the apex redirecting to `www.tope.hk`. Writes require the exact `NOVA_PUBLIC_URL` origin, and session cookies are host-only. The domain owner handles nameserver changes.
 
-The Dockerfile has two runtime targets, because the web service and the report worker need different things:
+## Initialization and release sequence
 
-- **`nova-psycho-helper:<version>-web`** runs Next's standalone server (`node server.js`). It serves HTTP and streams already-encrypted PDFs; it never renders one, so it carries no Chromium and no CJK fonts.
-- **`nova-psycho-helper:<version>-worker`** renders the PDFs, so it has Chromium and the CJK fonts, and it runs the TypeScript scripts directly, so it keeps the full dependency tree and source. The migration service uses this image too.
+1. Use the approved Singapore Launch configuration: one primary compute, `0.25 CU` minimum and maximum, five-minute scale-to-zero, and no additional compute or read replica. Obtain access to the intended Neon project and Vercel project. Preserve production/preview separation; do not point an unreviewed preview at the production database.
+2. Create the fresh service database. Prepare a restricted initialization environment file with the variables above, using Neon's **direct** connection URL for schema and administrative commands. Put the pooled URL in Vercel runtime configuration.
+3. Apply the schema once before enabling user traffic:
 
-Splitting them matters because Chromium and the CJK fonts are 812 MB and the full dependency tree is 563 MB, and the web service needs neither in full. A bare `docker build -f deploy/Dockerfile .` with no `--target` produces the worker image, since that stage is last.
+   ```sh
+   node --env-file=/secure/nova-init.env --import tsx scripts/setup.ts
+   ```
 
-Note that `next.config.ts` sets `output: "standalone"`. The web target honours that by running the generated `server.js`; running `next start` against a standalone build is the combination Next warns about.
+   The command is idempotent for an owned database of the same region and classification. Service mode creates no demo users. It initializes the three operator-intake questionnaires and their narrative content; those questionnaires explicitly have no clinical norm and are not independently validated clinical instruments. Registration no longer runs schema changes or seeds instruments.
 
-Run the same flow on the Hong Kong host with a separate Hong Kong environment file. Do not copy a production environment file, a database backup or a report key into the other region as a convenience for testing.
+4. Supply `NOVA_NEW_USER_USERNAME`, `NOVA_NEW_USER_NAME`, `NOVA_NEW_USER_ROLE` (`admin` or `staff`), and `NOVA_NEW_USER_PASSWORD` through a restricted environment file or secret manager, then run:
 
-The first migration creates no users and no clinical content. Supply `NOVA_NEW_USER_USERNAME`, `NOVA_NEW_USER_NAME`, `NOVA_NEW_USER_ROLE` (admin or staff) and `NOVA_NEW_USER_PASSWORD` through the deployment environment's secure secret input, and run `node --import tsx scripts/create-user.ts` in the corresponding container. Do not put passwords in command arguments or terminal logs. Afterwards, parents, students and teachers create their own accounts through one-time invitations.
+   ```sh
+   node --env-file=/secure/nova-admin-init.env --import tsx scripts/create-user.ts
+   ```
 
-## AI regional verification
+   Do not put passwords in command arguments, shell history, logs, or committed files. Remove bootstrap-only variables from the runtime environment after creating the account.
 
-When AI is not enabled, or credentials are incomplete, the rule template continues to publish reports automatically. To enable Bailian, set:
+5. Apply the committed `vercel.json`. The queue consumer is `src/app/api/queues/report/route.ts`, with the private `queue/v2beta` trigger on topic `nova-report`, concurrency `1`, at most `8` deliveries, memory `2048` MB, and a `240`-second duration. The recovery cron calls `/api/cron/report-recovery` daily at `00:00 UTC` (`08:00 Hong Kong time`) and requires `CRON_SECRET`. Do not replace the private trigger with a public worker URL.
+6. Build and inspect deployment file traces before upload. No `work/`, `.env*`, `.git/`, or `.vercel/` private metadata may be included. The queue function must include the packaged Chromium binaries and both CJK fonts. A successful build alone is not this check.
+7. Verify the deployed domain redirect, login and refresh, three-party synthetic submission, automatic publication, authorized downloads of both PDF languages, failure/retry, deletion, and unauthorized access rejection. Inspect the rendered PDFs for Chinese glyphs and layout. Verify that the queue consumer has no public URL and that the cron is registered and authenticated. Report cloud acceptance separately from local verification.
 
-- `NOVA_AI_ENABLED=true`
-- `NOVA_AI_DEPLOYMENT_SCOPE=CN` or `HK`, which must equal the deployment region.
-- `NOVA_AI_BASE_URL`: either the HTTPS OpenAI-compatible address of the corresponding regional business workspace, with path `/compatible-mode/v1`, or `https://api.deepseek.com` when `NOVA_AI_MODEL` is exactly `deepseek-flash`.
-- `NOVA_AI_MODEL`, and this workspace's or DeepSeek account's `NOVA_AI_API_KEY`.
+Neon and queue connection details stay out of AI payloads and ordinary logs. Keep AI disabled during these deployment checks; do not send real family data to a live provider to test the application.
 
-The software restricts the configured address to regional domains and rejects cross-region and global domains, but **a domain name and environment variables alone cannot prove that the business workspace actually used in-region inference nodes**. Before enabling real data, verify that workspace's actual inference scope, storage, logging and data-use terms in the Model Studio console, and retain the deployment configuration as evidence. Per the official documentation, the access/storage region and the service deployment scope are separate settings: https://help.aliyun.com/zh/model-studio/hong-kong-china-global
+## Queue execution and recovery
 
-This version sends only age band, respondent role, structured scores/bands and optional advice — not names, contact details, school, per-item answers or case observations. No model call is made without current AI-processing consent. Risk signals always use the preset template and do not wait for AI.
+Submitting the final required questionnaire creates a durable SQL job. The API awaits a queue publish containing only `{jobId, region}`. The consumer claims that specific regional job, renders both PDFs, and publishes under the existing family lock and claim token. Duplicate or stale deliveries cannot publish twice or claim a different job. A report has at most three render attempts, including attempts interrupted by a crash.
 
-### Verifying the adapter against a real workspace
+If publishing to the queue fails after the assessment commits, the accepted submission remains saved. One bounded `after()` retry follows; the SQL job remains available for recovery. The daily cron dispatches at most 25 due or expired jobs, with a bounded execution window. A rare dispatch gap with no later activity can wait until that daily sweep. `after()` is not a durable queue replacement and shares the route's time limit. See [Next.js `after`](https://nextjs.org/docs/app/api-reference/functions/after) and [Vercel Queue delivery semantics](https://vercel.com/docs/queues/concepts).
 
-The adapter's constraints are unit-tested, but those tests use a stubbed fetcher. To verify it against an actual regional workspace, with credentials configured for that region, run:
+Failed jobs remain visible to staff. `POST /api/assessments/:id/retry-report` revalidates authority, family existence, consent, and immutable triad sources before a fresh delivery. This is operational recovery, not human approval of individual reports. Do not reset job state directly to bypass those checks.
 
-```sh
-node scripts/run-region.mjs CN ai-conformance
-```
+PDFs in database mode are limited to 4 MiB each so authenticated downloads stay below the platform response-body limit. The files use the existing `NOVA1` AES-GCM envelope; a missing or changed report key makes them unreadable. The private queue message retains only job identity, not answers, names, free text, or report content. Vercel documents that queue failover does not provide strict single-region residency, so do not make a stronger residency claim. See [function limits](https://vercel.com/docs/functions/limitations) and [queue regions](https://vercel.com/docs/queues/concepts#regions-and-data-residency).
 
-This script imports no database module and builds its snapshot in memory from the fictional demo instrument, so there is no code path by which real family data can reach the provider. It refuses to run if the active instrument is not marked as a demo instrument, inspects the transmitted payload for identity and raw-answer leakage, and never prints the API key or response bodies. It reports per-assumption results with stable codes, writes evidence to `work/qa/ai-conformance.json`, and exits non-zero if any check fails. See `docs/ai-regional-verification.md` for what each check means and which assumptions were confirmed against the official documentation rather than a live call.
+## Keeping idle costs low
 
-## Monitoring and recovery
+The existing Vercel Neon installation was checked on 2026-10-08 and uses `Launch_v3` across its resources. The owner approved using that installation for TopE with one fixed `0.25 CU` Singapore compute and five-minute scale-to-zero. It is a usage-billed Launch resource, not a separate free database. Provisioning settings and the complete cloud workflow still require live verification.
 
-- `/api/health` checks the database connection, region and mode. It is an unauthenticated liveness probe and deliberately reveals nothing else. A successful probe alone does not prove the report pipeline works.
-- `GET /api/ops/status` (admin only) answers what the health probe cannot: the ready/running/done/failed counts, the age of the oldest waiting job, the number of expired leases, and whether the report process is actually running. An empty queue looks healthy whether or not anything is listening to it, so the worker refreshes a heartbeat row every 5 seconds and the endpoint reports how old that heartbeat is.
-- The response carries a `warnings` array with stable codes: `worker_never_started`, `worker_stale` (no heartbeat for 60 seconds), `failed_jobs`, `expired_leases`, and `queue_backlog` (oldest waiting job over 300 seconds). Alert on those codes rather than on the raw counts.
-- Processes claim jobs under a lease; an expired lease can be taken over by another process, and after at most three failures a job is explicitly marked failed.
-- The heartbeat table is created by the schema, so applying it to an existing database requires re-running `npm run setup:cn` or `setup:hk`. That command is idempotent and preserves existing data.
-- Failure logs contain only the region, attempt count and a stable error code; do not add answers, report bodies, cookies or vendor request content to logs for troubleshooting.
-- After diagnosing and fixing an infrastructure problem, failed jobs can be rescheduled in that region; first confirm the family still exists and consent is still valid. The action should leave an operational record and must not serve as a per-report clinical approval step. The workspace shows a "requeue report generation" control to administrators and staff for failed tasks, calling `POST /api/assessments/:id/retry-report` and returning `{id,status:'queued'}`; repeated clicks must be blocked while the request is in flight, and the server error or the requeued explanation must be shown before refreshing. Parents, students and teachers cannot see or use this action. After an instrument version is retired, only an administrator can reactivate it through a confirmation dialog (`PATCH /api/scales/:id`, `{status:'active'}`), with the server validating the current advice content; on a mismatch it stays retired and shows the error.
-- Data deletion immediately revokes query and session access; encrypted file deletion runs through a persistent deletion queue, and the report process also clears orphaned files. The report process is therefore also a necessary service for completing physical deletion.
+- Keep Neon's scale-to-zero enabled with the smallest suitable compute and a deliberate maximum. Verify the actual account's free allowance or spending controls instead of assuming a particular bill.
+- Do not run the continuous worker against Neon in queue mode. There is no five-second heartbeat or permanent queue polling process.
+- Use `/api/liveness` for routine availability monitoring. `/api/health` deliberately queries the database and is for explicit readiness checks; frequent external probes can keep Neon awake.
+- Browser status refreshes are bounded and pause when hidden. A family waiting for another respondent must not cause endless database polling. Returning to the tab or using refresh retrieves current status; report execution does not depend on an open browser.
+- The daily recovery sweep can wake an idle database once a day. Actual user activity, PDF downloads, administrative checks, backup jobs, and other connected projects can also keep it active.
+- Database-backed PDFs consume the database storage allowance. Monitor their total bytes and retention; avoid repeated large exports or backup branches that exhaust free storage or transfer allowances. Switch storage backends only through a verified migration, not by changing one variable on a database containing reports.
 
-## Backup and restore
+Neon normally suspends after inactivity; its documentation specifically advises reducing unnecessary queries and background jobs. [Neon compute guidance](https://neon.com/docs/manage/endpoints/). Vercel Queues is usage-priced by API operation, and consumer compute is billed separately. Current documentation lists one million included queue operations on Hobby and usage-based operations on Pro; concurrency-limited deliveries count extra operation units. Account eligibility, credits, regional pricing, storage, and actual traffic determine the bill. No fixed monthly server is required, but this is not a zero-cost guarantee. [Queue pricing](https://vercel.com/docs/queues/pricing).
 
-Back up PostgreSQL, the private report files and the report key independently for each region, on restricted and encrypted backup media in that region. The key is backed up separately under its own controls and must not be mixed into public code packages. Before changing a key, design an old-file migration or key-versioning strategy; replacing a key directly makes existing PDFs undecryptable.
+## Operations and backup
 
-### Taking a backup
+`GET /api/ops/status` is administrator-only. Queue mode reports `idle`, `processing`, `backlog`, or `failed`; idle is healthy without a worker heartbeat. Investigate `failed_jobs`, `expired_leases`, and `queue_backlog`. Continuous mode additionally reports the worker heartbeat and its stale/never-started warnings. A health response alone never proves report publication or PDF rendering.
+
+Database mode includes encrypted `report_files` in PostgreSQL backups. Back up the report key separately under appropriate secret controls, and verify a restore in an isolated database before relying on it. Family deletion removes live database rows immediately; backup retention is a separate operational policy. The existing filesystem archive backup command rejects database mode. Do not use a filesystem restore manifest for a Neon database or claim that the local file-archive restore drill verifies cloud recovery.
+
+### Filesystem backup and restore (Docker only)
+
+These instructions apply only to `NOVA_REPORT_STORAGE=filesystem`. Back up PostgreSQL, the private report files and the report key independently for each region, on restricted and encrypted backup media in that region. The key is backed up separately under its own controls and must not be mixed into public code packages. Before changing a key, design an old-file migration or key-versioning strategy; replacing a key directly makes existing PDFs undecryptable.
+
+#### Taking a filesystem backup
 
 ```sh
 npm run backup:cn
@@ -103,7 +119,7 @@ The dump contains answer and snapshot data in plaintext. Set `NOVA_BACKUP_KEY` (
 
 A backup is refused if `pg_restore --list` reports no table data, so an empty or failed dump is never recorded as a valid backup. Private staging directories and plaintext dumps are removed if encryption or a later step fails.
 
-### Restoring
+#### Restoring a filesystem deployment
 
 Restore into a new, isolated, same-region environment. The script never writes to the database named by `DATABASE_URL`; the target is supplied explicitly and must be empty.
 
@@ -131,6 +147,15 @@ After restoring it verifies the region, the mode, every known per-table row coun
 
 A restore drill was run against the local CN environment on 2026-09-15. Seventeen tables and twelve report files were restored into a throwaway database; every row count matched the manifest, and all twelve restored report files decrypted back to valid PDFs with the report key. The live database was not modified, and the drill database was dropped afterwards.
 
-## External inputs required for production
+## Local and regional Docker
 
-Code, partial tests and local runs are no substitute for: professional instruments and standard worked examples, operator-managed acquisition of those instruments, real domains and cloud environments, the institution's information notice and service-responsibility arrangements, and real region-restricted inference credentials and acceptance. The importer does not treat `rights` / `norm.validated` as hard blockers. The v1 base capabilities are implemented in this source; the retry/reactivation interface in this batch passed central tests and local browser verification on 2026-09-15 (see `docs/grok-batch-20260915.md`). Professional instruments, cloud residency, Bailian regional inference and device acceptance are not yet complete, and the current source state must not be written up as having passed them.
+The defaults remain `NOVA_REPORT_STORAGE=filesystem` and `NOVA_WORKER_MODE=continuous`. Docker requires `NOVA_REPORT_DIR=/var/lib/nova/reports`, a region-specific database and report key, and a private shared report volume. Do not set `VERCEL=1`. Use the appropriate public HTTPS origin for service mode; demo mode remains loopback-only.
+
+```sh
+NOVA_ENV_FILE=/secure/nova-cn.env docker compose --env-file /secure/nova-cn.env -f deploy/compose.yml config --quiet
+NOVA_ENV_FILE=/secure/nova-cn.env docker compose --env-file /secure/nova-cn.env -f deploy/compose.yml up -d
+```
+
+Compose builds separate web and worker targets, runs schema setup first, and keeps the database off public host ports. The web target runs the standalone `server.js`; the worker has Chromium and CJK fonts and handles generation, queued file deletion, and orphan cleanup. Apply the same separation for a Hong Kong deployment on an actual Hong Kong host. Local ports or region variables alone do not prove geographic residency.
+
+AI provider configuration and synthetic conformance checks are documented in [AI regional verification](ai-regional-verification.md). Enabling a live provider requires the appropriate regional credentials, current consent, and verification of the provider's actual processing/storage scope. Clinical instruments, normative claims, and real-data acceptance remain separate from technical deployment.

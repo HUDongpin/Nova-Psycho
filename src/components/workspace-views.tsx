@@ -148,10 +148,19 @@ function opsWarningLabel(code: string, t: (key: CopyKey) => string): string {
   return key ? t(key) : code;
 }
 
+const OPS_QUEUE_STATE_LABELS = {
+  idle: ["空闲", "閒置"],
+  processing: ["正在生成报告", "正在產生報告"],
+  backlog: ["等待处理", "等候處理"],
+  failed: ["有报告生成失败", "有報告產生失敗"],
+  unavailable: ["处理暂不可用", "處理暫時無法使用"],
+} as const satisfies Record<OpsStatus["worker"]["state"], readonly [string, string]>;
+
 // GET /api/ops/status already existed for operators; without a page the admin nav could not
 // surface worker liveness or queue warnings.
 export function OpsView({ locale }: { locale: Locale }) {
   const t = copy(locale);
+  const language = locale === "zh-HK" ? 1 : 0;
   const [status, setStatus] = useState<OpsStatus | null>(null);
   const [error, setError] = useState("");
   const [attempt, setAttempt] = useState(0);
@@ -159,6 +168,7 @@ export function OpsView({ locale }: { locale: Locale }) {
   const [health, setHealth] = useState<HealthStatus | null>(null);
   const [healthError, setHealthError] = useState("");
   const [healthBusy, setHealthBusy] = useState(false);
+  const queueMode = status?.worker.mode === "queue";
 
   useEffect(() => {
     const controller = new AbortController();
@@ -170,12 +180,6 @@ export function OpsView({ locale }: { locale: Locale }) {
       .finally(() => { if (!controller.signal.aborted) setRefreshing(false); });
     return () => controller.abort();
   }, [locale, attempt]);
-
-  useEffect(() => {
-    if (error) return;
-    const interval = setInterval(() => setAttempt(current => current + 1), 10_000);
-    return () => clearInterval(interval);
-  }, [error]);
 
   async function runHealthProbe() {
     setHealthBusy(true);
@@ -192,7 +196,7 @@ export function OpsView({ locale }: { locale: Locale }) {
 
   return <>
     <div className="page-title">
-      <div><h1>{t("ops")}</h1><p>{t("opsIntro")}</p></div>
+      <div><h1>{t("ops")}</h1><p>{["查看本区域的报告任务与处理状态，仅管理员可见。", "查看本區域的報告任務與處理狀態，僅管理員可見。"][language]}</p></div>
       <button className="button secondary" type="button" disabled={refreshing} onClick={() => setAttempt(current => current + 1)}>
         <ArrowClockwise className={refreshing ? "spin" : ""} />{t("refresh")}
       </button>
@@ -208,12 +212,18 @@ export function OpsView({ locale }: { locale: Locale }) {
       </div>
       <div className="dashboard-grid" style={{ marginTop: "1.25rem" }}>
         <section className="panel">
-          <SectionHeading title={t("opsWorker")} action={<Badge tone={status.worker.alive ? "sage" : "peach"}>{t(status.worker.alive ? "opsWorkerAlive" : "opsWorkerDown")}</Badge>} />
+          <SectionHeading
+            title={queueMode ? ["报告生成", "報告產生"][language] : t("opsWorker")}
+            subtitle={queueMode ? ["按需处理，无待处理任务时保持空闲。", "按需處理，沒有待處理任務時保持閒置。"][language] : undefined}
+            action={<Badge tone={(queueMode ? status.worker.state === "idle" || status.worker.state === "processing" : status.worker.alive) ? "sage" : "peach"}>{queueMode ? OPS_QUEUE_STATE_LABELS[status.worker.state][language] : t(status.worker.alive ? "opsWorkerAlive" : "opsWorkerDown")}</Badge>}
+          />
           <dl className="detail-list">
-            <div><dt>{t("opsWorkerId")}</dt><dd>{status.worker.workerId ?? t("opsNone")}</dd></div>
-            <div><dt>{t("opsHeartbeatAge")}</dt><dd>{status.worker.heartbeatAgeSeconds ?? t("opsNone")}</dd></div>
-            <div><dt>{t("opsUptime")}</dt><dd>{status.worker.uptimeSeconds ?? t("opsNone")}</dd></div>
-            <div><dt>{t("opsCycles")}</dt><dd>{status.worker.cycles ?? t("opsNone")}</dd></div>
+            {!queueMode && <>
+              <div><dt>{t("opsWorkerId")}</dt><dd>{status.worker.workerId ?? t("opsNone")}</dd></div>
+              <div><dt>{t("opsHeartbeatAge")}</dt><dd>{status.worker.heartbeatAgeSeconds ?? t("opsNone")}</dd></div>
+              <div><dt>{t("opsUptime")}</dt><dd>{status.worker.uptimeSeconds ?? t("opsNone")}</dd></div>
+              <div><dt>{t("opsCycles")}</dt><dd>{status.worker.cycles ?? t("opsNone")}</dd></div>
+            </>}
             <div><dt>{t("opsOldestReady")}</dt><dd>{status.oldestReadySeconds ?? t("opsNone")}</dd></div>
             <div><dt>{t("opsExpiredLeases")}</dt><dd>{status.expiredLeases}</dd></div>
           </dl>

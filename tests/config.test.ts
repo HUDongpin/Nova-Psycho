@@ -3,6 +3,15 @@ import {getConfig} from "../src/lib/config";
 function base(){vi.stubEnv("NOVA_REGION","CN");vi.stubEnv("NOVA_MODE","demo");vi.stubEnv("DATABASE_URL","postgresql://synthetic.invalid/nova_test");vi.stubEnv("NOVA_PUBLIC_URL","http://127.0.0.1:3100");vi.stubEnv("NOVA_REPORT_DIR","work/test-private");vi.stubEnv("NOVA_REPORT_KEY","0".repeat(64));vi.stubEnv("NOVA_AI_ENABLED","false");}
 afterEach(()=>vi.unstubAllEnvs());
 describe("deployment configuration",()=>{
+  it("keeps data residency separate from the product region",()=>{base();vi.stubEnv("NOVA_DATA_REGION","SG");expect(getConfig()).toMatchObject({region:"CN",dataRegion:"SG"});});
+  it("rejects an unknown data region",()=>{base();vi.stubEnv("NOVA_DATA_REGION","unknown");expect(()=>getConfig()).toThrow(/NOVA_DATA_REGION/);});
+  it("preserves the local filesystem and continuous worker defaults",()=>{base();expect(getConfig()).toMatchObject({reportStorage:"filesystem",workerMode:"continuous",queueRegion:null});});
+  it("does not resolve or require a filesystem directory for database storage",()=>{base();vi.stubEnv("NOVA_REPORT_STORAGE","database");vi.stubEnv("NOVA_REPORT_DIR",undefined);expect(getConfig()).toMatchObject({reportStorage:"database",reportDir:""});});
+  it.each(["NOVA_REPORT_STORAGE","NOVA_WORKER_MODE"])("rejects unknown %s modes",name=>{base();vi.stubEnv(name,"unknown");expect(()=>getConfig()).toThrow();});
+  it("rejects ephemeral queue filesystem storage",()=>{base();vi.stubEnv("NOVA_WORKER_MODE","queue");vi.stubEnv("NOVA_QUEUE_REGION","sin1");expect(()=>getConfig()).toThrow(/database report storage/);});
+  it("requires an explicit queue region",()=>{base();vi.stubEnv("NOVA_REPORT_STORAGE","database");vi.stubEnv("NOVA_WORKER_MODE","queue");expect(()=>getConfig()).toThrow(/queue region/);});
+  it("accepts explicitly configured durable queue mode",()=>{base();vi.stubEnv("NOVA_REPORT_STORAGE","database");vi.stubEnv("NOVA_WORKER_MODE","queue");vi.stubEnv("NOVA_QUEUE_REGION","sin1");expect(getConfig()).toMatchObject({reportStorage:"database",workerMode:"queue",queueRegion:"sin1"});});
+  it("refuses an unconfigured continuous worker on Vercel",()=>{base();vi.stubEnv("VERCEL","1");expect(()=>getConfig()).toThrow(/Vercel requires/);});
   it("keeps template reports working if AI was enabled without credentials",()=>{base();vi.stubEnv("NOVA_AI_ENABLED","true");vi.stubEnv("NOVA_AI_BASE_URL","");vi.stubEnv("NOVA_AI_API_KEY","");vi.stubEnv("NOVA_AI_MODEL","");expect(getConfig().ai.enabled).toBe(false);});
   it("does not permit public demo mode",()=>{base();vi.stubEnv("NOVA_PUBLIC_URL","https://demo.example.invalid");expect(()=>getConfig()).toThrow();});
   it("does not permit public report storage",()=>{base();vi.stubEnv("NOVA_REPORT_DIR","public/reports");expect(()=>getConfig()).toThrow();});

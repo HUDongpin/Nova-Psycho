@@ -112,3 +112,22 @@ describe("status metadata",()=>{
     expect(Number.isNaN(Date.parse(status.checkedAt))).toBe(false);
   });
 });
+
+describe("event driven worker health",()=>{
+  beforeEach(()=>{vi.stubEnv("NOVA_REPORT_STORAGE","database");vi.stubEnv("NOVA_WORKER_MODE","queue");vi.stubEnv("NOVA_QUEUE_REGION","sin1");});
+  it("treats an idle queue as healthy without requiring a heartbeat",async()=>{
+    stubDb(jobs(),null);
+    const status=await opsStatus();
+    expect(status.worker).toMatchObject({mode:"queue",state:"idle",alive:true,heartbeatAgeSeconds:null});
+    expect(status.warnings).toEqual([]);expect(mockQuery).toHaveBeenCalledTimes(1);
+  });
+  it("reports processing from jobs instead of inventing an always-on worker",async()=>{
+    stubDb(jobs({running:1}),null);
+    expect((await opsStatus()).worker).toMatchObject({mode:"queue",state:"processing",alive:true});
+  });
+  it("reports failed work and expired leases even without a heartbeat table read",async()=>{
+    stubDb(jobs({failed:1,expired_leases:1}),null);
+    const status=await opsStatus();expect(status.worker.state).toBe("failed");
+    expect(status.warnings).toEqual(["failed_jobs","expired_leases"]);expect(mockQuery).toHaveBeenCalledTimes(1);
+  });
+});

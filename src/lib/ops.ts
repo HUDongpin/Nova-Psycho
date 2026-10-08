@@ -13,7 +13,7 @@ export interface OpsStatus {
   jobs: { ready: number; running: number; done: number; failed: number };
   oldestReadySeconds: number | null;
   expiredLeases: number;
-  worker: { alive: boolean; workerId: string | null; heartbeatAgeSeconds: number | null; uptimeSeconds: number | null; cycles: number | null };
+  worker: { mode:"continuous"|"queue";state:"idle"|"processing"|"backlog"|"failed"|"unavailable";alive: boolean; workerId: string | null; heartbeatAgeSeconds: number | null; uptimeSeconds: number | null; cycles: number | null };
   warnings: string[];
 }
 
@@ -34,6 +34,20 @@ export async function opsStatus(): Promise<OpsStatus> {
      FROM report_jobs`
   );
   const jobs = jobRows[0] ?? { ready: 0, running: 0, done: 0, failed: 0, oldest_ready_seconds: null, expired_leases: 0 };
+
+  if(config.workerMode==="queue"){
+    const warnings:string[]=[];
+    if(jobs.failed>0)warnings.push("failed_jobs");
+    if(jobs.expired_leases>0)warnings.push("expired_leases");
+    if(jobs.oldest_ready_seconds!==null&&jobs.oldest_ready_seconds>BACKLOG_SECONDS)warnings.push("queue_backlog");
+    const state=jobs.failed>0?"failed":warnings.length?"backlog":jobs.running>0||jobs.ready>0?"processing":"idle";
+    return {
+      region:config.region,mode:config.mode,checkedAt:new Date().toISOString(),
+      jobs:{ready:jobs.ready,running:jobs.running,done:jobs.done,failed:jobs.failed},
+      oldestReadySeconds:jobs.oldest_ready_seconds===null?null:Math.round(jobs.oldest_ready_seconds),expiredLeases:jobs.expired_leases,
+      worker:{mode:"queue",state,alive:warnings.length===0,workerId:null,heartbeatAgeSeconds:null,uptimeSeconds:null,cycles:null},warnings
+    };
+  }
 
   const heartbeatRows = await query<{ worker_id: string; heartbeat_age_seconds: number; uptime_seconds: number; cycles: string | number }>(
     `SELECT worker_id,
@@ -62,6 +76,8 @@ export async function opsStatus(): Promise<OpsStatus> {
     oldestReadySeconds: jobs.oldest_ready_seconds === null ? null : Math.round(jobs.oldest_ready_seconds),
     expiredLeases: jobs.expired_leases,
     worker: {
+      mode:"continuous",
+      state:!alive?"unavailable":jobs.failed>0?"failed":jobs.ready>0||jobs.running>0?"processing":"idle",
       alive,
       workerId: beat ? beat.worker_id : null,
       heartbeatAgeSeconds: heartbeatAge,

@@ -264,6 +264,7 @@ export async function createExclusiveBackupTarget(target: string): Promise<void>
 
 export async function createRegionalBackup(): Promise<CreatedBackup> {
   const config = getConfig();
+  if (config.reportStorage === "database") throw new Error("Database-backed reports require a PostgreSQL backup including report_files and a separately preserved NOVA_REPORT_KEY. The filesystem backup command does not support this storage mode.");
   const backupKey = backupKeyFromEnv();
   const reportKey = requireReportKey();
   const root = path.resolve(process.env.NOVA_BACKUP_DIR ?? "work/backups");

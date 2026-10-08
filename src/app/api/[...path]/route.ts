@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { after } from "next/server";
 import { demoScale } from "@/domain/demo";
 import { actorOf,audit,endSession,limitLogin,listAuditEvents,requireActor,setPasswordSession,setSession } from "@/lib/auth";
 import { getConfig } from "@/lib/config";
@@ -15,6 +16,7 @@ import { reportDetail,reportFor } from "@/lib/reports";
 import { readPrivatePdf } from "@/lib/storage";
 import { addGoal,addObservation,updateGoal } from "@/lib/care";
 import { createContent,currentContent,importScale,setScaleStatus } from "@/lib/content";
+import { dispatchAssessmentReport } from "@/lib/report-dispatch";
 export const runtime="nodejs";
 export const dynamic="force-dynamic";
 type Context={params:Promise<{path:string[]}>};
@@ -28,7 +30,7 @@ async function dispatch(request:Request,context:Context):Promise<Response>{retur
     const user=await actorOf(request,false);const demoAccounts=config.mode==="demo"?await query("SELECT id,name,role FROM users WHERE demo AND region=$1 AND NOT disabled ORDER BY CASE role WHEN 'admin' THEN 1 WHEN 'staff' THEN 2 WHEN 'parent' THEN 3 WHEN 'student' THEN 4 ELSE 5 END,name",[config.region]):[];
     return json({user,region:config.region,mode:config.mode,demoAccounts,siblingUrl:config.siblingUrl});
   }
-  if(method==="GET"&&route==="privacy")return json(privacyNotice(config.region,locale));
+  if(method==="GET"&&route==="privacy")return json(privacyNotice(config.region,locale,config.dataRegion));
   if(method==="POST"&&route==="auth/demo"){
     if(config.mode!=="demo")throw new HttpError(404,"未找到该入口。","NOT_FOUND");
     const d=z.object({accountId:z.string().uuid()}).strict().parse(await body(request));const rows=await query("SELECT id FROM users WHERE id=$1 AND region=$2 AND demo AND NOT disabled",[d.accountId,config.region]);
@@ -68,8 +70,14 @@ async function dispatch(request:Request,context:Context):Promise<Response>{retur
   if(path[0]==="assessments"&&path[1]){
     if(method==="GET"&&path.length===2)return json(await assessmentDetail(actor,path[1],locale));
     if(method==="PATCH"&&path.length===2)return json(await saveDraft(actor,path[1],await body(request)));
-    if(method==="POST"&&path.length===3&&path[2]==="submit")return json(await submitAssessment(actor,path[1],await body(request)));
-    if(method==="POST"&&path.length===3&&path[2]==="retry-report")return json(await retryReport(actor,path[1]));
+    if(method==="POST"&&path.length===3&&path[2]==="submit"){
+      const result=await submitAssessment(actor,path[1],await body(request));
+      if(result.status==="queued")await dispatchAssessmentReport(path[1],after);
+      return json(result);
+    }
+    if(method==="POST"&&path.length===3&&path[2]==="retry-report"){
+      const result=await retryReport(actor,path[1]);await dispatchAssessmentReport(path[1],after);return json(result);
+    }
   }
   if(method==="GET"&&path[0]==="reports"&&path[1]&&path.length<=3){
     const report=await reportFor(actor,path[1]);

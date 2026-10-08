@@ -6,12 +6,15 @@ import { describe,it,expect,beforeEach,afterEach,vi } from "vitest";
 
 const poolQuery=vi.fn();
 const poolConnect=vi.fn();
+vi.mock("@vercel/functions",()=>({attachDatabasePool:vi.fn()}));
 vi.mock("pg",()=>{
   // closeDatabase() calls pool.end(), and transaction() calls pool.connect().
   const Pool=vi.fn(function(this:unknown){return {query:poolQuery,end:vi.fn(async()=>undefined),connect:poolConnect};});
   return {default:{Pool,types:{setTypeParser:vi.fn()}}};
 });
 import { assertDatabaseRegion,closeDatabase,pool,query,transaction } from "../src/lib/db";
+import { attachDatabasePool } from "@vercel/functions";
+import pg from "pg";
 
 function config(over:Record<string,string>={}){
   vi.stubEnv("NOVA_REGION","CN");vi.stubEnv("NOVA_MODE","demo");
@@ -24,7 +27,7 @@ function config(over:Record<string,string>={}){
 const deploymentRow=(region="CN",mode="demo")=>({rows:[{region,mode}]});
 
 beforeEach(async()=>{
-  config();poolQuery.mockReset();poolConnect.mockReset();
+  config();poolQuery.mockReset();poolConnect.mockReset();vi.mocked(attachDatabasePool).mockClear();
   // Default: the region check passes. transaction() runs it before it ever connects.
   poolQuery.mockResolvedValue(deploymentRow("CN","demo"));
   await closeDatabase();
@@ -81,6 +84,15 @@ describe("region binding",()=>{
 });
 
 describe("query and transaction plumbing",()=>{
+  it("attaches the Vercel pool once and closes idle connections promptly",()=>{
+    config({VERCEL:"1",NOVA_REPORT_STORAGE:"database",NOVA_WORKER_MODE:"queue",NOVA_QUEUE_REGION:"sin1"});
+    const first=pool();expect(pool()).toBe(first);
+    expect(attachDatabasePool).toHaveBeenCalledExactlyOnceWith(first);
+    expect(vi.mocked(pg.Pool).mock.calls.at(-1)?.[0]).toMatchObject({idleTimeoutMillis:5000,max:10});
+  });
+  it("does not attach a platform lifecycle hook for the Docker pool",()=>{
+    pool();expect(attachDatabasePool).not.toHaveBeenCalled();
+  });
   const transactionClient=()=>({
     query:vi.fn(async(sql:string)=>String(sql)==="SELECT region,mode FROM deployment_settings WHERE singleton=true"?deploymentRow("CN","demo"):{rows:[]}),
     release:vi.fn()

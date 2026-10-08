@@ -16,7 +16,7 @@ const flatten=(region:Region,locale:Locale)=>{
 
 describe("privacy notice",()=>{
   it("pins the notice version",()=>{
-    expect(noticeVersion).toBe("nova-privacy-2026-09-v1");
+    expect(noticeVersion).toBe("nova-privacy-2026-10-v2");
   });
 
   it.each(combinations)("returns a complete bilingual notice for %s + %s",(region,locale)=>{
@@ -43,6 +43,15 @@ describe("privacy notice",()=>{
     expect(cnHk).toMatch(/內地|内地/);
     expect(hkHk).toContain("香港");
     expect(cnHk).not.toBe(hkHk);
+  });
+
+  it.each(["zh-CN","zh-HK"] as const)("uses actual Singapore storage location for the Hong Kong service in %s",locale=>{
+    const notice=privacyNotice("HK",locale,"SG");
+    const location=notice.sections.find(section=>/资料所在|資料所在/.test(section.title))!.body;
+    expect(location).toContain("新加坡");
+    expect(location).toContain("Vercel");
+    expect(location).not.toMatch(/存放[于於]香港/);
+    expect(notice.version).toBe(noticeVersion);
   });
 
   it("states that the model does not receive names, contact, or raw answers",()=>{

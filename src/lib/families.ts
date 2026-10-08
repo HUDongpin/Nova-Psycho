@@ -49,8 +49,10 @@ export async function deleteFamily(actor:Actor,id:string,input:unknown){
     const lock=await client.query("SELECT id FROM families WHERE id=$1 FOR UPDATE",[id]);
     if(!lock.rows[0])throw new HttpError(404,"该家庭已删除。","NOT_FOUND");
     const members=await client.query("SELECT user_id FROM memberships WHERE family_id=$1",[id]);
-    const files=await client.query("SELECT pdf_keys FROM reports WHERE family_id=$1",[id]);
-    for(const row of files.rows)for(const key of Object.values(row.pdf_keys))await client.query("INSERT INTO file_deletion_jobs(file_key) VALUES($1) ON CONFLICT DO NOTHING",[key]);
+    if(getConfig().reportStorage==="filesystem"){
+      const files=await client.query("SELECT pdf_keys FROM reports WHERE family_id=$1",[id]);
+      for(const row of files.rows)for(const key of Object.values(row.pdf_keys))await client.query("INSERT INTO file_deletion_jobs(file_key) VALUES($1) ON CONFLICT DO NOTHING",[key]);
+    }
     await client.query("DELETE FROM families WHERE id=$1 AND region=$2",[id,actor.region]);
     for(const row of members.rows){
       await client.query("DELETE FROM sessions WHERE user_id=$1",[row.user_id]);

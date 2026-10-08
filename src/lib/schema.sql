@@ -66,6 +66,17 @@ CREATE TABLE IF NOT EXISTS reports(
  region text NOT NULL,payload jsonb NOT NULL,pdf_keys jsonb NOT NULL,created_at timestamptz NOT NULL DEFAULT now()
 );
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS html_documents jsonb;
+CREATE TABLE IF NOT EXISTS report_files(
+ file_key text PRIMARY KEY,
+ report_id uuid NOT NULL REFERENCES reports(id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
+ family_id uuid NOT NULL REFERENCES families(id) ON DELETE CASCADE,
+ region text NOT NULL CHECK(region IN ('CN','HK')),
+ locale text NOT NULL CHECK(locale IN ('zh-CN','zh-HK')),
+ encrypted_body bytea NOT NULL CHECK(octet_length(encrypted_body) BETWEEN 37 AND 4194337),
+ created_at timestamptz NOT NULL DEFAULT now(),UNIQUE(report_id,locale)
+);
+CREATE INDEX IF NOT EXISTS report_files_family ON report_files(family_id);
+CREATE INDEX IF NOT EXISTS report_jobs_pending ON report_jobs(available_at) WHERE state IN ('ready','running');
 UPDATE deployment_settings SET mode=CASE WHEN EXISTS(SELECT 1 FROM users WHERE demo) THEN 'demo' ELSE 'service' END WHERE mode IS NULL;
 CREATE TABLE IF NOT EXISTS goals(id uuid PRIMARY KEY,family_id uuid NOT NULL REFERENCES families(id) ON DELETE CASCADE,title text NOT NULL,detail text NOT NULL,status text NOT NULL DEFAULT 'active' CHECK(status IN ('active','completed')),created_by uuid REFERENCES users(id),created_at timestamptz NOT NULL DEFAULT now());
 CREATE TABLE IF NOT EXISTS observations(id uuid PRIMARY KEY,family_id uuid NOT NULL REFERENCES families(id) ON DELETE CASCADE,body text NOT NULL,created_by uuid REFERENCES users(id),created_at timestamptz NOT NULL DEFAULT now());

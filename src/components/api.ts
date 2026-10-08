@@ -21,7 +21,7 @@ export interface OpsStatus {
   jobs: { ready: number; running: number; done: number; failed: number };
   oldestReadySeconds: number | null;
   expiredLeases: number;
-  worker: { alive: boolean; workerId: string | null; heartbeatAgeSeconds: number | null; uptimeSeconds: number | null; cycles: number | null };
+  worker: { mode: "continuous" | "queue"; state: "idle" | "processing" | "backlog" | "failed" | "unavailable"; alive: boolean; workerId: string | null; heartbeatAgeSeconds: number | null; uptimeSeconds: number | null; cycles: number | null };
   warnings: string[];
 }
 /** Unauthenticated liveness probe from GET /api/health. */
