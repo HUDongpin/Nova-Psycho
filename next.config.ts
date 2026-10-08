@@ -4,7 +4,9 @@ const config: NextConfig = {
   output: process.env.VERCEL === "1" ? undefined : "standalone",
   serverExternalPackages: ["pg", "playwright", "@sparticuz/chromium"],
   outputFileTracingIncludes: {
-    "/api/queues/report": ["./assets/fonts/**/*", "./node_modules/@sparticuz/chromium/bin/**/*"]
+    // Next 16.3.8's per-route traces omit this node-environment bootstrap import.
+    "/*": ["./node_modules/next/dist/lib/framework/boundary-constants.js"],
+    "/api/queues/report": ["./assets/fonts/**/*", "./node_modules/@sparticuz/chromium/bin/**/*", "./node_modules/playwright-core/browsers.json"]
   },
   outputFileTracingExcludes: {
     "/*": ["./work/**/*", "./.env", "./.env.*", "./.git/**/*", "./.vercel/**/*"]
