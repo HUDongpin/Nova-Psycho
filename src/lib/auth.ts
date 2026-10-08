@@ -3,7 +3,7 @@ import { promisify } from "node:util";
 import type { NextResponse } from "next/server";
 import type { Actor, Role } from "../domain/types";
 import { getConfig } from "./config";
-import { query } from "./db";
+import { query,transaction } from "./db";
 import { HttpError } from "./http";
 const scrypt=promisify(scryptCallback);
 export const hashToken=(token:string)=>createHash("sha256").update(token).digest("hex");
@@ -31,11 +31,34 @@ export async function actorOf(request:Request,required=true):Promise<Actor|null>
   return actor;
 }
 export async function requireActor(request:Request):Promise<Actor>{return (await actorOf(request,true))!;}
+function setSessionCookie(response:NextResponse,token:string):void{
+  response.cookies.set(cookieName(),token,{httpOnly:true,secure:getConfig().mode==="service",sameSite:"lax",path:"/",maxAge:43200});
+}
 export async function setSession(response:NextResponse,userId:string):Promise<void>{
   const config=getConfig(),token=randomBytes(48).toString("hex");
   const created=await query("INSERT INTO sessions(token_hash,user_id,region,expires_at) SELECT $1,id,$3,now()+interval '12 hours' FROM users WHERE id=$2 AND region=$3 AND NOT disabled RETURNING token_hash",[hashToken(token),userId,config.region]);
   if(!created[0])throw new HttpError(410,"账号已撤销，请联系服务人员。","ACCOUNT_REVOKED");
-  response.cookies.set(cookieName(),token,{httpOnly:true,secure:config.mode==="service",sameSite:"lax",path:"/",maxAge:43200});
+  setSessionCookie(response,token);
+}
+export async function setPasswordSession(response:NextResponse,username:string,password:string):Promise<void>{
+  const config=getConfig();
+  const rows=await query<{id:string;password_hash:string|null}>("SELECT id,password_hash FROM users WHERE username=$1 AND region=$2 AND NOT disabled AND ($3::boolean OR NOT demo)",[username,config.region,config.mode==="demo"]);
+  const candidate=rows[0];
+  // Keep expensive password verification outside the transaction, including the
+  // dummy hash for an unknown account. Only its verified credential can log in.
+  const verified=await checkPassword(password,candidate?.password_hash??null);
+  if(!verified||!candidate)throw new HttpError(401,"账号或密码不正确。","INVALID_CREDENTIALS");
+  const token=randomBytes(48).toString("hex");
+  await transaction(async client=>{
+    // Recovery locks the user before changing credentials and deleting sessions.
+    // Take the same lock, then use a NEW statement snapshot after any lock wait.
+    const locked=await client.query("SELECT id FROM users WHERE id=$1 FOR UPDATE",[candidate.id]);
+    if(!locked.rows[0])throw new HttpError(401,"账号或密码不正确。","INVALID_CREDENTIALS");
+    const current=await client.query("SELECT password_hash FROM users WHERE id=$1 AND region=$2 AND NOT disabled AND ($3::boolean OR NOT demo)",[candidate.id,config.region,config.mode==="demo"]);
+    if(current.rows[0]?.password_hash!==candidate.password_hash)throw new HttpError(401,"账号或密码不正确。","INVALID_CREDENTIALS");
+    await client.query("INSERT INTO sessions(token_hash,user_id,region,expires_at) VALUES($1,$2,$3,now()+interval '12 hours')",[hashToken(token),candidate.id,config.region]);
+  });
+  setSessionCookie(response,token);
 }
 export async function endSession(request:Request,response:NextResponse):Promise<void>{
   const token=sessionToken(request);if(token)await query("DELETE FROM sessions WHERE token_hash=$1 AND region=$2",[hashToken(token),getConfig().region]);

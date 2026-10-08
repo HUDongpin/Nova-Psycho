@@ -11,6 +11,7 @@ import { currentContent,getScale,lockContent } from "../src/lib/content";
 import { assessmentDetail,createAssessment,retryReport,saveDraft,submitAssessment } from "../src/lib/assessments";
 import { demoAdvice,demoScale,demoTemplate } from "../src/domain/demo";
 import { parseScale } from "../src/domain/validation";
+import { TRIAD_BUNDLE } from "../src/domain/triad-report";
 import type { Actor,Role } from "../src/domain/types";
 
 const mockQuery=vi.mocked(query);
@@ -244,10 +245,53 @@ describe("retrying a failed report",()=>{
       if(String(sql).includes("FROM families f WHERE f.id=$1"))return [{id:FAMILY_ID,region:"CN",family_name:"S",child_name:"c",birth_date:"2013-04-12",grade:"S2",guardian_label:"M",assigned_to:null,created_at:new Date()}];
       return [];
     }) as never);
-    client.query.mockImplementationOnce(async()=>({rows:[{id:FAMILY_ID,assigned_to:null}]}));
+    client.query.mockImplementationOnce(async()=>({rows:[{id:FAMILY_ID,region:"CN",assigned_to:null}]}));
     client.query.mockImplementationOnce(async()=>({rows:[{id:ASSESSMENT_ID,status:"published",family_id:FAMILY_ID,region:"CN"}]}));
     client.query.mockImplementationOnce(async()=>({rows:[{id:"job1",state:"done"}]}));
     client.query.mockImplementationOnce(async()=>({rows:[{scopes:["assessment","parent_report","sensitive_data"]}]}));
     await expect(retryReport(actor("admin"),ASSESSMENT_ID)).rejects.toMatchObject({code:"REPORT_NOT_FAILED"});
+  });
+});
+
+describe("retry locks and shared eligibility",()=>{
+  function setupRetry(options:{assignedTo?:string|null;assessment?:Record<string,unknown>;job?:Record<string,unknown>;consent?:boolean}={}){
+    mockQuery.mockImplementation((async(sql:string)=>{
+      if(String(sql).includes("SELECT family_id FROM assessments"))return [{family_id:FAMILY_ID}];
+      if(String(sql).includes("FROM families f WHERE f.id=$1"))return [{id:FAMILY_ID,region:"CN",assigned_to:USER_ID}];
+      return [];
+    }) as never);
+    client.query.mockReset();
+    client.query.mockImplementation(async(sql:string)=>{
+      if(sql.includes("FROM families"))return {rows:[{id:FAMILY_ID,region:"CN",assigned_to:options.assignedTo===undefined?USER_ID:options.assignedTo}]};
+      if(sql.includes("SELECT * FROM assessments"))return {rows:[{id:ASSESSMENT_ID,family_id:FAMILY_ID,status:"failed",snapshot:{},answers:{},submitted_at:new Date(),...options.assessment}]};
+      if(sql.includes("SELECT * FROM report_jobs"))return {rows:[{id:"job1",state:"failed",...options.job}]};
+      if(sql.includes("SELECT scopes FROM consents"))return {rows:options.consent===false?[]:[{scopes:["assessment","parent_report","sensitive_data"]}]};
+      return {rows:[]};
+    });
+  }
+  it("rechecks the assignee after taking the family lock",async()=>{
+    setupRetry({assignedTo:FAMILY_ID});
+    await expect(retryReport(actor("staff"),ASSESSMENT_ID)).rejects.toMatchObject({code:"NOT_FOUND"});
+    expect(client.query).toHaveBeenCalledTimes(1);
+    expect(client.query.mock.calls[0][0]).toContain("FOR UPDATE");
+  });
+  it("lets the assigned staff queue a complete failed report",async()=>{
+    setupRetry();
+    await expect(retryReport(actor("staff"),ASSESSMENT_ID)).resolves.toEqual({id:ASSESSMENT_ID,status:"queued"});
+    expect(client.query.mock.calls.some(([sql])=>sql.startsWith("UPDATE report_jobs"))).toBe(true);
+  });
+  it("refuses a triad snapshot whose round is absent even when source ids exist",async()=>{
+    setupRetry({assessment:{snapshot:{scale:{bundle:TRIAD_BUNDLE}},triad_round_id:null},job:{source_assessment_ids:[ASSESSMENT_ID,FAMILY_ID,USER_ID]}});
+    await expect(retryReport(actor("admin"),ASSESSMENT_ID)).rejects.toMatchObject({code:"TRIAD_LEGACY_REVIEW_REQUIRED"});
+    expect(client.query.mock.calls.some(([sql])=>sql.startsWith("UPDATE"))).toBe(false);
+  });
+  it("keeps queued-ready retries idempotent",async()=>{
+    setupRetry({assessment:{status:"queued"},job:{state:"ready"}});
+    await expect(retryReport(actor("staff"),ASSESSMENT_ID)).resolves.toEqual({id:ASSESSMENT_ID,status:"queued"});
+    expect(client.query.mock.calls.some(([sql])=>sql.startsWith("UPDATE"))).toBe(false);
+  });
+  it("still requires consent for a queued-ready replay",async()=>{
+    setupRetry({assessment:{status:"queued"},job:{state:"ready"},consent:false});
+    await expect(retryReport(actor("admin"),ASSESSMENT_ID)).rejects.toMatchObject({code:"GUARDIAN_CONSENT_REQUIRED"});
   });
 });

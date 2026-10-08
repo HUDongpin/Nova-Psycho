@@ -1,11 +1,11 @@
 import { randomBytes,randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { Actor } from "../domain/types";
-import { ageAt, familyFor } from "./access";
+import { ageAt, canInviteFamilyMembers, familyFor } from "./access";
 import { audit, hashPassword, hashToken } from "./auth";
 import { getConfig } from "./config";
 import { query, transaction } from "./db";
-import { HttpError, requireRole } from "./http";
+import { HttpError, requireRole, validateId } from "./http";
 import { noticeVersion } from "./privacy";
 const short=z.string().trim().min(1).max(100);
 const familyInput=z.object({familyName:short,childName:short,birthDate:z.string().regex(/^\d{4}-\d{2}-\d{2}$/),grade:short,guardianLabel:short,assignedTo:z.string().uuid().optional()}).strict();
@@ -13,8 +13,21 @@ export async function createFamily(actor:Actor,input:unknown){
   requireRole(actor.role,["admin","staff"]);const d=familyInput.parse(input);const age=ageAt(d.birthDate);
   if(!Number.isFinite(Date.parse(d.birthDate))||new Date(d.birthDate).toISOString().slice(0,10)!==d.birthDate||!Number.isInteger(age)||age<3||age>25)throw new HttpError(422,"请填写有效的孩子出生日期。","INVALID_BIRTHDATE");
   const assigned=actor.role==="staff"?actor.id:d.assignedTo??null;
-  if(assigned && !(await query("SELECT id FROM users WHERE id=$1 AND region=$2 AND role IN ('staff','admin') AND NOT disabled",[assigned,actor.region])).length)throw new HttpError(422,"请选择本地区的服务人员。","INVALID_STAFF");
+  if(assigned && !(await query("SELECT id FROM users WHERE id=$1 AND region=$2 AND role='staff' AND NOT disabled",[assigned,actor.region])).length)throw new HttpError(422,"请选择本地区的有效工作人员。","INVALID_STAFF");
   const id=randomUUID();await query("INSERT INTO families(id,region,family_name,child_name,birth_date,grade,guardian_label,assigned_to) VALUES($1,$2,$3,$4,$5,$6,$7,$8)",[id,actor.region,d.familyName,d.childName,d.birthDate,d.grade,d.guardianLabel,assigned]);await audit(actor,"family.created",id);return {id};
+}
+export async function assignFamily(actor:Actor,id:string,input:unknown){
+  requireRole(actor.role,["admin"]);validateId(id);
+  const {assignedTo}=z.object({assignedTo:z.string().uuid()}).strict().parse(input);
+  return transaction(async client=>{
+    const family=await client.query("SELECT id FROM families WHERE id=$1 AND region=$2 FOR UPDATE",[id,actor.region]);
+    if(!family.rows[0])throw new HttpError(404,"未找到该家庭或没有访问权限。","NOT_FOUND");
+    const staff=await client.query("SELECT id FROM users WHERE id=$1 AND region=$2 AND role='staff' AND NOT disabled FOR SHARE",[assignedTo,actor.region]);
+    if(!staff.rows[0])throw new HttpError(422,"请选择本地区的有效工作人员。","INVALID_STAFF");
+    await client.query("UPDATE families SET assigned_to=$1 WHERE id=$2 AND region=$3",[assignedTo,id,actor.region]);
+    await client.query("INSERT INTO audit_events(region,actor_id,action,entity_id) VALUES($1,$2,'family.assigned',$3)",[actor.region,actor.id,id]);
+    return {id,assignedTo};
+  });
 }
 export async function recordConsent(actor:Actor,id:string,input:unknown){
   requireRole(actor.role,["admin","staff","parent"]);await familyFor(actor,id);
@@ -47,12 +60,12 @@ export async function deleteFamily(actor:Actor,id:string,input:unknown){
   });return {ok:true};
 }
 export async function createInvitation(actor:Actor,id:string,input:unknown){
-  requireRole(actor.role,["admin","staff"]);await familyFor(actor,id);
+  requireRole(actor.role,["admin","staff"]);validateId(id);
   const {role}=z.object({role:z.enum(["parent","student","teacher"])}).strict().parse(input);
   const token=randomBytes(32).toString("hex"),expires=new Date(Date.now()+72*3600000);
   await transaction(async client=>{
-    const lock=await client.query("SELECT id FROM families WHERE id=$1 FOR UPDATE",[id]);
-    if(!lock.rows[0])throw new HttpError(404,"该家庭已删除。","NOT_FOUND");
+    const lock=await client.query("SELECT id,region,assigned_to FROM families WHERE id=$1 AND region=$2 FOR UPDATE",[id,actor.region]);
+    if(!lock.rows[0]||!canInviteFamilyMembers(actor,lock.rows[0]))throw new HttpError(404,"未找到该家庭或没有访问权限。","NOT_FOUND");
     await client.query("INSERT INTO invitations(token_hash,family_id,role,expires_at,created_by) VALUES($1,$2,$3,$4,$5)",[hashToken(token),id,role,expires,actor.id]);
   });
   await audit(actor,"invitation.created",id);return {url:`${getConfig().publicUrl}/invite#token=${token}`,expiresAt:expires.toISOString()};

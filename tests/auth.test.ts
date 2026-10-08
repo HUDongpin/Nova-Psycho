@@ -1,11 +1,12 @@
 import { describe,it,expect,beforeEach,afterEach,vi } from "vitest";
 import { NextResponse } from "next/server";
 
-vi.mock("../src/lib/db",()=>({query:vi.fn()}));
-import { query } from "../src/lib/db";
-import { actorOf,audit,checkPassword,cookieName,endSession,hashPassword,hashToken,limitLogin,listAuditEvents,requireActor,setSession } from "../src/lib/auth";
+vi.mock("../src/lib/db",()=>({query:vi.fn(),transaction:vi.fn()}));
+import { query,transaction } from "../src/lib/db";
+import { actorOf,audit,checkPassword,cookieName,endSession,hashPassword,hashToken,limitLogin,listAuditEvents,requireActor,setPasswordSession,setSession } from "../src/lib/auth";
 
 const mockQuery=vi.mocked(query);
+const mockTransaction=vi.mocked(transaction);
 
 function config(over:Record<string,string>={}){
   vi.stubEnv("NOVA_REGION","CN");vi.stubEnv("NOVA_MODE","demo");
@@ -18,7 +19,7 @@ function config(over:Record<string,string>={}){
 const requestWithCookie=(cookie?:string)=>new Request("http://127.0.0.1:3100/api/workspace",{headers:cookie?{cookie}:{}});
 const sessionCookie=(token:string)=>`nova_cn_session=${token}`;
 
-beforeEach(()=>{mockQuery.mockReset();config();});
+beforeEach(()=>{mockQuery.mockReset();mockTransaction.mockReset();config();});
 afterEach(()=>vi.unstubAllEnvs());
 
 describe("token hashing",()=>{
@@ -90,6 +91,83 @@ describe("session cookies",()=>{
     const response=NextResponse.json({ok:true});
     await endSession(requestWithCookie(sessionCookie("a".repeat(96))),response);
     expect(response.cookies.get("nova_cn_session")!.maxAge).toBe(0);
+  });
+});
+
+describe("password login session issuance",()=>{
+  const userId="11111111-2222-4333-8444-555555555555";
+  const username="synthetic_login",password="synthetic-long-password";
+  async function prepare(options:{changedHash?:boolean;missingLock?:boolean;missingCurrent?:boolean;commitFailure?:boolean}={}){
+    const verifiedHash=await hashPassword(password);
+    const currentHash=options.changedHash?await hashPassword("synthetic-new-password"):verifiedHash;
+    mockQuery.mockResolvedValueOnce([{id:userId,password_hash:verifiedHash}]);
+    const client={query:vi.fn(async(sql:string,_values?:unknown[])=>{
+      if(sql.includes("FOR UPDATE"))return {rows:options.missingLock?[]:[{id:userId}]};
+      if(sql.startsWith("SELECT"))return {rows:options.missingCurrent?[]:[{password_hash:currentHash}]};
+      return {rows:[]};
+    })};
+    mockTransaction.mockImplementation((async(fn:(value:unknown)=>Promise<unknown>)=>{
+      const result=await fn(client);
+      if(options.commitFailure)throw new Error("Synthetic commit failure");
+      return result;
+    }) as never);
+    return client;
+  }
+  it("rejects a password replaced after verification without issuing a cookie",async()=>{
+    const client=await prepare({changedHash:true}),response=NextResponse.json({ok:true});
+    await expect(setPasswordSession(response,username,password)).rejects.toMatchObject({status:401,code:"INVALID_CREDENTIALS"});
+    expect(response.headers.get("set-cookie")).toBeNull();
+    expect(client.query.mock.calls.some(([sql])=>sql.startsWith("INSERT"))).toBe(false);
+  });
+  it("rejects an account removed before the user lock",async()=>{
+    const client=await prepare({missingLock:true}),response=NextResponse.json({ok:true});
+    await expect(setPasswordSession(response,username,password)).rejects.toMatchObject({code:"INVALID_CREDENTIALS"});
+    expect(client.query).toHaveBeenCalledTimes(1);
+    expect(response.headers.get("set-cookie")).toBeNull();
+  });
+  it("rejects an account that no longer meets region, mode or enabled requirements",async()=>{
+    const client=await prepare({missingCurrent:true}),response=NextResponse.json({ok:true});
+    await expect(setPasswordSession(response,username,password)).rejects.toMatchObject({code:"INVALID_CREDENTIALS"});
+    const freshRead=client.query.mock.calls[1];
+    expect(freshRead[0]).toContain("region=$2");
+    expect(freshRead[0]).toContain("NOT disabled");
+    expect(freshRead[0]).toContain("OR NOT demo");
+    expect(response.headers.get("set-cookie")).toBeNull();
+  });
+  it.each([
+    {region:"CN",mode:"demo",origin:"http://127.0.0.1:3100",secure:false},
+    {region:"HK",mode:"service",origin:"https://synthetic.example",secure:true},
+  ])("commits a $region $mode session with the existing cookie policy",async({region,mode,origin,secure})=>{
+    config({NOVA_REGION:region,NOVA_MODE:mode,NOVA_PUBLIC_URL:origin});
+    const client=await prepare(),response=NextResponse.json({ok:true});
+    await setPasswordSession(response,username,password);
+    expect(client.query.mock.calls[0][0]).toContain("FOR UPDATE");
+    expect(client.query.mock.calls[1][0]).toContain("SELECT password_hash");
+    expect(client.query.mock.calls[1][1]).toEqual([userId,region,mode==="demo"]);
+    const insert=client.query.mock.calls[2];
+    expect(insert[0]).toContain("INSERT INTO sessions");
+    const cookie=response.cookies.get(`nova_${region.toLowerCase()}_session`)!;
+    expect(cookie).toMatchObject({httpOnly:true,sameSite:"lax",maxAge:43200,path:"/",secure});
+    expect(insert[1]?.[0]).toBe(hashToken(cookie.value));
+    expect(insert[1]).not.toContain(cookie.value);
+    expect(mockQuery.mock.calls[0][1]).toEqual([username,region,mode==="demo"]);
+  });
+  it("does not send a cookie when session commit fails",async()=>{
+    await prepare({commitFailure:true});const response=NextResponse.json({ok:true});
+    await expect(setPasswordSession(response,username,password)).rejects.toThrow("Synthetic commit failure");
+    expect(response.headers.get("set-cookie")).toBeNull();
+  });
+  it("rejects an incorrect password before acquiring a user lock",async()=>{
+    await prepare();const response=NextResponse.json({ok:true});
+    await expect(setPasswordSession(response,username,"incorrect-password")).rejects.toMatchObject({code:"INVALID_CREDENTIALS"});
+    expect(mockTransaction).not.toHaveBeenCalled();
+    expect(response.headers.get("set-cookie")).toBeNull();
+  });
+  it("rejects a missing account before creating a session",async()=>{
+    mockQuery.mockResolvedValueOnce([]);const response=NextResponse.json({ok:true});
+    await expect(setPasswordSession(response,username,password)).rejects.toMatchObject({code:"INVALID_CREDENTIALS"});
+    expect(mockTransaction).not.toHaveBeenCalled();
+    expect(response.headers.get("set-cookie")).toBeNull();
   });
 });
 

@@ -31,3 +31,4 @@ credentials/
 *.xls
 *.pptx
 *.ppt
+.vercel

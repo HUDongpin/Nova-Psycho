@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
-import type { Actor } from "../domain/types";
+import type { Actor, RespondentRole } from "../domain/types";
 import { z } from "zod";
 import { triadScales } from "../domain/triad-scales";
 import { TRIAD_BUNDLE, triadRolesReady } from "../domain/triad-report";
@@ -75,6 +75,25 @@ async function freshCode(client: PoolClient): Promise<string> {
   throw new HttpError(503, "暂时无法分配家庭编号，请再试一次。", "JOIN_CODE");
 }
 
+// Callers hold the family lock, including when adopting a pre-round pending task.
+export async function triadRoundFor(client: PoolClient, familyId: string, role: RespondentRole): Promise<string> {
+  const region = getConfig().region;
+  const legacy = await client.query("SELECT a.id FROM assessments a JOIN scales s ON s.id=a.scale_version_id WHERE a.family_id=$1 AND a.region=$2 AND a.triad_round_id IS NULL AND a.submitted_at IS NOT NULL AND a.status<>'published' AND s.definition->>'bundle'=$3 LIMIT 1", [familyId, region, TRIAD_BUNDLE]);
+  if (legacy.rows[0]) throw new HttpError(409, "旧三方问卷的轮次尚未核实，请联系服务团队处理后再开始。", "TRIAD_LEGACY_REVIEW_REQUIRED");
+  const latest = await client.query("SELECT id FROM triad_rounds WHERE family_id=$1 AND region=$2 ORDER BY created_at DESC,id DESC LIMIT 1", [familyId, region]);
+  if (latest.rows[0]) {
+    const roundId = String(latest.rows[0].id);
+    const members = await client.query("SELECT respondent_role,submitted_at FROM assessments WHERE triad_round_id=$1", [roundId]);
+    if (!triadRolesReady(members.rows.filter(row => row.submitted_at).map(row => String(row.respondent_role)))) {
+      if (members.rows.some(row => row.respondent_role === role)) throw new HttpError(409, "本轮仍在等待其他成员完成，请先完成本轮三方问卷。", "TRIAD_ROUND_IN_PROGRESS");
+      return roundId;
+    }
+  }
+  const id = randomUUID();
+  await client.query("INSERT INTO triad_rounds(id,family_id,region) VALUES($1,$2,$3)", [id, familyId, region]);
+  return id;
+}
+
 export async function startParentCase(input: unknown, locale: "zh-CN" | "zh-HK"): Promise<{ userId: string; familyId: string; joinCode: string }> {
   const data = z.object({ parentName: short, username, password, relationship: z.enum(relationships), childName: short, birthDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), grade: z.enum(grades), accepted: z.literal(true) }).strict().parse(input);
   assertChildAge(data.birthDate);
@@ -91,7 +110,8 @@ export async function startParentCase(input: unknown, locale: "zh-CN" | "zh-HK")
     await client.query("INSERT INTO families(id,region,family_name,child_name,birth_date,grade,guardian_label,join_code) VALUES($1,$2,$3,$4,$5,$6,$7,$8)", [familyId, getConfig().region, `${data.childName}的家庭`, data.childName, data.birthDate, data.grade, data.relationship, joinCode]);
     await client.query("INSERT INTO memberships(family_id,user_id,role) VALUES($1,$2,'parent')", [familyId, userId]);
     await client.query("INSERT INTO consents(id,family_id,actor_id,guardian_name,method,notice_version,scopes) VALUES($1,$2,$3,$4,'online_guardian',$5,$6)", [randomUUID(), familyId, userId, data.parentName, noticeVersion, JSON.stringify(["assessment", "parent_report", "sensitive_data"])]);
-    await client.query("INSERT INTO assessments(id,family_id,region,respondent_id,respondent_role,scale_version_id,locale) VALUES($1,$2,$3,$4,'parent',$5,$6)", [randomUUID(), familyId, getConfig().region, userId, SCALE_ID.parent, locale]);
+    const roundId = await triadRoundFor(client, familyId, "parent");
+    await client.query("INSERT INTO assessments(id,family_id,region,respondent_id,respondent_role,scale_version_id,locale,triad_round_id) VALUES($1,$2,$3,$4,'parent',$5,$6,$7)", [randomUUID(), familyId, getConfig().region, userId, SCALE_ID.parent, locale, roundId]);
     await client.query("INSERT INTO audit_events(region,actor_id,action,entity_id) VALUES($1,$2,'triad.parent_started',$3)", [getConfig().region, userId, familyId]);
     return { userId, familyId, joinCode: formatJoinCode(joinCode) };
   });
@@ -116,25 +136,20 @@ export async function joinWithCode(input: unknown, locale: "zh-CN" | "zh-HK"): P
     const userId = randomUUID();
     await client.query("INSERT INTO users(id,region,username,name,role,password_hash) VALUES($1,$2,$3,$4,$5,$6)", [userId, getConfig().region, data.username, data.name, data.role, passwordHash]);
     await client.query("INSERT INTO memberships(family_id,user_id,role) VALUES($1,$2,$3)", [family.rows[0].id, userId, data.role]);
-    await client.query("INSERT INTO assessments(id,family_id,region,respondent_id,respondent_role,scale_version_id,locale) VALUES($1,$2,$3,$4,$5,$6,$7)", [randomUUID(), family.rows[0].id, getConfig().region, userId, data.role, scaleId, locale]);
+    const roundId = await triadRoundFor(client, family.rows[0].id, data.role);
+    await client.query("INSERT INTO assessments(id,family_id,region,respondent_id,respondent_role,scale_version_id,locale,triad_round_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8)", [randomUUID(), family.rows[0].id, getConfig().region, userId, data.role, scaleId, locale, roundId]);
     await client.query("INSERT INTO audit_events(region,actor_id,action,entity_id) VALUES($1,$2,'triad.member_joined',$3)", [getConfig().region, userId, family.rows[0].id]);
     return { userId };
   });
 }
 
-export async function queueTriadReport(client: PoolClient, familyId: string): Promise<void> {
+export async function queueTriadReport(client: PoolClient, familyId: string, roundId: string): Promise<void> {
   const region = getConfig().region;
-  const rows = await client.query("SELECT DISTINCT ON (a.respondent_role) a.id,a.respondent_role,a.snapshot FROM assessments a JOIN scales s ON s.id=a.scale_version_id WHERE a.family_id=$1 AND a.region=$2 AND a.submitted_at IS NOT NULL AND s.definition->>'bundle'=$3 ORDER BY a.respondent_role,a.submitted_at DESC", [familyId, region, TRIAD_BUNDLE]);
+  const rows = await client.query("SELECT id,respondent_role FROM assessments WHERE family_id=$1 AND region=$2 AND triad_round_id=$3 AND submitted_at IS NOT NULL ORDER BY respondent_role", [familyId, region, roundId]);
   if (!triadRolesReady(rows.rows.map(row => String(row.respondent_role)))) return;
   const parent = rows.rows.find(row => row.respondent_role === "parent");
   if (!parent) return;
-  const existing = await client.query("SELECT id FROM report_jobs WHERE assessment_id=$1", [parent.id]);
-  if (existing.rows[0]) return;
-  await client.query("INSERT INTO report_jobs(id,assessment_id) VALUES($1,$2)", [randomUUID(), parent.id]);
-  const safety = rows.rows.some(row => Boolean(row.snapshot?.score?.risk));
-  if (!safety) return;
-  await client.query("INSERT INTO staff_alerts(id,family_id,region,assessment_id) SELECT $1,$2,$3,$4 WHERE NOT EXISTS(SELECT 1 FROM staff_alerts WHERE assessment_id=$4)", [randomUUID(), familyId, region, parent.id]);
-  await client.query("INSERT INTO audit_events(region,action,entity_id) VALUES($1,'triad.safety_notified',$2)", [region, parent.id]);
+  await client.query("INSERT INTO report_jobs(id,assessment_id,source_assessment_ids) VALUES($1,$2,$3) ON CONFLICT(assessment_id) DO NOTHING", [randomUUID(), parent.id, rows.rows.map(row => row.id)]);
 }
 
 export async function acknowledgeSafetyAlert(actor: Actor, alertId: string) {
@@ -148,4 +163,3 @@ export async function acknowledgeSafetyAlert(actor: Actor, alertId: string) {
   if (updated[0]) await audit(actor, "safety.viewed", alertId);
   return { ok: true };
 }
-

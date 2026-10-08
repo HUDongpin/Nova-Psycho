@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
+import { OBSERVATION_MAX_LENGTH } from "../domain/care-limits";
 import type { Actor } from "../domain/types";
 import { familyFor } from "./access";
 import { audit } from "./auth";
@@ -15,6 +16,6 @@ export async function updateGoal(actor:Actor,id:string,input:unknown){
   await query("UPDATE goals SET status=$1 WHERE id=$2",[d.status,id]);await audit(actor,"goal.status_changed",id);return {ok:true};
 }
 export async function addObservation(actor:Actor,input:unknown){
-  requireRole(actor.role,["admin","staff"]);const d=z.object({familyId:z.string().uuid(),body:z.string().trim().min(1).max(4000)}).strict().parse(input);await familyFor(actor,d.familyId);
+  requireRole(actor.role,["admin","staff"]);const d=z.object({familyId:z.string().uuid(),body:z.string().trim().min(1).max(OBSERVATION_MAX_LENGTH)}).strict().parse(input);await familyFor(actor,d.familyId);
   const id=randomUUID();await query("INSERT INTO observations(id,family_id,body,created_by) VALUES($1,$2,$3,$4)",[id,d.familyId,d.body,actor.id]);await audit(actor,"observation.created",id);return {id};
 }

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AssessmentSnapshot,Locale,ReportPayload,StoredAnswer } from "../domain/types";
 import { selectNarrative } from "../domain/narrative";
-import { composeTriad,TRIAD_BUNDLE } from "../domain/triad-report";
+import { composeTriad,TRIAD_BUNDLE,triadRolesReady } from "../domain/triad-report";
 import { compareResults } from "../domain/scoring";
 import { reportHtml } from "../domain/report-html";
 import { getConfig } from "./config";
@@ -39,6 +39,7 @@ export async function processOneJob():Promise<boolean>{
   ) UPDATE report_jobs j SET state='running',attempts=j.attempts+1,lease_until=now()+interval '5 minutes',claim_token=$1 FROM candidate WHERE j.id=candidate.id RETURNING j.*`,[token]);
   const job=jobs[0];if(!job)return false;
   const keys:Partial<Record<Locale,string>>={};
+  let unboundTriad=false;
   try{
     const rows=await query("SELECT * FROM assessments WHERE id=$1 AND region=$2",[job.assessment_id,getConfig().region]);
     const assessment=rows[0];if(!assessment?.snapshot)throw new Error("Missing assessment snapshot");
@@ -47,8 +48,12 @@ export async function processOneJob():Promise<boolean>{
     let payload:ReportPayload;
     let publishIds=[assessment.id as string];
     if(snapshot.scale.bundle===TRIAD_BUNDLE){
-      const siblings=await query("SELECT DISTINCT ON (a.respondent_role) a.id,a.respondent_role,a.answers,a.snapshot,a.submitted_at FROM assessments a JOIN scales s ON s.id=a.scale_version_id WHERE a.family_id=$1 AND a.region=$2 AND a.submitted_at IS NOT NULL AND s.definition->>'bundle'=$3 ORDER BY a.respondent_role,a.submitted_at DESC",[assessment.family_id,getConfig().region,TRIAD_BUNDLE]);
-      if(siblings.length<3)throw new Error("Triad incomplete");
+      unboundTriad=!assessment.triad_round_id||!job.source_assessment_ids;
+      if(unboundTriad)throw new Error("Triad sources require review");
+      const sourceIds=job.source_assessment_ids as string[];
+      if(sourceIds.length!==3||new Set(sourceIds).size!==3||!sourceIds.includes(assessment.id))throw new Error("Invalid triad sources");
+      const siblings=await query("SELECT id,respondent_role,answers,snapshot,submitted_at FROM assessments WHERE id=ANY($1::uuid[]) AND family_id=$2 AND region=$3 AND triad_round_id=$4 AND submitted_at IS NOT NULL",[sourceIds,assessment.family_id,getConfig().region,assessment.triad_round_id]);
+      if(siblings.length!==3||!triadRolesReady(siblings.map(row=>row.respondent_role))||siblings.some(row=>row.snapshot?.scale?.bundle!==TRIAD_BUNDLE))throw new Error("Triad incomplete");
       const triad=composeTriad(siblings.map(row=>{const stored=row.snapshot as AssessmentSnapshot;return {role:row.respondent_role,scale:stored.scale,answers:row.answers as Record<string,StoredAnswer>,score:stored.score,submittedAt:new Date(row.submitted_at).toISOString()};}));
       payload={...snapshot,selectedAdviceIds:[],generationMode:"template",fallbackReason:"triad_combined",aiModel:null,comparison:{available:false,reason:"first_assessment"},triad,score:{...snapshot.score,risk:triad.safety.length>0,riskMessages:triad.safety}};
       publishIds=siblings.map(row=>row.id);
@@ -78,9 +83,9 @@ export async function processOneJob():Promise<boolean>{
     return true;
   }catch{
     for(const key of Object.values(keys))await removePrivatePdf(key).catch(()=>{});
-    const terminal=job.attempts>=3;
-    const changed=await query("UPDATE report_jobs SET state=$1,lease_until=NULL,available_at=now()+interval '10 seconds',last_error_code='REPORT_GENERATION_FAILED' WHERE id=$2 AND claim_token=$3 RETURNING assessment_id",[terminal?"failed":"ready",job.id,token]);
-    if(terminal&&changed[0])await query("UPDATE assessments SET status='failed' WHERE id=$1 AND status='queued'",[changed[0].assessment_id]);
+    const terminal=unboundTriad||job.attempts>=3;
+    const changed=await query("UPDATE report_jobs SET state=$1,lease_until=NULL,available_at=now()+interval '10 seconds',last_error_code=$4 WHERE id=$2 AND claim_token=$3 RETURNING assessment_id,source_assessment_ids",[terminal?"failed":"ready",job.id,token,unboundTriad?"TRIAD_SOURCES_UNBOUND":"REPORT_GENERATION_FAILED"]);
+    if(terminal&&changed[0])await query("UPDATE assessments SET status='failed' WHERE id=ANY($1::uuid[]) AND status='queued'",[changed[0].source_assessment_ids??[changed[0].assessment_id]]);
     console.error("nova_report_generation_failed",{region:getConfig().region,attempt:job.attempts});return true;
   }
 }

@@ -5,9 +5,10 @@ import { text } from "../domain/types";
 import { scoreAssessment,ScoringError,validateAnswers } from "../domain/scoring";
 import { surveyDefinition } from "../domain/survey";
 import { TRIAD_BUNDLE } from "../domain/triad-report";
-import { queueTriadReport } from "./triad";
+import { reportRetryBlocker } from "../domain/report-retry";
+import { queueTriadReport,triadRoundFor } from "./triad";
 import { ensureAdviceReferences } from "../domain/validation";
-import { ageAt,consentFor,familyFor } from "./access";
+import { ageAt,canManageFamilyReports,consentFor,familyFor } from "./access";
 import { audit } from "./auth";
 import { getConfig } from "./config";
 import { currentContent,getScale,lockContent } from "./content";
@@ -49,12 +50,19 @@ export async function createAssessment(actor:Actor,input:unknown){
     await lockContent(client);
     const currentScale=await client.query("SELECT status FROM scales WHERE id=$1",[d.scaleVersionId]);
     if(currentScale.rows[0]?.status!=="active")throw new HttpError(409,"该量表版本已停用。","SCALE_RETIRED");
-    const pending=await client.query("SELECT id FROM assessments WHERE family_id=$1 AND respondent_id=$2 AND scale_version_id=$3 AND status='pending'",[family.id,d.respondentId,d.scaleVersionId]);
-    if(pending.rows[0])return {id:pending.rows[0].id};
+    const pending=await client.query("SELECT id,triad_round_id FROM assessments WHERE family_id=$1 AND respondent_id=$2 AND scale_version_id=$3 AND status='pending'",[family.id,d.respondentId,d.scaleVersionId]);
+    if(pending.rows[0]){
+      if(scale.definition.bundle===TRIAD_BUNDLE&&!pending.rows[0].triad_round_id){
+        const roundId=await triadRoundFor(client,family.id,role);
+        await client.query("UPDATE assessments SET triad_round_id=$1 WHERE id=$2",[roundId,pending.rows[0].id]);
+      }
+      return {id:pending.rows[0].id};
+    }
     // Failed report generation still counts: the child already submitted answers.
     const last=await client.query("SELECT submitted_at FROM assessments WHERE family_id=$1 AND respondent_id=$2 AND scale_version_id=$3 AND submitted_at IS NOT NULL ORDER BY submitted_at DESC LIMIT 1",[family.id,d.respondentId,d.scaleVersionId]);
     if(last.rows[0]&&Date.now()-new Date(last.rows[0].submitted_at).getTime()<scale.definition.retakeDays*86400000)throw new HttpError(409,`此量表建议至少间隔 ${scale.definition.retakeDays} 天复测。`,"RETAKE_INTERVAL");
-    const id=randomUUID();await client.query("INSERT INTO assessments(id,family_id,region,respondent_id,respondent_role,scale_version_id,locale) VALUES($1,$2,$3,$4,$5,$6,$7)",[id,family.id,actor.region,d.respondentId,role,d.scaleVersionId,d.locale]);return {id};
+    const roundId=scale.definition.bundle===TRIAD_BUNDLE?await triadRoundFor(client,family.id,role):null;
+    const id=randomUUID();await client.query("INSERT INTO assessments(id,family_id,region,respondent_id,respondent_role,scale_version_id,locale,triad_round_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8)",[id,family.id,actor.region,d.respondentId,role,d.scaleVersionId,d.locale,roundId]);return {id};
   });
 }
 async function ownAssessment(actor:Actor,id:string){
@@ -96,10 +104,17 @@ export async function submitAssessment(actor:Actor,id:string,input:unknown){
     await lockContent(client);
     const advice=await currentContent<AdviceLibrary>("advice",client),template=await currentContent<ReportTemplate>("template",client);
     try{ensureAdviceReferences(scale,advice.content);}catch{throw new HttpError(409,"量表的报告建议配置需要更新。","ADVICE_MISMATCH");}
+    const roundId=scale.bundle===TRIAD_BUNDLE?(a.triad_round_id??await triadRoundFor(client,a.family_id,a.respondent_role)):null;
     const submittedAt=new Date().toISOString();
     const snapshot:AssessmentSnapshot={scale,advice,template,score,childName:family.child_name,grade:family.grade,submittedAt,aiConsented:scopes.includes("ai_processing")};
-    await client.query("UPDATE assessments SET answers=$1,draft_answers='{}',snapshot=$2,status='queued',submitted_at=$3,acknowledged_at=COALESCE(acknowledged_at,$3) WHERE id=$4",[JSON.stringify(d.answers),JSON.stringify(snapshot),submittedAt,id]);
-    if(scale.bundle===TRIAD_BUNDLE){await queueTriadReport(client,a.family_id);return {id,status:"queued",reportId:null};}
+    await client.query("UPDATE assessments SET answers=$1,draft_answers='{}',snapshot=$2,status='queued',submitted_at=$3,acknowledged_at=COALESCE(acknowledged_at,$3),triad_round_id=$5 WHERE id=$4",[JSON.stringify(d.answers),JSON.stringify(snapshot),submittedAt,id,roundId]);
+    if(scale.bundle===TRIAD_BUNDLE){
+      if(score.risk){
+        const alert=await client.query("INSERT INTO staff_alerts(id,family_id,region,assessment_id) VALUES($1,$2,$3,$4) ON CONFLICT(assessment_id) WHERE assessment_id IS NOT NULL DO NOTHING RETURNING id",[randomUUID(),a.family_id,actor.region,id]);
+        if(alert.rows[0])await client.query("INSERT INTO audit_events(region,action,entity_id) VALUES($1,'triad.safety_notified',$2)",[actor.region,id]);
+      }
+      await queueTriadReport(client,a.family_id,roundId);return {id,status:"queued",reportId:null};
+    }
     await client.query("INSERT INTO report_jobs(id,assessment_id) VALUES($1,$2) ON CONFLICT(assessment_id) DO NOTHING",[randomUUID(),id]);return {id,status:"queued",reportId:null};
   });await audit(actor,"assessment.submitted",id);return result;
 }
@@ -109,19 +124,22 @@ export async function retryReport(actor:Actor,id:string){
   if(!found[0])throw new HttpError(404,"未找到该测评。","NOT_FOUND");
   await familyFor(actor,found[0].family_id);
   const result=await transaction(async client=>{
-    const familyLock=await client.query("SELECT id,assigned_to FROM families WHERE id=$1 AND region=$2 FOR UPDATE",[found[0].family_id,actor.region]);
+    const familyLock=await client.query("SELECT id,region,assigned_to FROM families WHERE id=$1 AND region=$2 FOR UPDATE",[found[0].family_id,actor.region]);
     if(!familyLock.rows[0])throw new HttpError(404,"该家庭已删除。","NOT_FOUND");
-    if(actor.role==="staff"&&familyLock.rows[0].assigned_to!==actor.id)throw new HttpError(404,"未找到该家庭或没有访问权限。","NOT_FOUND");
+    if(!canManageFamilyReports(actor,familyLock.rows[0]))throw new HttpError(404,"未找到该家庭或没有访问权限。","NOT_FOUND");
     const locked=await client.query("SELECT * FROM assessments WHERE id=$1 AND region=$2 FOR UPDATE",[id,actor.region]);
     const a=locked.rows[0];if(!a)throw new HttpError(404,"未找到该测评。","NOT_FOUND");
-    const jobs=await client.query("SELECT * FROM report_jobs WHERE assessment_id=$1 FOR UPDATE",[id]);
+    const jobs=await client.query("SELECT * FROM report_jobs WHERE assessment_id=$1 OR $1=ANY(source_assessment_ids) FOR UPDATE",[id]);
     const job=jobs.rows[0];
     const consent=await client.query("SELECT scopes FROM consents WHERE family_id=$1 AND revoked_at IS NULL ORDER BY created_at DESC LIMIT 1",[a.family_id]);
     const scopes=consent.rows[0]?.scopes as string[]|undefined;
-    if(!scopes||!["assessment","parent_report","sensitive_data"].every(s=>scopes.includes(s)))throw new HttpError(409,"请先完成监护人授权。","GUARDIAN_CONSENT_REQUIRED");
+    const blocker=reportRetryBlocker({status:a.status,jobState:job?.state??null,hasSnapshot:a.snapshot!=null,hasAnswers:a.answers!=null,hasSubmission:a.submitted_at!=null,isTriad:a.snapshot?.scale?.bundle===TRIAD_BUNDLE,hasRoundSources:a.triad_round_id!=null&&job?.source_assessment_ids!=null,hasConsent:!!scopes&&["assessment","parent_report","sensitive_data"].every(s=>scopes.includes(s))});
+    if(blocker){
+      const messages={TRIAD_LEGACY_REVIEW_REQUIRED:"旧三方报告缺少已核实的轮次来源，请联系服务团队处理。",GUARDIAN_CONSENT_REQUIRED:"请先完成监护人授权。",REPORT_NOT_FAILED:"仅可重新排队生成失败的报告，不会重新开始作答。"};
+      throw new HttpError(409,messages[blocker],blocker);
+    }
     if(a.status==="queued"&&job?.state==="ready")return {id,status:"queued" as const,retried:false};
-    if(a.status!=="failed"||job?.state!=="failed"||!a.snapshot||!a.answers||!a.submitted_at)throw new HttpError(409,"仅可重新排队生成失败的报告，不会重新开始作答。","REPORT_NOT_FAILED");
-    await client.query("UPDATE assessments SET status='queued' WHERE id=$1 AND status='failed'",[id]);
+    await client.query("UPDATE assessments SET status='queued' WHERE id=ANY($1::uuid[]) AND status='failed'",[job.source_assessment_ids??[id]]);
     await client.query("UPDATE report_jobs SET state='ready',attempts=0,lease_until=NULL,claim_token=NULL,last_error_code=NULL,available_at=now() WHERE id=$1 AND state='failed'",[job.id]);
     return {id,status:"queued" as const,retried:true};
   });

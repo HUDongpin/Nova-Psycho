@@ -65,4 +65,50 @@ describe("growth triad questionnaires", () => {
     expect(survey).toContain("visibleIf");
     expect(survey).toContain("comment");
   });
+
+  it.each(["calm", "risk"] as const)("keeps child direct responses private in %s reports while retaining adult responses and child summaries", mode => {
+    const sources = ([childScale, parentScale, teacherScale]).map(original => {
+      const scale = structuredClone(original), role = scale.roles[0];
+      const answers = previewAnswers(scale, role === "student" ? mode : "calm");
+      for (const item of scale.items) {
+        if (item.report === "situation" || item.report === "priorities") {
+          for (const choice of item.choices) choice.label = {
+            "zh-CN": `${role}-${item.report}-${item.id}-${choice.value}-合成选择`,
+            "zh-HK": `${role}-${item.report}-${item.id}-${choice.value}-合成選擇`
+          };
+        }
+        if (item.kind === "text" && answers[item.id] !== undefined) answers[item.id] = `${role}-${item.report}-PRIVATE_SENTINEL`;
+      }
+      return { role, scale, answers, score: scoreAssessment(scale, answers, { age: 12, region: "CN", role }), submittedAt: "2026-10-07T02:00:00.000Z" };
+    });
+    const before = JSON.stringify(sources), child = sources[0];
+    const triad = composeTriad(sources);
+    expect(JSON.stringify(sources)).toBe(before);
+    expect(triad.sources.map(source => source.role)).toEqual(["student", "parent", "teacher"]);
+    expect(triad.domains.flatMap(domain => domain.views).filter(view => view.role === "student").length).toBeGreaterThan(0);
+    expect(triad.safety).toEqual(child.score.riskMessages);
+    expect(triad.safety.length > 0).toBe(mode === "risk");
+    for (const key of ["situations", "priorities", "words"] as const) {
+      expect(triad[key].some(item => item.role === "student")).toBe(false);
+      for (const role of ["parent", "teacher"] as const) expect(triad[key].some(item => item.role === role)).toBe(true);
+    }
+    const serialized = JSON.stringify(triad);
+    for (const marker of ["student-situation-", "student-priorities-", "student-words-", "student-staff-"]) expect(serialized).not.toContain(marker);
+    for (const locale of ["zh-CN", "zh-HK"] as const) {
+      const html = reportHtml({
+        scale: parentScale, advice: { id: "a", version: "1.0.0", content: demoAdvice }, template: { id: "t", version: "1.0.0", content: demoTemplate },
+        score: sources[1].score, childName: "合成孩子", grade: "初中", submittedAt: sources[1].submittedAt, aiConsented: false,
+        selectedAdviceIds: [], generationMode: "template", fallbackReason: null, aiModel: null, comparison: { available: false }, triad
+      }, locale);
+      for (const marker of ["student-situation-", "student-priorities-", "student-words-", "student-staff-"]) expect(html).not.toContain(marker);
+      for (const role of ["parent", "teacher"] as const) {
+        expect(html).toContain(`${role}-situation-`);
+        expect(html).toContain(`${role}-priorities-`);
+        expect(html).toContain(`${role}-words-PRIVATE_SENTINEL`);
+        expect(html).not.toContain(`${role}-staff-`);
+      }
+      for (const message of child.score.riskMessages) expect(html).toContain(message[locale]);
+      expect(html).toContain(locale === "zh-CN" ? "不做诊断" : "不做診斷");
+    }
+  });
 });

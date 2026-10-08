@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { demoScale } from "@/domain/demo";
-import { actorOf,audit,checkPassword,endSession,limitLogin,listAuditEvents,requireActor,setSession } from "@/lib/auth";
+import { actorOf,audit,endSession,limitLogin,listAuditEvents,requireActor,setPasswordSession,setSession } from "@/lib/auth";
 import { getConfig } from "@/lib/config";
 import { query } from "@/lib/db";
 import { body,checkOrigin,handle,HttpError,json,localeOf,requireRole } from "@/lib/http";
@@ -8,7 +8,7 @@ import { privacyNotice } from "@/lib/privacy";
 import { opsStatus } from "@/lib/ops";
 import { acceptRecovery, createRecovery, recoveryInfo } from "@/lib/recovery";
 import { workspaceFor } from "@/lib/workspace";
-import { acceptInvitation,createFamily,createInvitation,deleteFamily,invitationInfo,recordConsent } from "@/lib/families";
+import { acceptInvitation,assignFamily,createFamily,createInvitation,deleteFamily,invitationInfo,recordConsent } from "@/lib/families";
 import { acknowledgeSafetyAlert,joinWithCode,startParentCase } from "@/lib/triad";
 import { assessmentDetail,createAssessment,retryReport,saveDraft,submitAssessment } from "@/lib/assessments";
 import { reportDetail,reportFor } from "@/lib/reports";
@@ -36,9 +36,7 @@ async function dispatch(request:Request,context:Context):Promise<Response>{retur
   }
   if(method==="POST"&&route==="auth/login"){
     const d=z.object({username:z.string().trim().toLowerCase().min(1).max(100),password:z.string().min(1).max(256)}).strict().parse(await body(request));await limitLogin(d.username);
-    const rows=await query("SELECT id,password_hash FROM users WHERE username=$1 AND region=$2 AND NOT disabled AND ($3::boolean OR NOT demo)",[d.username,config.region,config.mode==="demo"]);
-    if(!await checkPassword(d.password,rows[0]?.password_hash??null))throw new HttpError(401,"账号或密码不正确。","INVALID_CREDENTIALS");
-    const response=json({ok:true});await setSession(response,rows[0].id);return response;
+    const response=json({ok:true});await setPasswordSession(response,d.username,d.password);return response;
   }
   if(method==="POST"&&route==="auth/logout"){const response=json({ok:true});await endSession(request,response);return response;}
   if(method==="GET"&&route==="invite")return json(await invitationInfo(request.headers.get("x-invitation-token")??new URL(request.url).searchParams.get("token")));
@@ -60,6 +58,7 @@ async function dispatch(request:Request,context:Context):Promise<Response>{retur
   if(method==="POST"&&path[0]==="alerts"&&path.length===3&&path[2]==="viewed")return json(await acknowledgeSafetyAlert(actor,path[1]));
   if(method==="POST"&&route==="families")return json(await createFamily(actor,await body(request)),201);
   if(path[0]==="families"&&path[1]){
+    if(method==="PATCH"&&path.length===3&&path[2]==="assignment")return json(await assignFamily(actor,path[1],await body(request)));
     if(method==="POST"&&path.length===3&&path[2]==="consent")return json(await recordConsent(actor,path[1],await body(request)));
     if(method==="POST"&&path.length===3&&path[2]==="invites")return json(await createInvitation(actor,path[1],await body(request)),201);
     if(method==="DELETE"&&path.length===2)return json(await deleteFamily(actor,path[1],await body(request)));

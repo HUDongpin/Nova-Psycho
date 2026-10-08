@@ -1,0 +1,1 @@
+export const OBSERVATION_MAX_LENGTH = 4000;
