@@ -1,7 +1,9 @@
 import { z } from "zod";
 import { after } from "next/server";
 import { demoScale } from "@/domain/demo";
-import { actorOf,audit,endSession,limitLogin,listAuditEvents,requireActor,setPasswordSession,setSession } from "@/lib/auth";
+import { actorOf,audit,authStateOf,createClerkProfile,createLocalProfile,endSession,limitLogin,linkLegacyIdentity,listAuditEvents,requireActor,setPasswordSession,setSession,signOutClerk } from "@/lib/auth";
+import { getAuthProvider } from "@/lib/auth-provider";
+import { getVerifiedClerkIdentity } from "@/lib/clerk-auth";
 import { getConfig } from "@/lib/config";
 import { query } from "@/lib/db";
 import { body,checkOrigin,handle,HttpError,json,localeOf,requireRole } from "@/lib/http";
@@ -9,8 +11,8 @@ import { privacyNotice } from "@/lib/privacy";
 import { opsStatus } from "@/lib/ops";
 import { acceptRecovery, createRecovery, recoveryInfo } from "@/lib/recovery";
 import { workspaceFor } from "@/lib/workspace";
-import { acceptInvitation,assignFamily,createFamily,createInvitation,deleteFamily,invitationInfo,recordConsent } from "@/lib/families";
-import { acknowledgeSafetyAlert,joinWithCode,startParentCase } from "@/lib/triad";
+import { acceptClerkInvitation,acceptInvitation,acceptInvitationForActor,assignFamily,createFamily,createInvitation,deleteFamily,invitationInfo,recordConsent } from "@/lib/families";
+import { acknowledgeSafetyAlert,createParentFamily,joinClerkStudent,joinFamily,joinWithCode,startParentCase } from "@/lib/triad";
 import { assessmentDetail,createAssessment,retryReport,saveDraft,submitAssessment } from "@/lib/assessments";
 import { reportDetail,reportFor } from "@/lib/reports";
 import { readPrivatePdf } from "@/lib/storage";
@@ -27,32 +29,54 @@ async function dispatch(request:Request,context:Context):Promise<Response>{retur
     const r=await query("SELECT region FROM deployment_settings");return json({ok:r[0]?.region===config.region,region:config.region,mode:config.mode});
   }
   if(method==="GET"&&route==="session"){
-    const user=await actorOf(request,false);const demoAccounts=config.mode==="demo"?await query("SELECT id,name,role FROM users WHERE demo AND region=$1 AND NOT disabled ORDER BY CASE role WHEN 'admin' THEN 1 WHEN 'staff' THEN 2 WHEN 'parent' THEN 3 WHEN 'student' THEN 4 ELSE 5 END,name",[config.region]):[];
-    return json({user,region:config.region,mode:config.mode,demoAccounts,siblingUrl:config.siblingUrl});
+    const state=await authStateOf(request);const demoAccounts=config.mode==="demo"&&state.authProvider==="local"?await query("SELECT id,name,role FROM users WHERE demo AND region=$1 AND NOT disabled ORDER BY CASE role WHEN 'admin' THEN 1 WHEN 'staff' THEN 2 WHEN 'parent' THEN 3 WHEN 'student' THEN 4 ELSE 5 END,name",[config.region]):[];
+    return json({...state,region:config.region,mode:config.mode,demoAccounts,siblingUrl:config.siblingUrl});
   }
-  if(method==="GET"&&route==="privacy")return json(privacyNotice(config.region,locale,config.dataRegion));
+  if(method==="GET"&&route==="privacy")return json(privacyNotice(config.region,locale,config.dataRegion,getAuthProvider()));
   if(method==="POST"&&route==="auth/demo"){
-    if(config.mode!=="demo")throw new HttpError(404,"未找到该入口。","NOT_FOUND");
+    if(config.mode!=="demo"||getAuthProvider()!=="local")throw new HttpError(404,"未找到该入口。","NOT_FOUND");
     const d=z.object({accountId:z.string().uuid()}).strict().parse(await body(request));const rows=await query("SELECT id FROM users WHERE id=$1 AND region=$2 AND demo AND NOT disabled",[d.accountId,config.region]);
     if(!rows[0])throw new HttpError(403,"演示账号不可用。","INVALID_DEMO_ACCOUNT");const response=json({ok:true});await setSession(response,rows[0].id);return response;
   }
   if(method==="POST"&&route==="auth/login"){
+    if(getAuthProvider()!=="local")throw new HttpError(409,"请使用邮箱登录入口。","AUTH_PROVIDER_MISMATCH");
     const d=z.object({username:z.string().trim().toLowerCase().min(1).max(100),password:z.string().min(1).max(256)}).strict().parse(await body(request));await limitLogin(d.username);
     const response=json({ok:true});await setPasswordSession(response,d.username,d.password);return response;
   }
-  if(method==="POST"&&route==="auth/logout"){const response=json({ok:true});await endSession(request,response);return response;}
+  if(method==="POST"&&route==="auth/register"){
+    if(getAuthProvider()!=="local")throw new HttpError(409,"请使用邮箱注册入口。","AUTH_PROVIDER_MISMATCH");
+    const user=await createLocalProfile(await body(request));const response=json({user},201);await setSession(response,user.id);return response;
+  }
+  if(method==="POST"&&route==="auth/profile")return json({user:await createClerkProfile(request,await body(request))},201);
+  if(method==="POST"&&route==="auth/link-legacy")return json({user:await linkLegacyIdentity(request,await body(request))});
+  if(method==="POST"&&route==="auth/logout"){
+    const response=json({ok:true});
+    if(getAuthProvider()==="clerk")await signOutClerk(request);
+    else await endSession(request,response);
+    return response;
+  }
   if(method==="GET"&&route==="invite")return json(await invitationInfo(request.headers.get("x-invitation-token")??new URL(request.url).searchParams.get("token")));
-  if(method==="POST"&&route==="invite"){const id=await acceptInvitation(await body(request));const response=json({ok:true});await setSession(response,id);return response;}
+  if(method==="POST"&&route==="invite"){
+    const input=await body(request),actor=await actorOf(request,false);
+    if(actor){await acceptInvitationForActor(actor,input,locale);return json({ok:true});}
+    if(getAuthProvider()==="clerk"){await acceptClerkInvitation(await getVerifiedClerkIdentity(request),input,locale);return json({ok:true});}
+    const id=await acceptInvitation(input,locale);const response=json({ok:true});await setSession(response,id);return response;
+  }
   // Recovery links are unauthenticated, like invitations, but deliberately do not
   // create a session: the account holder signs in with the new password afterwards.
   if(method==="GET"&&route==="recovery")return json(await recoveryInfo(request.headers.get("x-recovery-token")??new URL(request.url).searchParams.get("token")));
   if(method==="POST"&&route==="recovery")return json(await acceptRecovery(await body(request)));
   if(method==="POST"&&route==="triad/parent"){
+    if(getAuthProvider()!=="local")throw new HttpError(409,"请先完成邮箱注册，再填写家庭情况。","AUTH_PROVIDER_MISMATCH");
     const started=await startParentCase(await body(request),locale);
     const response=json(started,201);await setSession(response,started.userId);return response;
   }
+  if(method==="POST"&&route==="triad/family")return json(await createParentFamily(await requireActor(request),await body(request),locale),201);
   if(method==="POST"&&route==="triad/join"){
-    const joined=await joinWithCode(await body(request),locale);
+    const input=await body(request),actor=await actorOf(request,false);
+    if(actor){const joined=await joinFamily(actor,input,locale);return json(joined,joined.alreadyMember?200:201);}
+    if(getAuthProvider()==="clerk")return json(await joinClerkStudent(await getVerifiedClerkIdentity(request),input,locale),201);
+    const joined=await joinWithCode(input,locale);
     const response=json(joined,201);await setSession(response,joined.userId);return response;
   }
   const actor=await requireActor(request);

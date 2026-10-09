@@ -23,6 +23,8 @@ const client={
   query:vi.fn(async(sql:string,_params?:unknown[]):Promise<{rows:unknown[]}>=>{
     clientCalls.push(String(sql));
     if(String(sql).includes("SELECT id,region,assigned_to FROM families"))return {rows:[familyRow]};
+    if(String(sql).includes("SELECT id,region,birth_date,join_code FROM families"))return {rows:[{...familyRow,join_code:null}]};
+    if(String(sql).includes("SELECT id,name,role,region,disabled,demo FROM users"))return {rows:[{...actor("admin"),disabled:false,demo:false}]};
     if(String(sql).includes("SELECT id FROM families"))return {rows:[{id:FAMILY_ID}]};
     if(String(sql).includes("SELECT family_id FROM invitations"))return {rows:[{family_id:FAMILY_ID}]};
     if(String(sql).includes("FOR UPDATE OF i"))return {rows:[{family_id:FAMILY_ID,role:"parent"}]};
@@ -177,7 +179,7 @@ describe("deleting a family",()=>{
     await deleteFamily(actor("admin"),FAMILY_ID,{confirmation:"Synthetic child"});
     expect(clientCalls.some(sql=>sql.includes("DELETE FROM families"))).toBe(true);
     expect(clientCalls.some(sql=>sql.includes("file_deletion_jobs")||sql.includes("SELECT pdf_keys"))).toBe(false);
-    expect(clientCalls.some(sql=>sql.includes("DELETE FROM sessions"))).toBe(true);
+    expect(clientCalls.some(sql=>sql.includes("DELETE FROM sessions"))).toBe(false);
   });
   it("refuses staff and students",async()=>{
     for(const role of ["staff","student","teacher"] as const){
@@ -193,9 +195,21 @@ describe("deleting a family",()=>{
     expect(clientCalls.findIndex(sql=>sql.includes("INSERT INTO file_deletion_jobs")))
       .toBeLessThan(clientCalls.findIndex(sql=>sql.includes("DELETE FROM families")));
   });
-  it("ends the sessions of the members it removes",async()=>{
+  it("preserves independent accounts and their sessions when a family is removed",async()=>{
     await deleteFamily(actor("admin"),FAMILY_ID,{confirmation:"Synthetic child"});
-    expect(clientCalls.some(sql=>sql.includes("DELETE FROM sessions"))).toBe(true);
+    expect(clientCalls.some(sql=>sql.includes("DELETE FROM sessions")||sql.includes("DELETE FROM users"))).toBe(false);
+  });
+  it("rechecks an account disabled after its initial family lookup",async()=>{
+    vi.stubEnv("NOVA_REPORT_STORAGE","database");
+    client.query.mockResolvedValueOnce({rows:[{id:FAMILY_ID}]}).mockResolvedValueOnce({rows:[{...actor("admin"),disabled:true,demo:false}]});
+    await expect(deleteFamily(actor("admin"),FAMILY_ID,{confirmation:"Synthetic child"})).rejects.toMatchObject({code:"ACCOUNT_REVOKED"});
+    expect(clientCalls.some(sql=>sql.includes("DELETE FROM families"))).toBe(false);
+  });
+  it("rechecks parent membership under the family lock",async()=>{
+    vi.stubEnv("NOVA_REPORT_STORAGE","database");
+    client.query.mockResolvedValueOnce({rows:[{id:FAMILY_ID}]}).mockResolvedValueOnce({rows:[{...actor("parent"),disabled:false,demo:false}]}).mockResolvedValueOnce({rows:[]});
+    await expect(deleteFamily(actor("parent"),FAMILY_ID,{confirmation:"Synthetic child"})).rejects.toMatchObject({code:"NOT_FOUND"});
+    expect(clientCalls.some(sql=>sql.includes("DELETE FROM families"))).toBe(false);
   });
 });
 

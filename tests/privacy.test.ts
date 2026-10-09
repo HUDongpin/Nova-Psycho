@@ -16,7 +16,7 @@ const flatten=(region:Region,locale:Locale)=>{
 
 describe("privacy notice",()=>{
   it("pins the notice version",()=>{
-    expect(noticeVersion).toBe("nova-privacy-2026-10-v2");
+    expect(noticeVersion).toBe("nova-privacy-2026-10-v3");
   });
 
   it.each(combinations)("returns a complete bilingual notice for %s + %s",(region,locale)=>{
@@ -52,6 +52,24 @@ describe("privacy notice",()=>{
     expect(location).toContain("Vercel");
     expect(location).not.toMatch(/存放[于於]香港/);
     expect(notice.version).toBe(noticeVersion);
+  });
+
+  it.each(["zh-CN","zh-HK"] as const)("discloses Clerk US identity hosting while retaining actual family storage in %s",locale=>{
+    const notice=privacyNotice("HK",locale,"SG","clerk");
+    const identity=notice.sections.find(section=>section.body.includes("Clerk"));
+    expect(identity).toBeDefined();
+    expect(identity!.body).toMatch(/美国托管|美國託管/);
+    expect(identity!.body).toMatch(/登录邮箱、认证凭证和会话信息|登入電郵、認證憑證及登入工作階段資料/);
+    const location=notice.sections.find(section=>/资料所在|資料所在/.test(section.title))!.body;
+    expect(location).toContain("新加坡");
+    expect(location).not.toMatch(/美国|美國/);
+  });
+  it.each(["zh-CN","zh-HK"] as const)("does not claim Clerk handles identities in local mode (%s)",locale=>{
+    const implicit=privacyNotice("HK",locale,"SG");
+    const explicit=privacyNotice("HK",locale,"SG","local");
+    expect(implicit).toEqual(explicit);
+    expect(JSON.stringify(implicit)).not.toContain("Clerk");
+    expect(privacyNotice("HK",locale,"SG","clerk").sections.length).toBe(implicit.sections.length+1);
   });
 
   it("states that the model does not receive names, contact, or raw answers",()=>{

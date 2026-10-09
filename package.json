@@ -23,6 +23,8 @@
     "backup:hk": "node scripts/run-region.mjs HK backup"
   },
   "dependencies": {
+    "@clerk/localizations": "4.22.1",
+    "@clerk/nextjs": "7.9.13",
     "@phosphor-icons/react": "^2.1.10",
     "@sparticuz/chromium": "153.0.0",
     "@vercel/functions": "3.9.11",

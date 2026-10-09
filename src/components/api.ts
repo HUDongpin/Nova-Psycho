@@ -2,7 +2,7 @@ export type Locale = "zh-CN" | "zh-HK";
 export type Role = "admin" | "staff" | "parent" | "student" | "teacher";
 export type Region = "CN" | "HK";
 export interface User { id: string; name: string; role: Role; region: Region }
-export interface Session { user: User | null; region: Region; mode: "demo" | "service"; demoAccounts: Pick<User, "id" | "name" | "role">[]; siblingUrl: string | null }
+export interface Session { user: User | null; region: Region; mode: "demo" | "service"; demoAccounts: Pick<User, "id" | "name" | "role">[]; siblingUrl: string | null; authProvider: "local" | "clerk"; identityState: "signed_out" | "email_unverified" | "profile_required" | "ready" }
 export interface Family { id: string; familyName: string; childName: string; age: number; birthDate: string; grade: string; region: Region; guardianLabel: string; assignedTo: string | null; assignedName?: string | null; canInviteMembers: boolean; joinCode?: string | null; createdAt: string; consent: boolean; members: { id: string; name: string; role: Role }[] }
 export type AssessmentStatus = "pending" | "queued" | "published" | "failed";
 export interface Assessment { id: string; familyId: string; childName: string; respondentId: string; respondentName: string; respondentRole: Role; scaleVersionId: string; scaleTitle: string; status: AssessmentStatus; phase?: "waiting" | "reporting" | null; createdAt: string; submittedAt?: string; reportId: string | null; canRespond: boolean; canRetryReport: boolean }
@@ -28,12 +28,12 @@ export interface OpsStatus {
 export interface HealthStatus { ok: boolean; region: Region; mode: "demo" | "service" }
 /** Identifies an existing account that an administrator is issuing a recovery link for. */
 export interface RecoveryTarget { memberId: string; memberName: string }
-export class ApiError extends Error { constructor(message: string, public code: string, public status: number) { super(message); this.name = "ApiError"; } }
+export class ApiError extends Error { constructor(message: string, public code: string, public status: number, public field?: string) { super(message); this.name = "ApiError"; } }
 export function apiUrl(path: string, locale: Locale): string { return `${path}${path.includes("?") ? "&" : "?"}locale=${locale}`; }
 export async function api<T>(path: string, locale: Locale, options: { method?: "GET" | "POST" | "PATCH" | "DELETE"; body?: unknown; signal?: AbortSignal; headers?: Record<string, string> } = {}): Promise<T> {
   const response = await fetch(apiUrl(path, locale), { method: options.method || "GET", credentials: "same-origin", cache: "no-store", headers: { ...(options.body === undefined ? {} : { "Content-Type": "application/json" }), ...options.headers }, body: options.body === undefined ? undefined : JSON.stringify(options.body), signal: options.signal });
   const data = await response.json().catch(() => null);
-  if (!response.ok) throw new ApiError(data?.error || (locale === "zh-HK" ? "服務暫時未能回應，請重試。" : "服务暂时未能响应，请重试。"), data?.code || "REQUEST_FAILED", response.status);
+  if (!response.ok) throw new ApiError(data?.error || (locale === "zh-HK" ? "服務暫時未能回應，請重試。" : "服务暂时未能响应，请重试。"), data?.code || "REQUEST_FAILED", response.status, typeof data?.field === "string" ? data.field : undefined);
   return data as T;
 }
 export const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);

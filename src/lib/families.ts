@@ -1,13 +1,17 @@
 import { randomBytes,randomUUID } from "node:crypto";
 import { z } from "zod";
-import type { Actor } from "../domain/types";
+import type { PoolClient } from "pg";
+import type { Actor, Locale, RespondentRole } from "../domain/types";
 import { ageAt, canInviteFamilyMembers, familyFor } from "./access";
 import { audit, hashPassword, hashToken } from "./auth";
 import { getConfig } from "./config";
 import { query, transaction } from "./db";
 import { HttpError, requireRole, validateId } from "./http";
 import { noticeVersion } from "./privacy";
-const short=z.string().trim().min(1).max(100);
+import type { VerifiedClerkIdentity } from "./clerk-auth";
+import { assertTriadRegistrationReady, joinTriadFamilyInTransaction, lockRegistrationActor, requireRegistrationConsent, type RegistrationFamily } from "./triad";
+import { registrationName, registrationPassword, registrationUsername } from "../domain/registration";
+const short=registrationName;
 const familyInput=z.object({familyName:short,childName:short,birthDate:z.string().regex(/^\d{4}-\d{2}-\d{2}$/),grade:short,guardianLabel:short,assignedTo:z.string().uuid().optional()}).strict();
 export async function createFamily(actor:Actor,input:unknown){
   requireRole(actor.role,["admin","staff"]);const d=familyInput.parse(input);const age=ageAt(d.birthDate);
@@ -46,18 +50,18 @@ export async function deleteFamily(actor:Actor,id:string,input:unknown){
   requireRole(actor.role,["admin","parent"]);const family=await familyFor(actor,id);
   const d=z.object({confirmation:short}).strict().parse(input);if(d.confirmation!==family.child_name)throw new HttpError(422,"确认姓名不一致。","CONFIRMATION_MISMATCH");
   await transaction(async client=>{
-    const lock=await client.query("SELECT id FROM families WHERE id=$1 FOR UPDATE",[id]);
+    const lock=await client.query("SELECT id FROM families WHERE id=$1 AND region=$2 FOR UPDATE",[id,actor.region]);
     if(!lock.rows[0])throw new HttpError(404,"该家庭已删除。","NOT_FOUND");
-    const members=await client.query("SELECT user_id FROM memberships WHERE family_id=$1",[id]);
+    const current=await lockRegistrationActor(client,actor);
+    if(current.role==="parent"){
+      const membership=await client.query("SELECT 1 FROM memberships WHERE family_id=$1 AND user_id=$2 AND role='parent'",[id,current.id]);
+      if(!membership.rows[0])throw new HttpError(404,"未找到该家庭或没有访问权限。","NOT_FOUND");
+    }
     if(getConfig().reportStorage==="filesystem"){
       const files=await client.query("SELECT pdf_keys FROM reports WHERE family_id=$1",[id]);
       for(const row of files.rows)for(const key of Object.values(row.pdf_keys))await client.query("INSERT INTO file_deletion_jobs(file_key) VALUES($1) ON CONFLICT DO NOTHING",[key]);
     }
     await client.query("DELETE FROM families WHERE id=$1 AND region=$2",[id,actor.region]);
-    for(const row of members.rows){
-      await client.query("DELETE FROM sessions WHERE user_id=$1",[row.user_id]);
-      await client.query("DELETE FROM users WHERE id=$1 AND role IN ('parent','student','teacher') AND NOT EXISTS(SELECT 1 FROM memberships m WHERE m.user_id=users.id)",[row.user_id]);
-    }
     await client.query("INSERT INTO audit_events(region,actor_id,action,entity_id) VALUES($1,$2,'family.deleted',$3)",[actor.region,actor.id,id]);
   });return {ok:true};
 }
@@ -78,18 +82,94 @@ export async function invitationInfo(token:unknown){
   if(!rows[0])throw new HttpError(404,"邀请无效或已过期。","INVALID_INVITATION");
   const r=rows[0];return {familyName:r.family_name,role:r.role,region:r.region,expiresAt:r.expires_at};
 }
-export async function acceptInvitation(input:unknown):Promise<string>{
-  const d=z.object({token:z.string(),name:short,username:z.string().trim().toLowerCase().regex(/^[a-z0-9_.@-]{3,100}$/),password:z.string().min(12).max(256)}).strict().parse(input);
+export async function acceptInvitation(input:unknown,locale:Locale="zh-CN"):Promise<string>{
+  const d=z.object({token:z.string(),name:short,username:registrationUsername,password:registrationPassword}).strict().parse(input);
   const tokenHash=hashToken(invitationToken(d.token));const passwordHash=await hashPassword(d.password);
   return transaction(async client=>{
     const candidate=await client.query("SELECT family_id FROM invitations WHERE token_hash=$1",[tokenHash]);
     if(!candidate.rows[0])throw new HttpError(404,"邀请无效或已过期。","INVALID_INVITATION");
-    const familyLock=await client.query("SELECT id FROM families WHERE id=$1 AND region=$2 FOR UPDATE",[candidate.rows[0].family_id,getConfig().region]);
+    const familyLock=await client.query<RegistrationFamily>("SELECT id,region,birth_date,join_code FROM families WHERE id=$1 AND region=$2 FOR UPDATE",[candidate.rows[0].family_id,getConfig().region]);
     if(!familyLock.rows[0])throw new HttpError(404,"邀请无效或已过期。","INVALID_INVITATION");
     const result=await client.query("SELECT i.* FROM invitations i JOIN families f ON f.id=i.family_id WHERE i.token_hash=$1 AND i.used_at IS NULL AND i.expires_at>now() AND f.region=$2 FOR UPDATE OF i",[tokenHash,getConfig().region]);
     const invite=result.rows[0];if(!invite)throw new HttpError(404,"邀请无效或已过期。","INVALID_INVITATION");
-    const id=randomUUID();await client.query("INSERT INTO users(id,region,username,name,role,password_hash) VALUES($1,$2,$3,$4,$5,$6)",[id,getConfig().region,d.username,d.name,invite.role,passwordHash]);
-    await client.query("INSERT INTO memberships(family_id,user_id,role) VALUES($1,$2,$3)",[invite.family_id,id,invite.role]);
-    await client.query("UPDATE invitations SET used_at=now() WHERE token_hash=$1",[tokenHash]);return id;
+    if(invite.role!=="parent"){
+      if(familyLock.rows[0].join_code)await assertTriadRegistrationReady(client,familyLock.rows[0]);
+      else await requireRegistrationConsent(client,familyLock.rows[0].id);
+    }
+    const id=randomUUID();
+    try {
+      await client.query("INSERT INTO users(id,region,username,name,role,password_hash) VALUES($1,$2,$3,$4,$5,$6)",[id,getConfig().region,d.username,d.name,invite.role,passwordHash]);
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "23505") throw new HttpError(409, "这个用户名已注册，请登录后接受邀请。", "USERNAME_TAKEN", "username");
+      throw error;
+    }
+    return bindInvitedActor(client,{id,name:d.name,role:invite.role,region:getConfig().region},tokenHash,invite as LockedInvitation,familyLock.rows[0],locale);
+  });
+}
+
+interface LockedInvitation {
+  family_id: string;
+  role: RespondentRole;
+  used_at: Date | string | null;
+  expires_at: Date | string;
+  accepted_by: string | null;
+}
+
+async function lockInvitation(client: PoolClient, tokenHash: string): Promise<{ invite: LockedInvitation; family: RegistrationFamily }> {
+  const candidate = await client.query<{ family_id: string }>("SELECT family_id FROM invitations WHERE token_hash=$1", [tokenHash]);
+  if (!candidate.rows[0]) throw new HttpError(404, "邀请无效或已过期。", "INVALID_INVITATION");
+  const family = await client.query<RegistrationFamily>("SELECT id,region,birth_date,join_code FROM families WHERE id=$1 AND region=$2 FOR UPDATE", [candidate.rows[0].family_id, getConfig().region]);
+  if (!family.rows[0] || family.rows[0].region !== getConfig().region) throw new HttpError(404, "邀请无效或已过期。", "INVALID_INVITATION");
+  const result = await client.query<LockedInvitation>("SELECT i.* FROM invitations i JOIN families f ON f.id=i.family_id WHERE i.token_hash=$1 AND f.region=$2 FOR UPDATE OF i", [tokenHash, getConfig().region]);
+  const invite = result.rows[0];
+  if (!invite || (!invite.used_at && new Date(invite.expires_at).getTime() <= Date.now())) throw new HttpError(404, "邀请无效或已过期。", "INVALID_INVITATION");
+  return { invite, family: family.rows[0] };
+}
+
+async function bindInvitedActor(client: PoolClient, actor: Actor, tokenHash: string, invite: LockedInvitation, family: RegistrationFamily, locale: Locale): Promise<string> {
+  if (actor.role !== invite.role) throw new HttpError(409, "邀请角色与当前账号不一致，请使用对应账号。", "ROLE_CONFLICT");
+  const members = await client.query<{ user_id: string; role: RespondentRole }>("SELECT user_id,role FROM memberships WHERE family_id=$1", [family.id]);
+  const own = members.rows.find(member => member.user_id === actor.id);
+  if (invite.used_at) {
+    if (invite.accepted_by !== actor.id || own?.role !== invite.role) throw new HttpError(404, "邀请无效或已过期。", "INVALID_INVITATION");
+    return actor.id;
+  }
+  if (own && own.role !== actor.role) throw new HttpError(409, "这个账号在家庭中的角色不一致，请联系服务人员。", "ROLE_CONFLICT");
+  if (actor.role !== "parent" && members.rows.some(member => member.role === actor.role && member.user_id !== actor.id)) throw new HttpError(409, actor.role === "student" ? "这个家庭已经有孩子进入了。" : "这个家庭已经有老师进入了。", "ROLE_TAKEN");
+  if (family.join_code && actor.role !== "parent") {
+    await assertTriadRegistrationReady(client, family);
+    await joinTriadFamilyInTransaction(client, actor, family, locale);
+  } else if (!own) {
+    await client.query("INSERT INTO memberships(family_id,user_id,role) VALUES($1,$2,$3)", [family.id, actor.id, actor.role]);
+  }
+  await client.query("UPDATE invitations SET used_at=now(),accepted_by=$2 WHERE token_hash=$1", [tokenHash, actor.id]);
+  await client.query("INSERT INTO audit_events(region,actor_id,action,entity_id) VALUES($1,$2,'invitation.accepted',$3)", [actor.region, actor.id, family.id]);
+  return actor.id;
+}
+
+export async function acceptInvitationForActor(actor: Actor, input: unknown, locale: Locale = "zh-CN"): Promise<string> {
+  requireRole(actor.role, ["parent", "student", "teacher"]);
+  const { token } = z.object({ token: z.string() }).strict().parse(input);
+  const tokenHash = hashToken(invitationToken(token));
+  return transaction(async client => {
+    const { invite, family } = await lockInvitation(client, tokenHash);
+    const current = await lockRegistrationActor(client, actor);
+    if (invite.role !== "parent") await requireRegistrationConsent(client, family.id);
+    return bindInvitedActor(client, current, tokenHash, invite, family, locale);
+  });
+}
+
+export async function acceptClerkInvitation(principal: VerifiedClerkIdentity, input: unknown, locale: Locale): Promise<string> {
+  const data = z.object({ token: z.string(), name: short }).strict().parse(input);
+  const tokenHash = hashToken(invitationToken(data.token));
+  if (principal.region !== getConfig().region) throw new HttpError(403, "请使用账号所属地区的入口。", "REGION_MISMATCH");
+  return transaction(async client => {
+    const { invite, family } = await lockInvitation(client, tokenHash);
+    if (invite.role !== "parent") await requireRegistrationConsent(client, family.id);
+    if (family.join_code && invite.role !== "parent") await assertTriadRegistrationReady(client, family);
+    const { createClerkUserInTransaction } = await import("./clerk-auth");
+    const actor = await createClerkUserInTransaction(client, principal, data.name, invite.role);
+    const current = await lockRegistrationActor(client, actor);
+    return bindInvitedActor(client, current, tokenHash, invite, family, locale);
   });
 }

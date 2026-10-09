@@ -1,21 +1,24 @@
 "use client";
-import { cloneElement, isValidElement, useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { cloneElement, createContext, isValidElement, useContext, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { ArrowClockwise, ArrowRight, CircleNotch, FlowerLotus, ShieldCheck, X } from "@phosphor-icons/react";
-import { api, errorMessage, type Locale, type Privacy } from "./api";
+import { api, ApiError, errorMessage, type Locale, type Privacy } from "./api";
 import { copy, type CopyKey } from "./copy";
+import { localizeText } from "../domain/zh-pair";
 
+export const LocaleContext = createContext<Locale>("zh-CN");
 export function useLocale() {
-  const [locale, setLocale] = useState<Locale>("zh-CN");
-  useEffect(() => { const saved = localStorage.getItem("nova-locale"); if (saved === "zh-HK" || saved === "zh-CN") setLocale(saved); }, []);
+  const initialLocale = useContext(LocaleContext);
+  const [locale, setLocale] = useState<Locale>(initialLocale);
+  useEffect(() => { const read = () => { const saved = localStorage.getItem("nova-locale"); setLocale(saved === "zh-HK" || saved === "zh-CN" ? saved : initialLocale); }; read(); window.addEventListener("nova-locale-change", read); return () => window.removeEventListener("nova-locale-change", read); }, [initialLocale]);
   useEffect(() => { document.documentElement.lang = locale; }, [locale]);
-  function changeLocale(value: Locale) { localStorage.setItem("nova-locale", value); setLocale(value); }
+  function changeLocale(value: Locale) { localStorage.setItem("nova-locale", value); setLocale(value); window.dispatchEvent(new Event("nova-locale-change")); }
   return { locale, setLocale: changeLocale, t: copy(locale) };
 }
 export function Brand({ compact = false }: { compact?: boolean }) { return <div className={`brand ${compact ? "compact" : ""}`}><span className="brand-symbol"><FlowerLotus size={22} weight="regular" /></span><div><strong>TopE<span>心理助手</span></strong>{!compact && <small>FAMILY WELLBEING</small>}</div></div>; }
 export function LocaleSwitch({ locale, onChange }: { locale: Locale; onChange: (locale: Locale) => void }) { const t = copy(locale); return <div className="locale-control" role="group" aria-label={t("language")}><button type="button" aria-pressed={locale === "zh-CN"} onClick={() => onChange("zh-CN")}>简</button><button type="button" aria-pressed={locale === "zh-HK"} onClick={() => onChange("zh-HK")}>繁</button></div>; }
 export function Badge({ children, tone = "neutral" }: { children: ReactNode; tone?: "neutral" | "sage" | "peach" | "danger" | "teal" }) { return <span className={`badge badge-${tone}`}>{children}</span>; }
 export function Loading({ locale }: { locale: Locale }) { return <div className="loading-state" role="status"><CircleNotch size={28} className="spin" /><span>{copy(locale)("loading")}</span></div>; }
-export function ErrorNotice({ message, onRetry, locale }: { message: string; onRetry?: () => void; locale: Locale }) { return <div className="error-notice" role="alert"><span>{message}</span>{onRetry && <button className="button ghost small" onClick={onRetry}><ArrowClockwise />{copy(locale)("retry")}</button>}</div>; }
+export function ErrorNotice({ message, onRetry, locale }: { message: string; onRetry?: () => void; locale: Locale }) { return <div className="error-notice" role="alert"><span>{localizeText(message, locale)}</span>{onRetry && <button className="button ghost small" onClick={onRetry}><ArrowClockwise />{copy(locale)("retry")}</button>}</div>; }
 export function Empty({ title, text, icon, action }: { title: string; text?: string; icon?: ReactNode; action?: ReactNode }) { return <div className="empty-state">{icon && <span className="empty-icon">{icon}</span>}<strong>{title}</strong>{text && <p>{text}</p>}{action}</div>; }
 export function Modal({ title, children, onClose, locale, wide = false }: { title: string; children: ReactNode; onClose: () => void; locale: Locale; wide?: boolean }) {
   const ref = useRef<HTMLDialogElement>(null); const titleId = useId();
@@ -24,7 +27,7 @@ export function Modal({ title, children, onClose, locale, wide = false }: { titl
 }
 export function Field({ label, children, hint }: { label: string; children: ReactNode; hint?: string }) { const generatedId = useId(); const input = isValidElement<{ id?: string; "aria-describedby"?: string }>(children) ? children : null; const id = input?.props.id || generatedId; return <div className="field"><label htmlFor={id}>{label}</label>{input ? cloneElement(input, { id, ...(hint ? { "aria-describedby": `${id}-hint` } : {}) }) : children}{hint && <small id={`${id}-hint`}>{hint}</small>}</div>; }
 export function FormActions({ locale, onClose, busy, label = "save", disabled = false }: { locale: Locale; onClose: () => void; busy: boolean; label?: CopyKey; disabled?: boolean }) { const t = copy(locale); return <div className="form-actions"><button type="button" className="button secondary" onClick={onClose} disabled={busy}>{t("cancel")}</button><button type="submit" className="button primary" disabled={busy || disabled}>{busy && <CircleNotch className="spin" />}{busy ? t("saving") : t(label)}</button></div>; }
-export function useMutation() { const [busy, setBusy] = useState(false); const [error, setError] = useState(""); async function run(action: () => Promise<void>) { setBusy(true); setError(""); try { await action(); return true; } catch (err) { setError(errorMessage(err)); return false; } finally { setBusy(false); } } return { busy, error, run, setError }; }
+export function useMutation() { const [busy, setBusy] = useState(false); const [error, setError] = useState(""); const [field, setField] = useState<string | undefined>(); async function run(action: () => Promise<void>) { setBusy(true); setError(""); setField(undefined); try { await action(); return true; } catch (err) { setError(errorMessage(err)); setField(err instanceof ApiError ? err.field : undefined); return false; } finally { setBusy(false); } } return { busy, error, field, run, setError }; }
 export function PrivacyModal({ locale, onClose }: { locale: Locale; onClose: () => void }) { const t = copy(locale); const [notice, setNotice] = useState<Privacy | null>(null); const [error, setError] = useState(""); const [attempt, setAttempt] = useState(0); useEffect(() => { const controller = new AbortController(); setError(""); api<Privacy>("/api/privacy", locale, { signal: controller.signal }).then(setNotice).catch(error => { if (!controller.signal.aborted) setError(errorMessage(error)); }); return () => controller.abort(); }, [locale, attempt]); return <Modal title={notice?.title || t("privacy")} onClose={onClose} locale={locale} wide>{error ? <ErrorNotice message={error} locale={locale} onRetry={() => setAttempt(attempt + 1)} /> : !notice ? <Loading locale={locale} /> : <div className="privacy-content"><Badge tone="sage"><ShieldCheck />{t("currentVersion")} {notice.version}</Badge>{notice.sections.map((section, i) => <section key={i}><h3>{section.title}</h3><p>{section.body}</p></section>)}</div>}</Modal>; }
 export function SectionHeading({ title, subtitle, action }: { title: string; subtitle?: string; action?: ReactNode }) { return <div className="section-heading"><div><h2>{title}</h2>{subtitle && <p>{subtitle}</p>}</div>{action}</div>; }
 export function TextLink({ children, onClick }: { children: ReactNode; onClick: () => void }) { return <button type="button" className="text-link" onClick={onClick}>{children}<ArrowRight size={16} /></button>; }

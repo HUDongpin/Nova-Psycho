@@ -2,9 +2,24 @@ BEGIN;
 CREATE TABLE IF NOT EXISTS deployment_settings(singleton boolean PRIMARY KEY DEFAULT true CHECK(singleton),region text NOT NULL CHECK(region IN ('CN','HK')));
 ALTER TABLE deployment_settings ADD COLUMN IF NOT EXISTS mode text CHECK(mode IN ('demo','service'));
 CREATE TABLE IF NOT EXISTS users(
- id uuid PRIMARY KEY, region text NOT NULL CHECK(region IN ('CN','HK')), username text UNIQUE NOT NULL, name text NOT NULL,
+ id uuid PRIMARY KEY, region text NOT NULL CHECK(region IN ('CN','HK')), username text UNIQUE, name text NOT NULL,
  role text NOT NULL CHECK(role IN ('admin','staff','parent','student','teacher')), password_hash text,
  demo boolean NOT NULL DEFAULT false, disabled boolean NOT NULL DEFAULT false, created_at timestamptz NOT NULL DEFAULT now()
+);
+ALTER TABLE users ALTER COLUMN username DROP NOT NULL;
+-- Authentication identities contain only provider identifiers. Names, family
+-- membership, permissions and questionnaires stay in this regional database.
+CREATE TABLE IF NOT EXISTS external_identities(
+ provider text NOT NULL CHECK(provider='clerk'),issuer text NOT NULL,subject text NOT NULL,
+ region text NOT NULL CHECK(region IN ('CN','HK')),user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+ email_verified_at timestamptz NOT NULL,created_at timestamptz NOT NULL DEFAULT now(),
+ PRIMARY KEY(provider,issuer,subject,region),UNIQUE(user_id,provider)
+);
+-- A local sign-out denies this session immediately, including its remaining
+-- signed JWT lifetime. Only a digest is retained; no bearer token is stored.
+CREATE TABLE IF NOT EXISTS clerk_session_revocations(
+ issuer text NOT NULL,session_id_hash text NOT NULL,region text NOT NULL CHECK(region IN ('CN','HK')),
+ revoked_at timestamptz NOT NULL DEFAULT now(),PRIMARY KEY(issuer,session_id_hash,region)
 );
 CREATE TABLE IF NOT EXISTS sessions(token_hash text PRIMARY KEY,user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,region text NOT NULL,expires_at timestamptz NOT NULL);
 CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions(expires_at);
@@ -13,6 +28,9 @@ CREATE TABLE IF NOT EXISTS families(
  id uuid PRIMARY KEY,region text NOT NULL,family_name text NOT NULL,child_name text NOT NULL,birth_date date NOT NULL,grade text NOT NULL,
  guardian_label text NOT NULL,assigned_to uuid REFERENCES users(id) ON DELETE SET NULL,created_at timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE families ADD COLUMN IF NOT EXISTS created_by uuid REFERENCES users(id);
+ALTER TABLE families ADD COLUMN IF NOT EXISTS creation_request_id uuid;
+CREATE UNIQUE INDEX IF NOT EXISTS family_creation_request ON families(created_by,creation_request_id) WHERE creation_request_id IS NOT NULL;
 CREATE TABLE IF NOT EXISTS memberships(family_id uuid NOT NULL REFERENCES families(id) ON DELETE CASCADE,user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,role text NOT NULL CHECK(role IN ('parent','student','teacher')),PRIMARY KEY(family_id,user_id));
 CREATE INDEX IF NOT EXISTS membership_users ON memberships(user_id);
 CREATE TABLE IF NOT EXISTS consents(
@@ -24,6 +42,7 @@ WITH ranked AS(SELECT id,row_number() OVER(PARTITION BY family_id ORDER BY creat
 UPDATE consents SET revoked_at=now() FROM ranked WHERE consents.id=ranked.id AND ranked.n>1;
 CREATE UNIQUE INDEX IF NOT EXISTS one_active_family_consent ON consents(family_id) WHERE revoked_at IS NULL;
 CREATE TABLE IF NOT EXISTS invitations(token_hash text PRIMARY KEY,family_id uuid NOT NULL REFERENCES families(id) ON DELETE CASCADE,role text NOT NULL CHECK(role IN ('parent','student','teacher')),expires_at timestamptz NOT NULL,used_at timestamptz,created_by uuid REFERENCES users(id));
+ALTER TABLE invitations ADD COLUMN IF NOT EXISTS accepted_by uuid REFERENCES users(id);
 -- Single-use links that let an EXISTING account set a new password. Issued by an
 -- administrator and shown once; never emailed automatically, matching invitations.
 -- Accepting one also ends every session for that account.

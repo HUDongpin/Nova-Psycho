@@ -2,17 +2,22 @@ import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import type { Actor, Region, Role } from "../domain/types";
 import { audit, hashPassword, hashToken } from "./auth";
+import { getAuthProvider } from "./auth-provider";
 import { getConfig } from "./config";
 import { query, transaction } from "./db";
 import { HttpError, requireRole, validateId } from "./http";
 
-// Password recovery for accounts that already exist. Accounts here are created through
-// one-time invitations, and there is no email infrastructure, so recovery works the same
-// way: an administrator issues a single-use link and passes it on out of band. The
-// alternative — a locked-out parent with no path back in — has no good outcome.
+// Local-password recovery uses an administrator-issued single-use link. Clerk
+// credentials and sessions belong to Clerk; changing a local digest would not
+// recover that account or revoke its Clerk sessions, so all service entry points
+// must reject this flow when Clerk owns authentication, including old links.
 
 // Shorter than an invitation window, because this link resets a credential.
 const RECOVERY_MINUTES = 60;
+
+function requireLocalRecovery(): void {
+  if (getAuthProvider() !== "local") throw new HttpError(409, "当前使用邮箱登录，请前往邮箱登录页选择“忘记密码”恢复账号。", "CLERK_RECOVERY_REQUIRED");
+}
 
 function recoveryToken(token: unknown): string {
   if (typeof token !== "string" || !/^[a-f0-9]{64}$/.test(token)) throw new HttpError(404, "链接无效或已过期。", "INVALID_RECOVERY");
@@ -20,6 +25,7 @@ function recoveryToken(token: unknown): string {
 }
 
 export async function createRecovery(actor: Actor, userId: string) {
+  requireLocalRecovery();
   requireRole(actor.role, ["admin"]);
   validateId(userId);
 
@@ -53,6 +59,7 @@ export async function createRecovery(actor: Actor, userId: string) {
 export interface RecoveryInfo { name: string; username: string; role: Role; region: Region; expiresAt: string }
 
 export async function recoveryInfo(rawToken: unknown): Promise<RecoveryInfo> {
+  requireLocalRecovery();
   const rows = await query<RecoveryInfo>(
     `SELECT u.name,u.username,u.role,r.region,r.expires_at AS "expiresAt"
      FROM recovery_tokens r JOIN users u ON u.id=r.user_id
@@ -64,6 +71,7 @@ export async function recoveryInfo(rawToken: unknown): Promise<RecoveryInfo> {
 }
 
 export async function acceptRecovery(input: unknown): Promise<{ ok: true }> {
+  requireLocalRecovery();
   const d = z.object({ token: z.string(), password: z.string().min(12).max(256) }).strict().parse(input);
   const tokenHash = hashToken(recoveryToken(d.token));
   // Hash outside the transaction; scrypt is deliberately slow.

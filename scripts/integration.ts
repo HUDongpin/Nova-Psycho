@@ -166,17 +166,18 @@ async function main(){
         const oldCookie=client.cookie;await ok(client,"/api/auth/logout","POST",{});await rejected({base:cn,cookie:oldCookie},"/api/workspace","GET",undefined,401,"UNAUTHENTICATED");
         await rejected(visitor,"/api/auth/login","POST",{username:payload.username,password:"incorrect-synthetic-password"},401,"INVALID_CREDENTIALS");
         const signedIn=await request(visitor,"/api/auth/login","POST",{username:payload.username,password:payload.password});assert.equal(signedIn.status,200);client.cookie=sessionClient(cn,signedIn).cookie;
+        const studentInvite=await ok<{url:string}>(admin,`/api/families/${demoFamily.id}/invites`,"POST",{role:"student"});
+        const studentToken=new URLSearchParams(new URL(studentInvite.url).hash.slice(1)).get("token");assert.ok(studentToken);
+        await rejected(visitor,"/api/invite","POST",{token:studentToken,name:"尚未授权的合成学生",username:`qa_unconsented_${nonce}`,password:randomBytes(18).toString("base64url")},409,"GUARDIAN_CONSENT_REQUIRED");
+        await ok(client,`/api/families/${demoFamily.id}/consent`,"POST",{accepted:true,guardianName:"合成家长",aiProcessing:false});
       }
     }
   });
   const child=acceptedClients.student,guardian=acceptedClients.parent;
   const a=await check("fixed demo instrument remains assignable in its own age scenario",()=>ok<{id:string}>(admin,"/api/assessments","POST",{familyId:demoFamily.id,respondentId:acceptedIds.student,scaleVersionId:demoId,locale:"zh-CN"}));
   let revision=0;
-  await check("guardian consent is required before draft collection and submission",async()=>{
-    const detail=await ok<SurveyRecord>(child,`/api/assessments/${a.id}`);assert.equal(detail.demo,true);assert.equal(detail.consentRequired,true);assert.deepEqual(detail.draftAnswers,{});assert.equal(detail.draftRevision,0);
-    await rejected(child,`/api/assessments/${a.id}`,"PATCH",{answers:{q1:2},acknowledged:true,revision:0},409,"GUARDIAN_CONSENT_REQUIRED");
-    await rejected(child,`/api/assessments/${a.id}/submit`,"POST",{answers:{q9:0},acknowledged:true,revision:0},409,"GUARDIAN_CONSENT_REQUIRED");
-    await ok(guardian,`/api/families/${demoFamily.id}/consent`,"POST",{accepted:true,guardianName:"合成家长",aiProcessing:false});
+  await check("guardian consents before student enrollment and draft collection",async()=>{
+    const detail=await ok<SurveyRecord>(child,`/api/assessments/${a.id}`);assert.equal(detail.demo,true);assert.equal(detail.consentRequired,false);assert.deepEqual(detail.draftAnswers,{});assert.equal(detail.draftRevision,0);
   });
   await check("draft autosave persists and malformed/client scores are rejected",async()=>{
     await rejected(child,`/api/assessments/${a.id}`,"PATCH",{answers:{q1:2},revision:0},422,"VALIDATION_FAILED");
@@ -313,11 +314,17 @@ async function main(){
     const saved=await documents(triad.clients.parent,report.id,"hong-kong-triad-report");assert.ok(saved["zh-HK"].html.includes("三方看到的情況"));assert.ok(!saved["zh-HK"].html.includes(`STUDENT_PRIVATE_student_${nonce}`));assert.ok(!saved["zh-HK"].html.includes("STAFF_PRIVATE_"));
     return {...triad,reportId:report.id};
   });
-  await check("family deletion revokes sessions, invitations and both report types",async()=>{
+  await check("family deletion removes family access while preserving independent accounts",async()=>{
     for(const scenario of [{admin,familyId:demoFamily.id,guardian,clients:Object.values(acceptedClients),childName:"合成孩子",reportId:report.id},{admin,familyId:triad.familyId,guardian:triad.clients.parent,clients:Object.values(triad.clients),childName:"合成三方孩子",reportId:combined.id},{admin:hkAdmin,familyId:hkTriad.familyId,guardian:hkTriad.clients.parent,clients:Object.values(hkTriad.clients),childName:"合成三方孩子",reportId:hkTriad.reportId}]){
       const invite=await ok<{url:string}>(scenario.admin,`/api/families/${scenario.familyId}/invites`,"POST",{role:"teacher"}),token=new URLSearchParams(new URL(invite.url).hash.slice(1)).get("token");assert.ok(token);
+      const identities=await Promise.all(scenario.clients.map(async client=>(await ok<Session>(client,"/api/session")).user!.id));
       await ok(scenario.guardian,`/api/families/${scenario.familyId}`,"DELETE",{confirmation:scenario.childName});
-      for(const client of scenario.clients)await rejected(client,"/api/workspace","GET",undefined,401,"UNAUTHENTICATED");
+      for(const [index,client] of scenario.clients.entries()){
+        const remaining=await workspace(client);assert.equal(remaining.user.id,identities[index]);
+        assert.ok(!remaining.families.some(f=>f.id===scenario.familyId));
+        assert.ok(!remaining.assessments.some(a=>a.familyId===scenario.familyId));
+        assert.ok(!remaining.reports.some(r=>r.familyId===scenario.familyId));
+      }
       for(const suffix of ["","/document","/pdf"])await rejected(scenario.admin,`/api/reports/${scenario.reportId}${suffix}`,"GET",undefined,404,"NOT_FOUND");
       await rejected({base:scenario.admin.base,cookie:""},"/api/invite","GET",undefined,404,"INVALID_INVITATION",{"X-Invitation-Token":token});fixtures.find(f=>f.familyId===scenario.familyId)!.deleted=true;
     }
