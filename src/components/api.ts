@@ -2,7 +2,7 @@ export type Locale = "zh-CN" | "zh-HK";
 export type Role = "admin" | "staff" | "parent" | "student" | "teacher";
 export type Region = "CN" | "HK";
 export interface User { id: string; name: string; role: Role; region: Region }
-export interface Session { user: User | null; region: Region; mode: "demo" | "service"; demoAccounts: Pick<User, "id" | "name" | "role">[]; siblingUrl: string | null; authProvider: "local" | "clerk"; identityState: "signed_out" | "email_unverified" | "profile_required" | "ready" }
+export interface Session { user: User | null; region: Region; mode: "demo" | "service"; demoAccounts: Pick<User, "id" | "name" | "role">[]; siblingUrl: string | null; authProvider: "local" | "clerk"; sessionMethod?: "test"; testAccountLoginEnabled?: boolean; identityState: "signed_out" | "email_unverified" | "profile_required" | "ready" }
 export interface Family { id: string; familyName: string; childName: string; age: number; birthDate: string; grade: string; region: Region; guardianLabel: string; assignedTo: string | null; assignedName?: string | null; canInviteMembers: boolean; joinCode?: string | null; createdAt: string; consent: boolean; members: { id: string; name: string; role: Role }[] }
 export type AssessmentStatus = "pending" | "queued" | "published" | "failed";
 export interface Assessment { id: string; familyId: string; childName: string; respondentId: string; respondentName: string; respondentRole: Role; scaleVersionId: string; scaleTitle: string; status: AssessmentStatus; phase?: "waiting" | "reporting" | null; createdAt: string; submittedAt?: string; reportId: string | null; canRespond: boolean; canRetryReport: boolean }

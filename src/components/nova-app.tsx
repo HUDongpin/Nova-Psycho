@@ -194,11 +194,11 @@ export default function NovaApp() {
         throw new Error(`${t("logoutDraftFailed")} ${result.status === "rejected" ? errorMessage(result.reason) : ""}`);
       }
       await api("/api/auth/logout", locale, { method: "POST", body: {} });
-      if (session?.authProvider === "clerk") await identity.signOut();
+      if (session?.authProvider === "clerk" && session.sessionMethod !== "test") await identity.signOut();
       if (!mounted.current || !draftSessions.isCurrent(logoutOwner, epoch)) return;
       draftSessions.clearAfterLogout(logoutOwner);
       setForm(null); setWorkspace(null); setStatus("");
-      setSession(value => value ? { ...value, user: null, identityState: "signed_out" } : null);
+      setSession(value => value ? { ...value, user: null, identityState: "signed_out", sessionMethod: undefined } : null);
       navigate({ page: "dashboard" });
     } catch (err) {
       for (const draft of drafts) draft.cancelLogout();

@@ -13,6 +13,7 @@ export interface AuthState {
   user: Actor | null;
   authProvider: "local" | "clerk";
   identityState: IdentityState;
+  sessionMethod?: "test";
 }
 interface ClerkPrincipal {
   subject: string;

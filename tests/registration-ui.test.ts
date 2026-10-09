@@ -37,12 +37,12 @@ describe("separate account and family forms", () => {
     const html = renderToStaticMarkup(createElement(Login, { session, locale: "zh-CN", setLocale() {}, async onLogin() {} }));
     expect(html).toContain('href="/sign-up"'); expect(html).toContain('href="/sign-in"'); expect(html).not.toContain('name="password"');
   });
-  it.each(["zh-CN", "zh-HK"] as const)("shows identity hosting disclosure only for Clerk in %s", locale => {
+  it.each(["zh-CN", "zh-HK"] as const)("omits the removed identity hosting paragraph in %s", locale => {
     for (const authProvider of ["local", "clerk"] as const) {
       const session: Session = { user: null, region: "HK", mode: "service", demoAccounts: [], siblingUrl: null, authProvider, identityState: "signed_out" };
       const html = renderToStaticMarkup(createElement(Login, { session, locale, setLocale() {}, async onLogin() {} }));
-      if (authProvider === "clerk") { expect(html).toContain("Clerk"); expect(html).toContain(locale === "zh-HK" ? "身分資料在美國託管" : "身份数据在美国托管"); }
-      else expect(html).not.toContain("Clerk");
+      expect(html).not.toContain("Clerk");
+      expect(html).not.toContain(locale === "zh-HK" ? "身分資料在美國託管" : "身份数据在美国托管");
     }
   });
   it("keeps retained drafts on their current page when authenticating with Clerk", () => {

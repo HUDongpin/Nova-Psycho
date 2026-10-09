@@ -8,6 +8,16 @@ export function getAuthProvider(): AuthProvider {
   return value;
 }
 
+export function getTestAccountUsernames(): string[] {
+  const usernames = (process.env.NOVA_TEST_ACCOUNT_USERNAMES ?? "").split(",").map(value => value.trim().toLowerCase()).filter(Boolean);
+  if (usernames.some(value => !/^[a-z0-9_.@-]{3,100}$/.test(value))) throw new Error("NOVA_TEST_ACCOUNT_USERNAMES must contain exact usernames");
+  return [...new Set(usernames)];
+}
+
+export function hasTestAccountLogin(): boolean {
+  return getAuthProvider() === "clerk" && getTestAccountUsernames().length > 0;
+}
+
 export interface ClerkConfig {
   publishableKey: string;
   secretKey: string;

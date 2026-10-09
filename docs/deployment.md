@@ -173,3 +173,9 @@ Switching authentication modes retires the old local-cookie login path. Existing
 After release, verify the canonical HTTPS sign-up/sign-in pages, real mailbox delivery, legacy administrator linking, a teacher's independent empty workspace, family-code errors, authorized family joining, sign-out, recovery and permission failures. Use only explicitly authorized test identities and synthetic family data. A local-mode standalone build is not production Clerk acceptance.
 
 For rollback, keep the additive schema. A previous local-auth deployment cannot serve newly created Clerk-only accounts, and an old family-deletion implementation may remove independent accounts. Once new Clerk identities exist, prefer a corrective deployment retaining the current authentication/data contract; do not drop new tables or restore a whole database over subsequent user activity as a routine code rollback.
+
+## Password login for designated test accounts
+
+In Clerk mode, `NOVA_TEST_ACCOUNT_USERNAMES` enables a separate username/password entry for a comma-separated list of existing synthetic test accounts. Keep this variable in the production secret configuration; do not put usernames or passwords in the repository. The service database and account classification stay unchanged. Leave the variable unset to disable this entry. Ordinary local login, public demo login, and local registration remain disabled in Clerk mode.
+
+Test login verifies the existing password and uses a separate regional cookie and token namespace. Every request checks the allowlist, account status, region, and session expiry. Removing an account from the list immediately prevents its existing test session from authorizing requests. An expired test session cannot silently switch to a coexisting email identity. Opening the email sign-in or registration page clears the test session before showing the email form.

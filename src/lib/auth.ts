@@ -4,7 +4,7 @@ import type { NextResponse } from "next/server";
 import { z } from "zod";
 import type { Actor, Role } from "../domain/types";
 import { registrationName, registrationPassword, registrationUsername } from "../domain/registration";
-import { getAuthProvider } from "./auth-provider";
+import { getAuthProvider, getTestAccountUsernames, hasTestAccountLogin } from "./auth-provider";
 import { clerkActorOf, clerkAuthStateOf, type AuthState } from "./clerk-auth";
 import { getConfig } from "./config";
 import { query,transaction } from "./db";
@@ -23,13 +23,13 @@ export async function checkPassword(password:string,stored:string|null):Promise<
   return Boolean(stored)&&expected.length===derived.length&&timingSafeEqual(expected,derived);
 }
 export function cookieName():string{return `nova_${getConfig().region.toLowerCase()}_session`;}
-function sessionToken(request:Request):string|null{
-  const target=`${cookieName()}=`;const raw=request.headers.get("cookie")?.split(";").map(v=>v.trim()).find(v=>v.startsWith(target))?.slice(target.length);
+function sessionToken(request:Request,name=cookieName()):string|null{
+  const target=`${name}=`;const raw=request.headers.get("cookie")?.split(";").map(v=>v.trim()).find(v=>v.startsWith(target))?.slice(target.length);
   return raw&&/^[a-f0-9]{96}$/.test(raw)?raw:null;
 }
 export async function actorOf(request:Request,required=true):Promise<Actor|null>{
   if(getAuthProvider()==="clerk"){
-    const actor=await clerkActorOf(request);
+    const actor=hasTestSession(request)?await testSessionActorOf(request):await clerkActorOf(request);
     if(!actor&&required)throw new HttpError(401,"请先登录并完成账户登记。","UNAUTHENTICATED");
     return actor;
   }
@@ -42,7 +42,13 @@ export async function actorOf(request:Request,required=true):Promise<Actor|null>
   return actor;
 }
 export async function authStateOf(request:Request):Promise<AuthState>{
-  if(getAuthProvider()==="clerk")return clerkAuthStateOf(request);
+  if(getAuthProvider()==="clerk"){
+    if(hasTestSession(request)){
+      const user=await testSessionActorOf(request);
+      return {user,authProvider:"clerk",identityState:user?"ready":"signed_out",sessionMethod:"test"};
+    }
+    return clerkAuthStateOf(request);
+  }
   const user=await actorOf(request,false);
   return {user,authProvider:"local",identityState:user?"ready":"signed_out"};
 }
@@ -69,8 +75,8 @@ export async function createLocalProfile(input:unknown):Promise<Actor>{
   return actor;
 }
 export async function requireActor(request:Request):Promise<Actor>{return (await actorOf(request,true))!;}
-function setSessionCookie(response:NextResponse,token:string):void{
-  response.cookies.set(cookieName(),token,{httpOnly:true,secure:getConfig().mode==="service",sameSite:"lax",path:"/",maxAge:43200});
+function setSessionCookie(response:NextResponse,token:string,name=cookieName()):void{
+  response.cookies.set(name,token,{httpOnly:true,secure:getConfig().mode==="service",sameSite:"lax",path:"/",maxAge:43200});
 }
 export async function setSession(response:NextResponse,userId:string):Promise<void>{
   requireLocalAuth();
@@ -103,6 +109,39 @@ export async function setPasswordSession(response:NextResponse,username:string,p
 export async function endSession(request:Request,response:NextResponse):Promise<void>{
   const token=sessionToken(request);if(token)await query("DELETE FROM sessions WHERE token_hash=$1 AND region=$2",[hashToken(token),getConfig().region]);
   response.cookies.set(cookieName(),"",{httpOnly:true,secure:getConfig().mode==="service",sameSite:"lax",path:"/",maxAge:0});
+}
+function testCookieName():string{return `nova_${getConfig().region.toLowerCase()}_test_session`;}
+const testTokenHash=(token:string)=>hashToken(`test:${token}`);
+export function hasTestSession(request:Request):boolean{return sessionToken(request,testCookieName())!==null;}
+export async function testSessionActorOf(request:Request):Promise<Actor|null>{
+  if(!hasTestAccountLogin())return null;
+  const token=sessionToken(request,testCookieName());
+  if(!token)return null;
+  const config=getConfig();
+  const rows=await query<Actor>("SELECT u.id,u.name,u.role,u.region FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 AND s.region=$2 AND u.region=$2 AND s.expires_at>now() AND NOT u.disabled AND ($3::boolean OR NOT u.demo) AND u.username=ANY($4::text[]) AND u.password_hash IS NOT NULL",[testTokenHash(token),config.region,config.mode==="demo",getTestAccountUsernames()]);
+  return rows[0]??null;
+}
+export async function setTestPasswordSession(response:NextResponse,username:string,password:string):Promise<void>{
+  if(!hasTestAccountLogin())throw new HttpError(404,"未找到该入口。","NOT_FOUND");
+  const config=getConfig(),usernames=getTestAccountUsernames();
+  const rows=usernames.includes(username)?await query<{id:string;password_hash:string|null}>("SELECT id,password_hash FROM users WHERE username=$1 AND region=$2 AND NOT disabled AND ($3::boolean OR NOT demo) AND username=ANY($4::text[])",[username,config.region,config.mode==="demo",usernames]):[];
+  const candidate=rows[0];
+  const verified=await checkPassword(password,candidate?.password_hash??null);
+  if(!verified||!candidate)throw new HttpError(401,"账号或密码不正确。","INVALID_CREDENTIALS");
+  const token=randomBytes(48).toString("hex");
+  await transaction(async client=>{
+    const locked=await client.query("SELECT id FROM users WHERE id=$1 FOR UPDATE",[candidate.id]);
+    if(!locked.rows[0])throw new HttpError(401,"账号或密码不正确。","INVALID_CREDENTIALS");
+    const current=await client.query("SELECT password_hash FROM users WHERE id=$1 AND region=$2 AND NOT disabled AND ($3::boolean OR NOT demo) AND username=ANY($4::text[])",[candidate.id,config.region,config.mode==="demo",getTestAccountUsernames()]);
+    if(current.rows[0]?.password_hash!==candidate.password_hash)throw new HttpError(401,"账号或密码不正确。","INVALID_CREDENTIALS");
+    await client.query("INSERT INTO sessions(token_hash,user_id,region,expires_at) VALUES($1,$2,$3,now()+interval '12 hours')",[testTokenHash(token),candidate.id,config.region]);
+  });
+  setSessionCookie(response,token,testCookieName());
+}
+export async function endTestSession(request:Request,response:NextResponse):Promise<void>{
+  const token=sessionToken(request,testCookieName());
+  if(token)await query("DELETE FROM sessions WHERE token_hash=$1 AND region=$2",[testTokenHash(token),getConfig().region]);
+  response.cookies.set(testCookieName(),"",{httpOnly:true,secure:getConfig().mode==="service",sameSite:"lax",path:"/",maxAge:0});
 }
 export async function limitLogin(username:string):Promise<void>{
   for(const [key,limit] of [[`user:${username.toLowerCase()}`,8],["global",300]] as const){
