@@ -72,6 +72,24 @@ describe("scale labels",()=>{
   });
 });
 
+describe("age mismatch review",()=>{
+  it("shows the stated age to staff and hides it from the family",async()=>{
+    const flagged={...assessmentRow,status:"queued",review_flags:["age_mismatch"],stated_age:15};
+    mockQuery.mockImplementation((async(sql:string)=>{
+      const text=String(sql);
+      if(text.includes("FROM families f WHERE"))return [familyRow];
+      if(text.includes("FROM assessments a JOIN families f"))return [flagged];
+      return [];
+    }) as never);
+    const staff=await workspaceFor(actor("staff"),"zh-CN");
+    expect(staff.assessments[0]).toMatchObject({reviewFlags:["age_mismatch"],statedAge:15});
+    const parent=await workspaceFor(actor("parent"),"zh-CN");
+    expect(parent.assessments[0].reviewFlags).toEqual([]);
+    expect(parent.assessments[0].statedAge).toBeUndefined();
+    expect(JSON.stringify(parent.assessments[0])).not.toContain("age_mismatch");
+  });
+});
+
 describe("assessment scoping",()=>{
   it("restricts students and teachers to their own assessments in SQL",async()=>{
     await workspaceFor(actor("student"),"zh-CN");

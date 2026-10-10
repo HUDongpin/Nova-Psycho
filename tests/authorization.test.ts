@@ -58,13 +58,22 @@ describe("family scope by role",()=>{
 });
 
 describe("age calculation",()=>{
+  const env=(region:"CN"|"HK")=>{
+    vi.stubEnv("NOVA_REGION",region);vi.stubEnv("NOVA_MODE","demo");
+    vi.stubEnv("DATABASE_URL","postgresql://synthetic.invalid/nova");
+    vi.stubEnv("NOVA_PUBLIC_URL","http://127.0.0.1:3100");
+    vi.stubEnv("NOVA_REPORT_DIR","work/test-private");vi.stubEnv("NOVA_REPORT_KEY","0".repeat(64));
+  };
   it("counts a birthday that has already passed this year",()=>{
+    env("CN");
     expect(ageAt("2013-04-12",new Date("2026-09-15T00:00:00Z"))).toBe(13);
   });
   it("does not count a birthday that has not arrived yet",()=>{
+    env("HK");
     expect(ageAt("2013-04-12",new Date("2026-04-11T00:00:00Z"))).toBe(12);
   });
   it("counts the birthday itself",()=>{
+    env("CN");
     expect(ageAt("2013-04-12",new Date("2026-04-12T00:00:00Z"))).toBe(13);
   });
 });

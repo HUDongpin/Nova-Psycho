@@ -9,6 +9,7 @@ import { parseAdvice, parseScale, parseTemplate } from "../domain/validation";
 import { ageAt } from "./access";
 import { hashPassword, limitLogin } from "./auth";
 import { ACTIVE_CONSENT_ROWS_SQL, PARENT_REPORT_SCOPE, PARTICIPATION_SCOPES, hasGranted, insertConsentRecords, recordedScopes, rejectBundledConsent } from "./consent";
+import { TRIAD_LIBRARY_KEY, upsertSeededContent } from "./content-seed";
 import { getConfig, isDemoMode } from "./config";
 import { query, transaction } from "./db";
 import { HttpError, requireRole, validateId } from "./http";
@@ -189,18 +190,23 @@ export async function ensureTriadInstruments(): Promise<void> {
     const id = `${parsed.id}@${parsed.version}`;
     // Insert only. scales_immutable rejects definition rewrites, and an open assessment scores the row it was opened with.
     await query("INSERT INTO scales(id,scale_id,version,definition) VALUES($1,$2,$3,$4) ON CONFLICT(id) DO NOTHING", [id, parsed.id, parsed.version, JSON.stringify(parsed)]);
-    for (const previous of ["1.0.0", "1.1.0"]) {
-      if (previous === parsed.version) continue;
-      await query("UPDATE scales SET status='retired' WHERE id=$1 AND status='active'", [`${parsed.id}@${previous}`]);
-    }
+    // Retire every other active version of this scale. The row just published stays assignable.
+    await query("UPDATE scales SET status='retired' WHERE scale_id=$1 AND id<>$2 AND status='active'", [parsed.id, id]);
   }
-  const advice = parseAdvice({ title: pair("三方了解说明"), blocks: [{ id: "triad_context", title: pair("先看具体情境"), body: pair("这份报告把孩子、家长和老师的观察放在一起，不合成一个总分，也不做诊断。"), source: "Nova growth triad intake, 2026-10", dimensionKeys: ["cognition"] }] });
-  const template = parseTemplate({ title: pair("孩子的成长了解"), introduction: pair("这份报告给家长阅读。它把孩子、家长和老师各自看到的情况放在一起。"), limitation: pair("这不是诊断，也没有临床常模。三方说法不同时，不代表有人说了谎。香港繁体文本是便于阅读的字形转换，不是另行验证的译本。"), nextStep: pair("可以挑一个小变化，和孩子一起试四周。如果报告开头有安全提示，请先处理安全。") });
-  const existingAdvice = await query("SELECT id FROM content_versions WHERE kind='advice' LIMIT 1");
-  if (!existingAdvice.length) await query("INSERT INTO content_versions(id,kind,version,content) VALUES($1,'advice','1.0.0',$2) ON CONFLICT(kind,version) DO NOTHING", [randomUUID(), JSON.stringify(advice)]);
-  const existingTemplate = await query("SELECT id FROM content_versions WHERE kind='template' LIMIT 1");
-  if (!existingTemplate.length) await query("INSERT INTO content_versions(id,kind,version,content) VALUES($1,'template','1.0.0',$2) ON CONFLICT(kind,version) DO NOTHING", [randomUUID(), JSON.stringify(template)]);
+  await query("ALTER TABLE content_versions ADD COLUMN IF NOT EXISTS library_key text");
+  await query("ALTER TABLE content_versions ADD COLUMN IF NOT EXISTS origin text NOT NULL DEFAULT 'staff'");
+  await query("ALTER TABLE content_versions DROP CONSTRAINT IF EXISTS content_versions_kind_version_key");
+  await query("ALTER TABLE content_versions DROP CONSTRAINT IF EXISTS content_versions_origin_check");
+  await query("ALTER TABLE content_versions ADD CONSTRAINT content_versions_origin_check CHECK (origin IN ('seed','staff'))");
+  await query("CREATE UNIQUE INDEX IF NOT EXISTS content_versions_general_version ON content_versions(kind, version) WHERE library_key IS NULL");
+  await query("CREATE UNIQUE INDEX IF NOT EXISTS content_versions_library_version ON content_versions(kind, library_key, version) WHERE library_key IS NOT NULL");
+  // Keyed rows only. A general-library row, including one an administrator published, is not updated.
+  await upsertSeededContent("advice", TRIAD_LIBRARY_KEY, triadAdvice);
+  await upsertSeededContent("template", TRIAD_LIBRARY_KEY, triadTemplate);
 }
+
+export const triadAdvice = parseAdvice({ title: pair("三方了解说明"), blocks: [{ id: "triad_context", title: pair("先看具体情境"), body: pair("这份报告把孩子、家长和老师的观察放在一起，不合成一个总分，也不做诊断。"), source: "Nova growth triad intake, 2026-10", dimensionKeys: ["cognition"] }] });
+export const triadTemplate = parseTemplate({ title: pair("孩子的成长了解"), introduction: pair("这份报告给家长阅读。它把孩子、家长和老师各自看到的情况放在一起。"), limitation: pair("这不是诊断，也没有临床常模。三方说法不同时，不代表有人说了谎。香港繁体文本是便于阅读的字形转换，不是另行验证的译本。"), nextStep: pair("可以挑一个小变化，和孩子一起试四周。如果报告开头有安全提示，请先处理安全。") });
 
 async function freshCode(client: PoolClient): Promise<string> {
   for (let attempt = 0; attempt < 5; attempt += 1) {

@@ -107,16 +107,18 @@ export function composeTriad(sources: TriadSource[]): TriadReport {
     safety.push(message);
   }
   const domains = DOMAINS.flatMap(([key, label]) => {
-    const views = ordered.flatMap(source => source.scale.dimensions.filter(dimension => dimension.domain === key).map(dimension => {
+    const views = ordered.flatMap(source => source.scale.dimensions.filter(dimension => dimension.domain === key).flatMap(dimension => {
+      const dimensionItems = dimension.items.map(id => source.scale.items.find(item => item.id === id)).filter(item => item !== undefined);
+      if (dimensionItems.length > 0 && dimensionItems.every(item => item.visibleFromAge !== undefined && source.score.age < item.visibleFromAge)) return [];
       const scored = source.score.dimensions.find(item => item.key === dimension.key);
       const raw = scored?.raw ?? null;
-      return {
+      return [{
         role: source.role,
         label: joinLabel(ROLE_LABEL[source.role], dimension.label),
         body: dimensionBody(source.scale, dimension, scored),
         raw,
         submittedAt: source.submittedAt
-      };
+      }];
     }));
     if (!views.length) return [];
     // A domain can contain different subdimensions and observation windows.
