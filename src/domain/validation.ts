@@ -77,6 +77,7 @@ export const adviceSchema=z.object({title:localized,blocks:z.array(z.object({id:
   if(new Set(s.blocks.map(b=>b.id)).size!==s.blocks.length)ctx.addIssue({code:"custom",message:"Advice IDs must be unique"});
 });
 export const templateSchema=z.object({title:localized,introduction:localized,limitation:localized,nextStep:localized}).strict();
+export function normValidated(norm:{validated?:boolean}|null|undefined):boolean{return norm?.validated===true;}
 export function parseScale(value:unknown):ScaleDefinition{return scaleSchema.parse(value);}
 export function parseAdvice(value:unknown):AdviceLibrary{return adviceSchema.parse(value);}
 export function parseTemplate(value:unknown):ReportTemplate{return templateSchema.parse(value);}

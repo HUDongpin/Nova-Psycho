@@ -49,7 +49,7 @@ describe("public triad family and join routes", () => {
 
   it("refuses family creation and join in service mode until the assigned scales are validated", async () => {
     stub("service");
-    const refused = { status: 409, code: "TRIAD_UNVALIDATED" };
+    const refused = { status: 409, code: "UNVALIDATED_INSTRUMENT" };
     await expect(startParentCase(parent, "zh-CN")).rejects.toMatchObject(refused);
     await expect(joinWithCode({ ...joining, role: "teacher" }, "zh-CN")).rejects.toMatchObject(refused);
     await expect(joinFamily(actor, { code: joining.code }, "zh-CN")).rejects.toMatchObject(refused);

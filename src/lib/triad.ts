@@ -81,13 +81,13 @@ async function familyByJoinCode(client: PoolClient, code: string): Promise<Regis
 
 export interface FamilyJoinResult { userId: string; familyId: string; assessmentId: string; alreadyMember: boolean }
 
-// Demo mode can open the unvalidated triad. Service mode stays closed until the
-// versions these routes assign are themselves non-demo and norm-validated.
+// Demo mode can open the unvalidated triad. Service mode refuses while any
+// version these routes assign still has norm.validated !== true.
 export function assertPublicTriadOpen(): void {
   if (isDemoMode()) return;
   const assigned = [childScale, parentScale, teacherScale];
-  if (assigned.every(scale => !scale.demo && scale.norm.validated)) return;
-  throw new HttpError(409, "正式服务尚未提供已验证的三方问卷，暂时不能创建或加入家庭。", "TRIAD_UNVALIDATED");
+  if (assigned.some(scale => scale.norm.validated !== true)) throw new HttpError(409, "正式服务尚未提供已验证常模的三方问卷，暂时不能创建或加入家庭。", "UNVALIDATED_INSTRUMENT");
+  if (assigned.some(scale => scale.demo)) throw new HttpError(409, "正式服务环境不能使用演示问卷创建或加入家庭。", "DEMO_INSTRUMENT");
 }
 
 // The caller holds the family lock and has validated the current account and consent.

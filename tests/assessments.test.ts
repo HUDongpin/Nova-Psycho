@@ -82,9 +82,17 @@ describe("creating an assessment",()=>{
     mockGetScale.mockResolvedValueOnce({id:SCALE_ID,definition:scale,status:"retired"} as never);
     await expect(createAssessment(actor("admin"),createInput)).rejects.toMatchObject({code:"SCALE_RETIRED"});
   });
-  it("refuses a demo instrument in service mode",async()=>{
+  it("refuses an unvalidated instrument in service mode",async()=>{
     vi.stubEnv("NOVA_MODE","service");vi.stubEnv("NOVA_PUBLIC_URL","https://nova.example.invalid");
-    await expect(createAssessment(actor("admin"),createInput)).rejects.toMatchObject({code:"DEMO_INSTRUMENT"});
+    await expect(createAssessment(actor("admin"),createInput)).rejects.toMatchObject({status:409,code:"UNVALIDATED_INSTRUMENT"});
+    expect(mockTransaction).not.toHaveBeenCalled();
+  });
+  it("refuses a validated demo instrument in service mode",async()=>{
+    const validated=structuredClone(scale);validated.norm={...validated.norm,validated:true};
+    mockGetScale.mockResolvedValueOnce({id:SCALE_ID,definition:validated,status:"active"} as never);
+    vi.stubEnv("NOVA_MODE","service");vi.stubEnv("NOVA_PUBLIC_URL","https://nova.example.invalid");
+    await expect(createAssessment(actor("admin"),createInput)).rejects.toMatchObject({status:409,code:"DEMO_INSTRUMENT"});
+    expect(mockTransaction).not.toHaveBeenCalled();
   });
   it("refuses a respondent who is not a member of the family",async()=>{
     // The family must resolve, otherwise the failure would come from the family lookup
@@ -240,10 +248,22 @@ describe("submitting",()=>{
     client.query.mockImplementationOnce(async()=>({rows:[{id:ASSESSMENT_ID,status:"published",draft_revision:0,family_id:FAMILY_ID,respondent_id:USER_ID,report_id:"r1"}]}));
     await expect(submitAssessment(actor("student"),ASSESSMENT_ID,submission)).resolves.toMatchObject({status:"published",reportId:"r1"});
   });
-  it("refuses a demo submission in service mode",async()=>{
+  it("refuses an unvalidated submission in service mode",async()=>{
     vi.stubEnv("NOVA_MODE","service");vi.stubEnv("NOVA_PUBLIC_URL","https://nova.example.invalid");
     withOwn();
-    await expect(submitAssessment(actor("student"),ASSESSMENT_ID,submission)).rejects.toMatchObject({code:"DEMO_INSTRUMENT"});
+    await expect(submitAssessment(actor("student"),ASSESSMENT_ID,submission)).rejects.toMatchObject({status:409,code:"UNVALIDATED_INSTRUMENT"});
+    expect(mockTransaction).not.toHaveBeenCalled();
+  });
+  it("refuses a validated demo submission in service mode",async()=>{
+    const validated=structuredClone(scale);validated.norm={...validated.norm,validated:true};
+    vi.stubEnv("NOVA_MODE","service");vi.stubEnv("NOVA_PUBLIC_URL","https://nova.example.invalid");
+    mockQuery.mockImplementation((async(sql:string)=>{
+      const text=String(sql);
+      if(text.includes("FROM assessments a JOIN scales s"))return [{id:ASSESSMENT_ID,status:"pending",definition:validated,draft_answers:{},draft_revision:0,family_id:FAMILY_ID,child_name:"Synthetic child",birth_date:"2013-04-12",respondent_role:"student",region:"CN"}];
+      return [];
+    }) as never);
+    await expect(submitAssessment(actor("student"),ASSESSMENT_ID,submission)).rejects.toMatchObject({status:409,code:"DEMO_INSTRUMENT"});
+    expect(mockTransaction).not.toHaveBeenCalled();
   });
 });
 
