@@ -91,7 +91,10 @@ export async function joinTriadFamilyInTransaction(client: PoolClient, actor: Ac
   if (own && own.role !== role) throw new HttpError(409, "这个账号在家庭中的角色不一致，请联系服务人员。", "ROLE_CONFLICT");
   if (members.rows.some(member => member.role === role && member.user_id !== actor.id)) throw new HttpError(409, role === "student" ? "这个家庭已经有孩子进入了。" : "这个家庭已经有老师进入了。", "ROLE_TAKEN");
   if (own) {
-    const existing = await client.query<{ id: string }>("SELECT id FROM assessments WHERE family_id=$1 AND respondent_id=$2 AND respondent_role=$3 AND scale_version_id=$4 AND region=$5 ORDER BY created_at DESC,id DESC LIMIT 1", [family.id, actor.id, role, SCALE_ID[role], actor.region]);
+    // Any version of this role's triad scale. After 1.1.0 is published, a member who
+    // already has a 1.0.0 task must get that task back instead of opening a second one.
+    const scaleFamily = role === "student" ? childScale.id : teacherScale.id;
+    const existing = await client.query<{ id: string }>("SELECT a.id FROM assessments a JOIN scales s ON s.id=a.scale_version_id WHERE a.family_id=$1 AND a.respondent_id=$2 AND a.respondent_role=$3 AND a.region=$4 AND s.scale_id=$5 ORDER BY a.created_at DESC,a.id DESC LIMIT 1", [family.id, actor.id, role, actor.region, scaleFamily]);
     if (existing.rows[0]) return { userId: actor.id, familyId: family.id, assessmentId: existing.rows[0].id, alreadyMember: true };
   }
   const scale = await client.query("SELECT id FROM scales WHERE id=$1 AND status='active'", [SCALE_ID[role]]);
