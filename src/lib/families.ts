@@ -1,13 +1,13 @@
 import { randomBytes,randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { PoolClient } from "pg";
-import type { Actor, Locale, RespondentRole } from "../domain/types";
+import type { Actor, Locale, RespondentRole, Role } from "../domain/types";
 import { ageAt, canInviteFamilyMembers, familyFor } from "./access";
 import { audit, hashPassword, hashToken } from "./auth";
 import { getConfig } from "./config";
 import { query, transaction } from "./db";
 import { HttpError, requireRole, validateId } from "./http";
-import { ACTIVE_CONSENT_ROWS_SQL, CONSENT_SCOPES, PARENT_REPORT_SCOPE, REQUIRED_WITHDRAW_SCOPES, grantedScopes, hasGranted, insertConsentRecords, rejectBundledConsent, scopeList, type ConsentScope } from "./consent";
+import { ACTIVE_CONSENT_ROWS_SQL, CONSENT_SCOPES, PARENT_REPORT_SCOPE, REQUIRED_WITHDRAW_SCOPES, hasGranted, insertConsentRecords, rejectBundledConsent, scopeList, type ConsentScope } from "./consent";
 import { noticeVersion } from "./privacy";
 import type { VerifiedClerkIdentity } from "./clerk-auth";
 import { assertTriadRegistrationReady, enqueueReportsHeldForConsent, joinTriadFamilyInTransaction, lockRegistrationActor, requireRegistrationConsent, type RegistrationFamily } from "./triad";
@@ -34,6 +34,45 @@ export async function assignFamily(actor:Actor,id:string,input:unknown){
     return {id,assignedTo};
   });
 }
+// Family row first, then the actor, matching assignment. The check outside this
+// transaction can go stale while the caller waits; only the result under the lock is used.
+async function assertConsentAuthority(client:PoolClient,actor:Actor,familyId:string):Promise<void>{
+  const families=await client.query<{id:string;region:"CN"|"HK";assigned_to:string|null}>("SELECT id, region, assigned_to FROM families WHERE id=$1 AND region=$2 FOR UPDATE",[familyId,actor.region]);
+  const family=families.rows[0];
+  if(!family)throw new HttpError(404,"未找到该家庭或没有访问权限。","NOT_FOUND");
+  const matched=await client.query("SELECT id FROM users WHERE id=$1 AND role=$2 AND region=$3 AND NOT disabled FOR SHARE",[actor.id,actor.role,actor.region]);
+  if(!matched.rows[0]){
+    const found=await client.query<{role:Role;region:"CN"|"HK";disabled:boolean}>("SELECT role, region, disabled FROM users WHERE id=$1 FOR SHARE",[actor.id]);
+    const current=found.rows[0];
+    if(!current||current.disabled)throw new HttpError(403,"账号已停用，请联系服务人员。","ACCOUNT_REVOKED");
+    if(current.region!==actor.region)throw new HttpError(403,"请使用账号所属地区的入口。","REGION_MISMATCH");
+    if(current.role!==actor.role)throw new HttpError(409,"账号角色已变更，请重新登录。","ROLE_CONFLICT");
+    throw new HttpError(403,"账号已停用，请联系服务人员。","ACCOUNT_REVOKED");
+  }
+  if(actor.role==="admin")return;
+  if(actor.role==="staff"){
+    if(family.assigned_to===actor.id)return;
+    const alerts=await client.query("SELECT 1 FROM staff_alerts WHERE family_id=$1 AND region=$2 LIMIT 1",[family.id,actor.region]);
+    if(alerts.rows[0])return;
+    throw new HttpError(404,"未找到该家庭或没有访问权限。","NOT_FOUND");
+  }
+  const membership=await client.query("SELECT 1 AS parent_member FROM memberships WHERE family_id=$1 AND user_id=$2 AND role='parent'",[family.id,actor.id]);
+  if(!membership.rows[0])throw new HttpError(404,"未找到该家庭或没有访问权限。","NOT_FOUND");
+}
+async function withdrawConsentScope(client:PoolClient,actor:Actor,familyId:string,scope:ConsentScope):Promise<void>{
+  const carriers=await client.query<{id:string;scopes:unknown}>("SELECT c.id, c.scopes FROM consents c WHERE c.family_id=$1 AND c.revoked_at IS NULL AND c.scopes @> $2::jsonb AND NOT EXISTS (SELECT 1 FROM consent_scope_revocations r WHERE r.consent_id=c.id AND r.scope=$3)",[familyId,JSON.stringify([scope]),scope]);
+  for(const row of carriers.rows){
+    const listed=scopeList(row.scopes);
+    const prior=await client.query<{scope:string}>("SELECT scope FROM consent_scope_revocations WHERE consent_id=$1",[row.id]);
+    const revoked=new Set(prior.rows.map(item=>item.scope));
+    const remaining=listed.filter(item=>item!==scope&&!revoked.has(item));
+    if(remaining.length===0){
+      await client.query("UPDATE consents SET revoked_at=now() WHERE id=$1 AND revoked_at IS NULL",[row.id]);
+      continue;
+    }
+    await client.query("INSERT INTO consent_scope_revocations(id,consent_id,family_id,scope,actor_id) VALUES($1,$2,$3,$4,$5)",[randomUUID(),row.id,familyId,scope,actor.id]);
+  }
+}
 export async function recordConsent(actor:Actor,id:string,input:unknown){
   requireRole(actor.role,["admin","staff","parent"]);
   rejectBundledConsent(input);
@@ -43,25 +82,14 @@ export async function recordConsent(actor:Actor,id:string,input:unknown){
   if(offline&&!d.reference)throw new HttpError(422,"请记录监护人已签署的线下授权凭据。","CONSENT_REFERENCE_REQUIRED");
   if(d.action==="withdraw"&&(REQUIRED_WITHDRAW_SCOPES as readonly string[]).includes(d.scope)&&d.confirmWithdraw!==true)throw new HttpError(422,"撤回测评或敏感资料同意需要明确确认。","CONSENT_WITHDRAW_CONFIRMATION");
   const queued=await transaction(async client=>{
-    const lock=await client.query("SELECT id FROM families WHERE id=$1 FOR UPDATE",[id]);
-    if(!lock.rows[0])throw new HttpError(404,"该家庭已删除。","NOT_FOUND");
+    await assertConsentAuthority(client,actor,id);
     const active=await client.query<{scopes:unknown}>(ACTIVE_CONSENT_ROWS_SQL,[id]);
     if(d.action==="grant"){
       if(!hasGranted(active.rows,[d.scope]))await insertConsentRecords(client,{familyId:id,actorId:actor.id,guardianName:d.guardianName,method:offline?"offline_signed":"online_guardian",reference:d.reference??null,noticeVersion,scopes:[d.scope]});
       return d.scope===PARENT_REPORT_SCOPE?enqueueReportsHeldForConsent(client,id):[];
     }
     if(!hasGranted(active.rows,[d.scope]))return [];
-    const keep=new Set<ConsentScope>();
-    for(const row of active.rows){
-      const listed=scopeList(row.scopes);
-      if(!listed.includes(d.scope))continue;
-      for(const other of listed)if(other!==d.scope&&(CONSENT_SCOPES as readonly string[]).includes(other))keep.add(other as ConsentScope);
-    }
-    await client.query("UPDATE consents SET revoked_at=now() WHERE family_id=$1 AND revoked_at IS NULL AND scopes @> $2::jsonb",[id,JSON.stringify([d.scope])]);
-    const remaining=await client.query<{scopes:unknown}>(ACTIVE_CONSENT_ROWS_SQL,[id]);
-    const still=grantedScopes(remaining.rows);
-    const restore=[...keep].filter(scope=>!still.has(scope));
-    if(restore.length)await insertConsentRecords(client,{familyId:id,actorId:actor.id,guardianName:d.guardianName,method:offline?"offline_signed":"online_guardian",reference:d.reference??null,noticeVersion,scopes:restore});
+    await withdrawConsentScope(client,actor,id,d.scope);
     return [];
   });
   if(queued.length){

@@ -20,6 +20,9 @@ const familyRow={id:FAMILY_ID,region:"CN",family_name:"Synthetic family",child_n
 const clientCalls:string[]=[];
 async function answerClient(sql:string,_params?:unknown[]):Promise<{rows:unknown[]}>{
   clientCalls.push(String(sql));
+  if(String(sql).includes("SELECT id, region, assigned_to FROM families"))return {rows:[{...familyRow,assigned_to:USER_ID}]};
+  if(String(sql).includes("role=$2 AND region=$3 AND NOT disabled FOR SHARE"))return {rows:[{id:_params?.[0]??USER_ID}]};
+  if(String(sql).includes("parent_member"))return {rows:[{parent_member:1}]};
   if(String(sql).includes("SELECT id,region,assigned_to FROM families"))return {rows:[familyRow]};
   if(String(sql).includes("SELECT id,region,birth_date,join_code FROM families"))return {rows:[{...familyRow,join_code:null}]};
   if(String(sql).includes("SELECT id,name,role,region,disabled,demo FROM users"))return {rows:[{...actor("admin"),disabled:false,demo:false}]};
@@ -161,16 +164,16 @@ describe("recording guardian consent",()=>{
     expect(clientCalls.some(sql=>sql.includes("UPDATE consents SET revoked_at"))).toBe(false);
   });
   it("grants a missing purpose without revoking the ones already recorded",async()=>{
-    client.query.mockImplementation(async(sql:string)=>{
+    client.query.mockImplementation(async(sql:string,params?:unknown[])=>{
       clientCalls.push(String(sql));
-      if(String(sql).includes("SELECT id FROM families"))return {rows:[{id:FAMILY_ID}]};
-      if(String(sql).includes("SELECT scopes FROM consents"))return {rows:[{scopes:["assessment"]},{scopes:["sensitive_data"]}]};
-      return {rows:[]};
+      if(String(sql).includes("AS scopes FROM consents WHERE family_id=$1"))return {rows:[{scopes:["assessment"]},{scopes:["sensitive_data"]}]};
+      return answerClient(sql,params);
     });
     await recordConsent(actor("parent"),FAMILY_ID,grant("parent_report"));
     const inserts=client.query.mock.calls.filter(call=>String(call[0]).includes("INSERT INTO consents"));
     expect(inserts.map(call=>JSON.parse(String((call[1] as unknown[])[7])))).toEqual([["parent_report"]]);
     expect(clientCalls.some(sql=>sql.includes("UPDATE consents SET revoked_at"))).toBe(false);
+    expect(clientCalls.some(sql=>sql.includes("INSERT INTO consent_scope_revocations"))).toBe(false);
     expect(clientCalls.some(sql=>sql.includes("j.state='paused'")||sql.includes("j.state='ready'"))).toBe(true);
   });
   it("requires an explicit confirmation before withdrawing assessment or sensitive data",async()=>{
@@ -178,20 +181,87 @@ describe("recording guardian consent",()=>{
     await expect(recordConsent(actor("parent"),FAMILY_ID,{action:"withdraw",scope:"sensitive_data",guardianName:"Synthetic guardian",confirmWithdraw:false})).rejects.toMatchObject({code:"CONSENT_WITHDRAW_CONFIRMATION"});
     expect(clientCalls.some(sql=>sql.includes("UPDATE consents SET revoked_at"))).toBe(false);
   });
-  it("withdraws only the named purpose and keeps a legacy row's original text",async()=>{
-    client.query.mockImplementation(async(sql:string)=>{
+  it("revokes a single-purpose row without rewriting any other consent",async()=>{
+    const consentId="aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+    client.query.mockImplementation(async(sql:string,params?:unknown[])=>{
       clientCalls.push(String(sql));
-      if(String(sql).includes("SELECT id FROM families"))return {rows:[{id:FAMILY_ID}]};
-      if(String(sql).includes("SELECT scopes FROM consents")&&!clientCalls.some(item=>item.includes("UPDATE consents SET revoked_at")))return {rows:[{scopes:["assessment","parent_report","sensitive_data"]}]};
-      if(String(sql).includes("SELECT scopes FROM consents"))return {rows:[]};
-      return {rows:[]};
+      if(String(sql).includes("AS scopes FROM consents WHERE family_id=$1"))return {rows:[{scopes:["parent_report"]}]};
+      if(String(sql).includes("c.id, c.scopes"))return {rows:[{id:consentId,scopes:["parent_report"]}]};
+      if(String(sql).includes("FROM consent_scope_revocations WHERE consent_id"))return {rows:[]};
+      return answerClient(sql,params);
     });
     await recordConsent(actor("parent"),FAMILY_ID,{action:"withdraw",scope:"parent_report",guardianName:"Synthetic guardian"});
     const revoke=client.query.mock.calls.find(call=>String(call[0]).includes("UPDATE consents SET revoked_at"));
-    expect(String(revoke?.[0])).toBe("UPDATE consents SET revoked_at=now() WHERE family_id=$1 AND revoked_at IS NULL AND scopes @> $2::jsonb");
-    expect(revoke?.[1]).toEqual([FAMILY_ID,JSON.stringify(["parent_report"])]);
-    const restored=client.query.mock.calls.filter(call=>String(call[0]).includes("INSERT INTO consents")).map(call=>JSON.parse(String((call[1] as unknown[])[7])));
-    expect(restored).toEqual([["assessment"],["sensitive_data"]]);
+    expect(String(revoke?.[0])).toBe("UPDATE consents SET revoked_at=now() WHERE id=$1 AND revoked_at IS NULL");
+    expect(revoke?.[1]).toEqual([consentId]);
+    expect(clientCalls.some(sql=>sql.includes("INSERT INTO consents")||sql.includes("INSERT INTO consent_scope_revocations"))).toBe(false);
+  });
+  it("keeps a legacy combined row and records only the withdrawn purpose",async()=>{
+    const consentId="bbbbbbbb-cccc-4ddd-8eee-ffffffffffff";
+    client.query.mockImplementation(async(sql:string,params?:unknown[])=>{
+      clientCalls.push(String(sql));
+      if(String(sql).includes("AS scopes FROM consents WHERE family_id=$1"))return {rows:[{scopes:["assessment","parent_report","sensitive_data"]}]};
+      if(String(sql).includes("c.id, c.scopes"))return {rows:[{id:consentId,scopes:["assessment","parent_report","sensitive_data"]}]};
+      if(String(sql).includes("FROM consent_scope_revocations WHERE consent_id"))return {rows:[]};
+      return answerClient(sql,params);
+    });
+    await recordConsent(actor("parent"),FAMILY_ID,{action:"withdraw",scope:"parent_report",guardianName:"Synthetic current guardian"});
+    expect(clientCalls.some(sql=>sql.includes("UPDATE consents")||sql.includes("INSERT INTO consents"))).toBe(false);
+    const revocation=client.query.mock.calls.find(call=>String(call[0]).includes("INSERT INTO consent_scope_revocations"));
+    expect(String(revocation?.[0])).toContain("consent_id,family_id,scope,actor_id");
+    expect(revocation?.[1]).toEqual([expect.any(String),consentId,FAMILY_ID,"parent_report",USER_ID]);
+    const familyLock=clientCalls.findIndex(sql=>sql.includes("SELECT id, region, assigned_to FROM families")&&sql.includes("FOR UPDATE"));
+    const userLock=clientCalls.findIndex(sql=>sql.includes("NOT disabled FOR SHARE"));
+    const write=clientCalls.findIndex(sql=>sql.includes("INSERT INTO consent_scope_revocations"));
+    expect(familyLock).toBeGreaterThanOrEqual(0);
+    expect(userLock).toBeGreaterThan(familyLock);
+    expect(write).toBeGreaterThan(userLock);
+  });
+  it("refuses a staff member who lost the assignment before the locked write",async()=>{
+    client.query.mockImplementation(async(sql:string,params?:unknown[])=>{
+      clientCalls.push(String(sql));
+      if(String(sql).includes("SELECT id, region, assigned_to FROM families"))return {rows:[{id:FAMILY_ID,region:"CN",assigned_to:"77777777-6666-4555-8444-333333333333"}]};
+      if(String(sql).includes("FROM staff_alerts"))return {rows:[]};
+      return answerClient(sql,params);
+    });
+    await expect(recordConsent(actor("staff"),FAMILY_ID,{action:"withdraw",scope:"parent_report",guardianName:"Synthetic guardian",reference:"SYNTHETIC-REF"})).rejects.toMatchObject({status:404,code:"NOT_FOUND"});
+    expect(clientCalls.some(sql=>sql.includes("INSERT INTO consents")||sql.includes("UPDATE consents")||sql.includes("INSERT INTO consent_scope_revocations"))).toBe(false);
+    const familyLock=clientCalls.findIndex(sql=>sql.includes("FROM families")&&sql.includes("FOR UPDATE"));
+    const userLock=clientCalls.findIndex(sql=>sql.includes("FOR SHARE"));
+    expect(familyLock).toBeGreaterThanOrEqual(0);
+    expect(userLock).toBeGreaterThan(familyLock);
+  });
+  it("still lets the current assignee, a parent, an administrator, or alert-fallback staff record consent",async()=>{
+    await expect(recordConsent(actor("staff"),FAMILY_ID,grant("assessment",{reference:"SYNTHETIC-REF"}))).resolves.toEqual({ok:true});
+    await expect(recordConsent(actor("parent"),FAMILY_ID,grant("sensitive_data"))).resolves.toEqual({ok:true});
+    await expect(recordConsent(actor("admin"),FAMILY_ID,grant("parent_report",{reference:"SYNTHETIC-REF"}))).resolves.toEqual({ok:true});
+    client.query.mockImplementation(async(sql:string,params?:unknown[])=>{
+      if(String(sql).includes("SELECT id, region, assigned_to FROM families"))return {rows:[{id:FAMILY_ID,region:"CN",assigned_to:"77777777-6666-4555-8444-333333333333"}]};
+      if(String(sql).includes("FROM staff_alerts"))return {rows:[{ok:1}]};
+      return answerClient(sql,params);
+    });
+    await expect(recordConsent(actor("staff"),FAMILY_ID,grant("ai_processing",{reference:"SYNTHETIC-REF"}))).resolves.toEqual({ok:true});
+  });
+  it("rechecks a disabled or role-changed account under the family lock and does not write",async()=>{
+    client.query.mockImplementation(async(sql:string)=>{
+      clientCalls.push(String(sql));
+      if(String(sql).includes("SELECT id, region, assigned_to FROM families"))return {rows:[{id:FAMILY_ID,region:"CN",assigned_to:USER_ID}]};
+      if(String(sql).includes("NOT disabled FOR SHARE"))return {rows:[]};
+      if(String(sql).includes("SELECT role, region, disabled FROM users"))return {rows:[{role:"staff",region:"CN",disabled:true}]};
+      return {rows:[]};
+    });
+    await expect(recordConsent(actor("staff"),FAMILY_ID,grant("assessment",{reference:"SYNTHETIC-REF"}))).rejects.toMatchObject({status:403,code:"ACCOUNT_REVOKED"});
+    expect(clientCalls.some(sql=>sql.includes("INSERT INTO consents"))).toBe(false);
+    clientCalls.length=0;
+    client.query.mockImplementation(async(sql:string)=>{
+      clientCalls.push(String(sql));
+      if(String(sql).includes("SELECT id, region, assigned_to FROM families"))return {rows:[{id:FAMILY_ID,region:"CN",assigned_to:USER_ID}]};
+      if(String(sql).includes("NOT disabled FOR SHARE"))return {rows:[]};
+      if(String(sql).includes("SELECT role, region, disabled FROM users"))return {rows:[{role:"parent",region:"CN",disabled:false}]};
+      return {rows:[]};
+    });
+    await expect(recordConsent(actor("staff"),FAMILY_ID,grant("assessment",{reference:"SYNTHETIC-REF"}))).rejects.toMatchObject({status:409,code:"ROLE_CONFLICT"});
+    expect(clientCalls.some(sql=>sql.includes("INSERT INTO consents"))).toBe(false);
   });
 });
 

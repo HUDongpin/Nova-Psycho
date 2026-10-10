@@ -21,6 +21,13 @@ const FAMILY = "11111111-2222-4333-8444-555555555555";
 const ASSESSMENT = "22222222-3333-4444-8555-666666666666";
 const JOB = "33333333-4444-4555-8666-777777777777";
 const actor: Actor = { id: "99999999-8888-4777-8666-555555555555", name: "Synthetic guardian", role: "parent", region: "CN" };
+function allowConsent(sql: string): { rows: unknown[] } | undefined {
+  if (sql.includes("SELECT id, region, assigned_to FROM families")) return { rows: [{ id: FAMILY, region: "CN", assigned_to: actor.id }] };
+  if (sql.includes("role=$2 AND region=$3 AND NOT disabled FOR SHARE")) return { rows: [{ id: actor.id }] };
+  if (sql.includes("parent_member")) return { rows: [{ parent_member: 1 }] };
+  return undefined;
+}
+
 const snapshot: AssessmentSnapshot = {
   scale: demoScale, advice: { id: "a", version: "1.0.0", content: demoAdvice }, template: { id: "t", version: "1.0.0", content: demoTemplate },
   score: scoreAssessment(demoScale, { q1: 1, q2: 2, q3: 1, q4: 2, q5: 1, q6: 2, q7: 1, q8: 2, q9: 0 }, { age: 12, region: "CN", role: "student" }),
@@ -47,8 +54,10 @@ describe("parent-report consent and exactly one report", () => {
   it("answers first, then one grant creates and dispatches exactly one job", async () => {
     const inserts: string[] = [];
     const client = { query: vi.fn(async (sql: string) => {
+      const allowed = allowConsent(sql);
+      if (allowed) return allowed;
       if (sql.includes("SELECT id FROM families")) return { rows: [{ id: FAMILY }] };
-      if (sql.includes("SELECT scopes FROM consents")) return { rows: [{ scopes: ["assessment"] }, { scopes: ["sensitive_data"] }] };
+      if (sql.includes("AS scopes FROM consents WHERE family_id=$1")) return { rows: [{ scopes: ["assessment"] }, { scopes: ["sensitive_data"] }] };
       if (sql.includes("NOT EXISTS (SELECT 1 FROM report_jobs")) return { rows: inserts.length ? [] : [{ id: ASSESSMENT }] };
       if (sql.startsWith("INSERT INTO report_jobs")) { inserts.push(ASSESSMENT); return { rows: [] }; }
       if (sql.includes("j.state='paused'")) return { rows: [] };
@@ -75,7 +84,7 @@ describe("parent-report consent and exactly one report", () => {
     const publication: string[] = [];
     const paused = { query: vi.fn(async (sql: string) => {
       publication.push(sql);
-      if (sql.includes("SELECT scopes FROM consents")) return { rows: [{ scopes: ["assessment"] }, { scopes: ["sensitive_data"] }] };
+      if (sql.includes("AS scopes FROM consents WHERE family_id=$1")) return { rows: [{ scopes: ["assessment"] }, { scopes: ["sensitive_data"] }] };
       return { rows: [{ id: "locked" }] };
     }) };
     vi.mocked(transaction).mockImplementationOnce((async (fn: (client: PoolClient) => Promise<unknown>) => fn(paused as unknown as PoolClient)) as never);
@@ -85,8 +94,10 @@ describe("parent-report consent and exactly one report", () => {
 
     const resumed: string[] = [];
     const client = { query: vi.fn(async (sql: string) => {
+      const allowed = allowConsent(sql);
+      if (allowed) return allowed;
       if (sql.includes("SELECT id FROM families")) return { rows: [{ id: FAMILY }] };
-      if (sql.includes("SELECT scopes FROM consents")) return { rows: [{ scopes: ["parent_report"] }] };
+      if (sql.includes("AS scopes FROM consents WHERE family_id=$1")) return { rows: [{ scopes: ["parent_report"] }] };
       if (sql.includes("NOT EXISTS (SELECT 1 FROM report_jobs")) return { rows: [] };
       if (sql.startsWith("INSERT INTO report_jobs")) { resumed.push("insert"); return { rows: [] }; }
       if (sql.includes("j.state='paused'")) return { rows: [{ id: ASSESSMENT }] };
@@ -103,7 +114,7 @@ describe("parent-report consent and exactly one report", () => {
     const published: string[] = [];
     const publishing = { query: vi.fn(async (sql: string) => {
       published.push(sql);
-      if (sql.includes("SELECT scopes FROM consents")) return { rows: [{ scopes: ["parent_report"] }] };
+      if (sql.includes("AS scopes FROM consents WHERE family_id=$1")) return { rows: [{ scopes: ["parent_report"] }] };
       if (sql.includes("INSERT INTO reports")) return { rows: [{ id: ASSESSMENT }] };
       return { rows: [{ id: "locked" }] };
     }) };

@@ -58,6 +58,16 @@ DO $$ BEGIN
   ALTER TABLE consents ADD CONSTRAINT consents_scopes_nonempty CHECK(jsonb_typeof(scopes)='array' AND jsonb_array_length(scopes)>=1);
  END IF;
 END $$;
+-- One withdrawn purpose from a combined legacy row. The consent row itself stays,
+-- including its original scopes text, notice version and timestamp.
+CREATE TABLE IF NOT EXISTS consent_scope_revocations(
+ id uuid PRIMARY KEY, consent_id uuid NOT NULL REFERENCES consents(id) ON DELETE CASCADE,
+ family_id uuid NOT NULL REFERENCES families(id) ON DELETE CASCADE,
+ scope text NOT NULL CHECK(scope IN ('assessment','parent_report','sensitive_data','ai_processing')),
+ actor_id uuid REFERENCES users(id) ON DELETE SET NULL, created_at timestamptz NOT NULL DEFAULT now(),
+ UNIQUE(consent_id, scope)
+);
+CREATE INDEX IF NOT EXISTS consent_scope_revocations_family ON consent_scope_revocations(family_id, scope);
 CREATE TABLE IF NOT EXISTS invitations(token_hash text PRIMARY KEY,family_id uuid NOT NULL REFERENCES families(id) ON DELETE CASCADE,role text NOT NULL CHECK(role IN ('parent','student','teacher')),expires_at timestamptz NOT NULL,used_at timestamptz,created_by uuid REFERENCES users(id));
 ALTER TABLE invitations ADD COLUMN IF NOT EXISTS accepted_by uuid REFERENCES users(id);
 -- Single-use links that let an EXISTING account set a new password. Issued by an

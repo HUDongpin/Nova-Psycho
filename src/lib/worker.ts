@@ -4,7 +4,7 @@ import { selectNarrative } from "../domain/narrative";
 import { composeTriad,TRIAD_BUNDLE,triadRolesReady } from "../domain/triad-report";
 import { compareResults } from "../domain/scoring";
 import { reportHtml } from "../domain/report-html";
-import { ACTIVE_CONSENT_ROWS_SQL, PARENT_REPORT_SCOPE, hasGranted } from "./consent";
+import { ACTIVE_CONSENT_ROWS_SQL, PARENT_REPORT_SCOPE, consentScopeGrantedSql, hasGranted } from "./consent";
 import { getConfig } from "./config";
 import { query,transaction } from "./db";
 import { renderPdf } from "./pdf";
@@ -63,7 +63,7 @@ async function runReportJob(jobId?:string):Promise<ReportJobResult>{
     SELECT j.id,j.attempts>=3 AS attempt_limit_reached FROM report_jobs j JOIN assessments a ON a.id=j.assessment_id
     WHERE a.region=$2 AND ($3::uuid IS NULL OR j.id=$3) AND j.available_at<=now()
       AND (j.state='ready' OR (j.state='running' AND j.lease_until<now()))
-      AND EXISTS (SELECT 1 FROM consents c WHERE c.family_id=a.family_id AND c.revoked_at IS NULL AND c.scopes @> '["parent_report"]'::jsonb)
+      AND ${consentScopeGrantedSql("a.family_id","parent_report")}
     ORDER BY a.submitted_at,j.created_at LIMIT 1 FOR UPDATE OF j SKIP LOCKED
   ) UPDATE report_jobs j SET state='running',attempts=LEAST(j.attempts+1,3),lease_until=now()+interval '5 minutes',claim_token=$1 FROM candidate WHERE j.id=candidate.id RETURNING j.*,candidate.attempt_limit_reached`,[token,getConfig().region,jobId??null]);
   const job=jobs[0];if(!job)return unclaimedJobResult(jobId);
@@ -90,7 +90,7 @@ async function runReportJob(jobId?:string):Promise<ReportJobResult>{
       publishIds=siblings.map(row=>row.id);
     }else{
       // Consent may be withdrawn after submission. Never contact AI without current permission too.
-      const consent=await query("SELECT id FROM consents WHERE family_id=$1 AND revoked_at IS NULL AND scopes @> '[\"ai_processing\"]'::jsonb LIMIT 1",[assessment.family_id]);
+      const consent=await query("SELECT id FROM consents c WHERE c.family_id=$1 AND c.revoked_at IS NULL AND c.scopes @> '[\"ai_processing\"]'::jsonb AND NOT EXISTS (SELECT 1 FROM consent_scope_revocations r WHERE r.consent_id=c.id AND r.scope='ai_processing') LIMIT 1",[assessment.family_id]);
       const selection=await selectNarrative({...snapshot,aiConsented:snapshot.aiConsented&&consent.length>0},getConfig().ai);
       const previous=await query("SELECT snapshot,submitted_at FROM assessments WHERE family_id=$1 AND respondent_id=$2 AND scale_version_id=$3 AND submitted_at<$4 AND snapshot IS NOT NULL ORDER BY submitted_at DESC LIMIT 1",[assessment.family_id,assessment.respondent_id,assessment.scale_version_id,assessment.submitted_at]);
       const prior=previous[0];

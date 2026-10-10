@@ -3,13 +3,27 @@ import type { PoolClient } from "pg";
 import { HttpError } from "./http";
 
 // The privacy notice records these as separate acts. A legacy row may still
-// list more than one of them; readers treat every listed purpose as granted.
+// list more than one of them. A later withdrawal of one purpose is stored in
+// consent_scope_revocations; the original row text stays. Readers grant a
+// listed purpose only while that row is active and that purpose is not revoked.
 export const PARTICIPATION_SCOPES = ["assessment", "sensitive_data"] as const;
 export const PARENT_REPORT_SCOPE = "parent_report";
 export const CONSENT_SCOPES = ["assessment", "parent_report", "sensitive_data", "ai_processing"] as const;
 export type ConsentScope = typeof CONSENT_SCOPES[number];
 export const REQUIRED_WITHDRAW_SCOPES = ["assessment", "sensitive_data"] as const;
-export const ACTIVE_CONSENT_ROWS_SQL = "SELECT scopes FROM consents WHERE family_id=$1 AND revoked_at IS NULL";
+export const ACTIVE_CONSENT_ROWS_SQL = `SELECT (
+  SELECT COALESCE(jsonb_agg(to_jsonb(scope_name)), '[]'::jsonb)
+  FROM jsonb_array_elements_text(consents.scopes) AS scope_name
+  WHERE NOT EXISTS (
+    SELECT 1 FROM consent_scope_revocations r
+    WHERE r.consent_id = consents.id AND r.scope = scope_name
+  )
+) AS scopes FROM consents WHERE family_id=$1 AND revoked_at IS NULL`;
+
+export function consentScopeGrantedSql(familyIdExpr: string, scope: ConsentScope): string {
+  if (!/^(?:[a-z_][a-z0-9_]*\.)?[a-z_][a-z0-9_]*$/i.test(familyIdExpr)) throw new Error("Unsafe family id expression");
+  return `EXISTS (SELECT 1 FROM consents c WHERE c.family_id=${familyIdExpr} AND c.revoked_at IS NULL AND c.scopes @> '["${scope}"]'::jsonb AND NOT EXISTS (SELECT 1 FROM consent_scope_revocations r WHERE r.consent_id=c.id AND r.scope='${scope}'))`;
+}
 
 export function scopeList(value: unknown): string[] {
   if (typeof value === "string") {

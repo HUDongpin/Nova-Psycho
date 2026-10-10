@@ -18,7 +18,7 @@ const sql = vi.fn(async (text: string, _values?: unknown[]) => {
   if (text.startsWith("SELECT id FROM scales")) return { rows: [{ id: "synthetic-scale" }] };
   if (text.startsWith("SELECT id,birth_date FROM families")) return { rows: missingFamily ? [] : [{ id: "synthetic-family", birth_date: birthDate }] };
   if (text.startsWith("SELECT 1 FROM memberships")) return { rows: roleTaken ? [{}] : [] };
-  if (text.startsWith("SELECT scopes FROM consents")) return { rows: hasConsent ? granted.map(scopes => ({ scopes })) : [] };
+  if (text.includes("AS scopes FROM consents WHERE family_id=$1")) return { rows: hasConsent ? granted.map(scopes => ({ scopes })) : [] };
   return { rows: [] };
 });
 beforeEach(() => {

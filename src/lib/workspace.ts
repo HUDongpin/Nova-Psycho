@@ -4,7 +4,7 @@ import { TRIAD_BUNDLE,staffOnlyText } from "../domain/triad-report";
 import { reportRetryBlocker } from "../domain/report-retry";
 import { formatJoinCode } from "./triad";
 import { ageAt,canInviteFamilyMembers,canManageFamilyReports,familyScope,iso,type FamilyRow } from "./access";
-import { grantedScopes } from "./consent";
+import { consentScopeGrantedSql, grantedScopes } from "./consent";
 import { getConfig } from "./config";
 import { query } from "./db";
 import { reportSummary } from "./reports";
@@ -16,14 +16,18 @@ export async function workspaceFor(actor:Actor,locale:Locale){
   const familyById=new Map(families.map(f=>[f.id,f]));
   const [members,consents,assessments,reports,goals,observations,scales,staff,content,alerts,triadAnswers]=await Promise.all([
     query("SELECT m.family_id,u.id,u.name,m.role FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.family_id=ANY($1::uuid[]) AND NOT u.disabled",[ids]),
-    query<{family_id:string;scopes:unknown}>("SELECT family_id, scopes FROM consents WHERE family_id=ANY($1::uuid[]) AND revoked_at IS NULL",[ids]),
+    query<{family_id:string;scopes:unknown}>(`SELECT c.family_id, (
+      SELECT COALESCE(jsonb_agg(to_jsonb(scope_name)), '[]'::jsonb)
+      FROM jsonb_array_elements_text(c.scopes) AS scope_name
+      WHERE NOT EXISTS (SELECT 1 FROM consent_scope_revocations r WHERE r.consent_id=c.id AND r.scope=scope_name)
+    ) AS scopes FROM consents c WHERE c.family_id=ANY($1::uuid[]) AND c.revoked_at IS NULL`,[ids]),
     query(`SELECT a.id,a.family_id,a.respondent_id,a.respondent_role,a.scale_version_id,a.status,a.created_at,a.submitted_at,a.triad_round_id,j.id AS triad_job_id,f.child_name,u.name AS respondent_name,s.definition,r.id AS report_id,
       j.state AS job_state,COALESCE(a.snapshot<>'null'::jsonb,false) AS has_snapshot,COALESCE(a.answers<>'null'::jsonb,false) AS has_answers,a.submitted_at IS NOT NULL AS has_submission,
       COALESCE(a.snapshot->'scale'->>'bundle'=$5,false) AS is_triad,(a.triad_round_id IS NOT NULL AND j.source_assessment_ids IS NOT NULL) AS has_round_sources,
       COALESCE((SELECT COUNT(DISTINCT s2.respondent_role)=3 FROM assessments s2 WHERE s2.triad_round_id=a.triad_round_id AND s2.submitted_at IS NOT NULL),false) AS round_ready,
-      EXISTS(SELECT 1 FROM consents c WHERE c.family_id=a.family_id AND c.revoked_at IS NULL AND c.scopes @> '["parent_report"]'::jsonb) AS has_consent
+      ${consentScopeGrantedSql("a.family_id","parent_report")} AS has_consent
       FROM assessments a JOIN families f ON f.id=a.family_id JOIN users u ON u.id=a.respondent_id JOIN scales s ON s.id=a.scale_version_id LEFT JOIN report_jobs j ON j.assessment_id=a.id OR a.id=ANY(j.source_assessment_ids) LEFT JOIN reports r ON r.assessment_id=COALESCE(j.assessment_id,a.id) WHERE a.family_id=ANY($1::uuid[]) AND a.region=$2 AND ($3::boolean OR a.respondent_id=$4) ORDER BY a.created_at DESC`,[ids,actor.region,care,actor.id,TRIAD_BUNDLE]),
-    care?query("SELECT * FROM reports WHERE family_id=ANY($1::uuid[]) AND region=$2 AND EXISTS (SELECT 1 FROM consents c WHERE c.family_id=reports.family_id AND c.revoked_at IS NULL AND c.scopes @> '[\"parent_report\"]'::jsonb) ORDER BY created_at DESC",[ids,actor.region]):Promise.resolve([]),
+    care?query(`SELECT * FROM reports WHERE family_id=ANY($1::uuid[]) AND region=$2 AND ${consentScopeGrantedSql("reports.family_id","parent_report")} ORDER BY created_at DESC`,[ids,actor.region]):Promise.resolve([]),
     care?query("SELECT * FROM goals WHERE family_id=ANY($1::uuid[]) ORDER BY created_at DESC, id ASC",[ids]):Promise.resolve([]),
     team?query("SELECT o.*,u.name AS author_name FROM observations o LEFT JOIN users u ON u.id=o.created_by WHERE o.family_id=ANY($1::uuid[]) ORDER BY o.created_at DESC",[ids]):Promise.resolve([]),
     query("SELECT * FROM scales ORDER BY created_at DESC"),
@@ -49,12 +53,14 @@ export async function workspaceFor(actor:Actor,locale:Locale){
     const triad=(row.definition as ScaleDefinition).bundle===TRIAD_BUNDLE;
     const parentReport=row.has_consent===true;
     const roundReady=row.round_ready===true;
+    if(status==="published"&&!parentReport)return "consent";
     if(status==="queued"&&!parentReport&&(!triad||roundReady))return "consent";
     if(!triad||status!=="queued")return null;
     return row.triad_round_id&&row.triad_job_id?"reporting":"waiting";
   };
   const scopedAssessments=assessments.map(a=>{
-    const ownReport=care&&a.report_id?String(a.report_id):null;
+    const parentReport=a.has_consent===true;
+    const ownReport=care&&parentReport&&a.report_id?String(a.report_id):null;
     const status=a.status;
     const family=familyById.get(a.family_id);
     const canRetryReport=!!family&&canManageFamilyReports(actor,family)&&status==="failed"&&reportRetryBlocker({status,jobState:a.job_state??null,hasSnapshot:a.has_snapshot===true,hasAnswers:a.has_answers===true,hasSubmission:a.has_submission===true,isTriad:a.is_triad===true,hasRoundSources:a.has_round_sources===true,hasConsent:a.has_consent===true})===null;

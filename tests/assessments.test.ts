@@ -38,7 +38,7 @@ const client={
     if(text.includes("SELECT id FROM assessments"))return {rows:[]};
     if(text.includes("SELECT submitted_at FROM assessments"))return {rows:[]};
     if(text.includes("SELECT a.*,r.id AS report_id"))return {rows:[{id:ASSESSMENT_ID,status:"pending",draft_revision:0,draft_answers:{},family_id:FAMILY_ID,respondent_role:"student",report_id:null}]};
-    if(text.includes("SELECT scopes FROM consents"))return {rows:[{scopes:["assessment","parent_report","sensitive_data"]}]};
+    if(text.includes("AS scopes FROM consents WHERE family_id=$1"))return {rows:[{scopes:["assessment","parent_report","sensitive_data"]}]};
     if(text.includes("SELECT * FROM report_jobs"))return {rows:[{id:"job1",state:"failed"}]};
     if(text.includes("SELECT * FROM assessments WHERE id=$1 AND region=$2"))return {rows:[{id:ASSESSMENT_ID,status:"failed",family_id:FAMILY_ID,snapshot:{},answers:{},submitted_at:new Date()}]};
     if(text.includes("SELECT family_id FROM assessments"))return {rows:[{family_id:FAMILY_ID}]};
@@ -162,7 +162,7 @@ describe("saving a draft",()=>{
   const withOwn=()=>{
     mockQuery.mockImplementation((async(sql:string)=>{
       if(String(sql).includes("FROM assessments a JOIN scales s"))return [{id:ASSESSMENT_ID,status:"pending",definition:scale,draft_answers:{},draft_revision:0,family_id:FAMILY_ID,child_name:"c",birth_date:"2013-04-12",respondent_role:"student",region:"CN"}];
-      if(String(sql).includes("SELECT scopes FROM consents"))return [{scopes:["assessment"]},{scopes:["sensitive_data"]}];
+      if(String(sql).includes("AS scopes FROM consents WHERE family_id=$1"))return [{scopes:["assessment"]},{scopes:["sensitive_data"]}];
       if(String(sql).includes("UPDATE assessments SET draft_answers"))return [{id:ASSESSMENT_ID,draft_revision:1}];
       return [];
     }) as never);
@@ -177,7 +177,7 @@ describe("saving a draft",()=>{
   it("does not store answers when only the parent report was consented",async()=>{
     mockQuery.mockImplementation((async(sql:string)=>{
       if(String(sql).includes("FROM assessments a JOIN scales s"))return [{id:ASSESSMENT_ID,status:"pending",definition:scale,draft_answers:{},draft_revision:0,family_id:FAMILY_ID,child_name:"c",birth_date:"2013-04-12",respondent_role:"student",region:"CN"}];
-      if(String(sql).includes("SELECT scopes FROM consents"))return [{scopes:["parent_report"]}];
+      if(String(sql).includes("AS scopes FROM consents WHERE family_id=$1"))return [{scopes:["parent_report"]}];
       return [];
     }) as never);
     await expect(saveDraft(actor("student"),ASSESSMENT_ID,draft)).rejects.toMatchObject({code:"GUARDIAN_CONSENT_REQUIRED"});
@@ -190,7 +190,7 @@ describe("saving a draft",()=>{
   it("refuses a stale revision rather than overwriting a newer draft",async()=>{
     mockQuery.mockImplementation((async(sql:string)=>{
       if(String(sql).includes("FROM assessments a JOIN scales s"))return [{id:ASSESSMENT_ID,status:"pending",definition:scale,draft_answers:{},draft_revision:0,family_id:FAMILY_ID,child_name:"c",birth_date:"2013-04-12",respondent_role:"student",region:"CN"}];
-      if(String(sql).includes("SELECT scopes FROM consents"))return [{scopes:"[\"assessment\",\"sensitive_data\"]"}];
+      if(String(sql).includes("AS scopes FROM consents WHERE family_id=$1"))return [{scopes:"[\"assessment\",\"sensitive_data\"]"}];
       return [];
     }) as never);
     await expect(saveDraft(actor("student"),ASSESSMENT_ID,draft)).rejects.toMatchObject({code:"DRAFT_CONFLICT"});
@@ -229,7 +229,7 @@ describe("submitting",()=>{
     client.query.mockImplementation(async(sql:string)=>{
       if(sql.includes("SELECT id FROM families"))return {rows:[{id:FAMILY_ID}]};
       if(sql.includes("SELECT a.*,r.id AS report_id"))return {rows:[{id:ASSESSMENT_ID,status:"pending",draft_revision:0,family_id:FAMILY_ID,respondent_id:USER_ID,respondent_role:"student"}]};
-      if(sql.includes("SELECT scopes FROM consents"))return {rows:[{scopes:["assessment"]},{scopes:["sensitive_data"]}]};
+      if(sql.includes("AS scopes FROM consents WHERE family_id=$1"))return {rows:[{scopes:["assessment"]},{scopes:["sensitive_data"]}]};
       return {rows:[]};
     });
     await expect(submitAssessment(actor("student"),ASSESSMENT_ID,submission)).resolves.toMatchObject({status:"queued",reportId:null});
@@ -244,7 +244,7 @@ describe("submitting",()=>{
       client.query.mockImplementation(async(sql:string)=>{
         if(sql.includes("SELECT id FROM families"))return {rows:[{id:FAMILY_ID}]};
         if(sql.includes("SELECT a.*,r.id AS report_id"))return {rows:[{id:ASSESSMENT_ID,status:"pending",draft_revision:0,family_id:FAMILY_ID,respondent_id:USER_ID,respondent_role:"student"}]};
-        if(sql.includes("SELECT scopes FROM consents"))return {rows};
+        if(sql.includes("AS scopes FROM consents WHERE family_id=$1"))return {rows};
         return {rows:[]};
       });
       await expect(submitAssessment(actor("student"),ASSESSMENT_ID,submission)).resolves.toMatchObject({status:"queued"});
@@ -302,7 +302,7 @@ describe("retry locks and shared eligibility",()=>{
       if(sql.includes("FROM families"))return {rows:[{id:FAMILY_ID,region:"CN",assigned_to:options.assignedTo===undefined?USER_ID:options.assignedTo}]};
       if(sql.includes("SELECT * FROM assessments"))return {rows:[{id:ASSESSMENT_ID,family_id:FAMILY_ID,status:"failed",snapshot:{},answers:{},submitted_at:new Date(),...options.assessment}]};
       if(sql.includes("SELECT * FROM report_jobs"))return {rows:[{id:"job1",state:"failed",...options.job}]};
-      if(sql.includes("SELECT scopes FROM consents"))return {rows:options.consent===false?[]:[{scopes:["assessment","parent_report","sensitive_data"]}]};
+      if(sql.includes("AS scopes FROM consents WHERE family_id=$1"))return {rows:options.consent===false?[]:[{scopes:["assessment","parent_report","sensitive_data"]}]};
       return {rows:[]};
     });
   }
