@@ -6,9 +6,9 @@ const roles=z.enum(["student","parent","teacher"]);
 const regions=z.enum(["CN","HK"]);
 const item=z.object({
   id:key,label:localized,observerLabel:localized.optional(),kind:z.enum(["single","multi","text"]).optional(),
-  choices:z.array(z.object({value:z.number().int().min(-100).max(100),label:localized}).strict()).max(20),
+  choices:z.array(z.object({value:z.number().int().min(-100).max(100),label:localized,exclusive:z.boolean().optional()}).strict()).max(20),
   reverse:z.boolean(),required:z.boolean(),excludeValues:z.array(z.number().int()).max(10).optional(),
-  maxChoices:z.number().int().min(1).max(20).optional(),
+  maxChoices:z.number().int().min(1).max(20).optional(),noAutoAdvance:z.boolean().optional(),
   showIf:z.object({itemId:key,anyOf:z.array(z.number().int()).min(1).max(20)}).strict().optional(),
   page:z.string().trim().min(1).max(80).optional(),pageTitle:localized.optional(),panel:localized.optional(),
   shuffle:z.boolean().optional(),gate:z.number().int().optional(),report:z.enum(["omit","words","situation","priorities","staff"]).optional()
@@ -41,6 +41,7 @@ export const scaleSchema=z.object({
       if(i.excludeValues?.some(v=>!i.choices.some(c=>c.value===v)))fail("Excluded values must be choices");
       if(i.gate!==undefined&&!i.choices.some(c=>c.value===i.gate))fail("Gate must be a choice");
       if(kind==="single"&&i.maxChoices!==undefined)fail("Single items do not limit multiple selections");
+      if(kind!=="multi"&&i.choices.some(choice=>choice.exclusive))fail("Only multiple selection can have an exclusive option");
       if(kind==="multi"&&(i.reverse||i.gate!==undefined))fail("Multiple selection is not reverse scored and cannot be an entry gate");
       if(i.report==="words"||i.report==="staff")fail("Only writing can be kept as words");
       if(i.report==="situation"&&kind!=="single")fail("Situations are single choices");

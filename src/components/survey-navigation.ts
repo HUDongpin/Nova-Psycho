@@ -1,7 +1,15 @@
-import type { Model, Question } from "survey-core";
+import { Serializer, type Model, type Question } from "survey-core";
 
 /** Wait after a single-choice answer before moving to the next question. */
 export const CHOICE_AUTO_ADVANCE_MS = 5000;
+
+if (!Serializer.findProperty("question", "noAutoAdvance")) {
+  Serializer.addProperty("question", { name: "noAutoAdvance:boolean", default: false });
+}
+
+export function questionSkipsAutoAdvance(question: Question | null | undefined): boolean {
+  return question?.getPropertyValue("noAutoAdvance") === true;
+}
 
 type AdvanceHooks = {
   delay?: number;
@@ -41,6 +49,7 @@ export function questionProgressLabel(model: Model, traditional: boolean): strin
 /**
  * Move to the next question after a single-choice answer.
  * Checkboxes and comments stay put so the respondent can finish them and use Next.
+ * Questions marked noAutoAdvance, including the safety items, never advance on the timer.
  * The last question never auto-completes; submission stays on the explicit submit button.
  * A new answer, or leaving the question, replaces the previous wait.
  */
@@ -57,12 +66,13 @@ export function bindChoiceAutoAdvance(model: Model, hooks: AdvanceHooks = {}): (
     clear(true);
     if (model.mode !== "edit") return;
     if (!isCurrentSingleChoice(model, options.question)) return;
+    if (questionSkipsAutoAdvance(options.question)) return;
     if (model.isLastElement) return;
     const from = model.currentSingleQuestion;
     timer = setTimeout(() => {
       timer = undefined;
       hooks.onClear?.();
-      if (model.mode !== "edit" || model.currentSingleQuestion !== from || model.isLastElement) return;
+      if (model.mode !== "edit" || model.currentSingleQuestion !== from || model.isLastElement || questionSkipsAutoAdvance(from)) return;
       model.nextPage();
     }, delay);
     hooks.onPending?.();

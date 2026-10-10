@@ -24,7 +24,8 @@ export function validateAnswers(scale: ScaleDefinition, answers: Record<string, 
     if(!item) throw new ScoringError("Unknown item or invalid response value");
     const kind=kindOf(item);
     const single=kind==="single"&&typeof value==="number"&&Number.isFinite(value)&&item.choices.some(choice=>choice.value===value);
-    const multi=kind==="multi"&&Array.isArray(value)&&value.every(entry=>typeof entry==="number"&&item.choices.some(choice=>choice.value===entry))&&new Set(value).size===value.length&&value.length>0&&(!item.maxChoices||value.length<=item.maxChoices);
+    const exclusive=new Set(item.choices.filter(choice=>choice.exclusive).map(choice=>choice.value));
+    const multi=kind==="multi"&&Array.isArray(value)&&value.every(entry=>typeof entry==="number"&&item.choices.some(choice=>choice.value===entry))&&new Set(value).size===value.length&&value.length>0&&(!item.maxChoices||value.length<=item.maxChoices)&&!(exclusive.size>0&&value.some(entry=>exclusive.has(entry))&&value.length!==1);
     const writing=kind==="text"&&typeof value==="string"&&value.trim().length>0&&value.length<=2000;
     if(!(single||multi||writing)) throw new ScoringError("Unknown item or invalid response value");
   }
@@ -36,14 +37,16 @@ export function scoreAssessment(scale: ScaleDefinition, answers: Record<string, 
   if(context.age<scale.norm.minAge||context.age>scale.norm.maxAge) reasons.push("norm_age");
   if(!scale.regions.includes(context.region)||!scale.norm.regions.includes(context.region)) reasons.push("region");
   if(!scale.roles.includes(context.role)) reasons.push("respondent_role");
+  const items=new Map(scale.items.map(item=>[item.id,item]));
   const riskMessages=scale.riskRules.filter(rule=>{
+    const item=items.get(rule.itemId);
+    if(item&&!answerVisible(answers,item))return false;
     const value=answers[rule.itemId];
     const selected=typeof value==="number"?[value]:Array.isArray(value)?value.filter((entry):entry is number=>typeof entry==="number"):[];
     return selected.some(entry=>rule.values.includes(entry));
   }).map(rule=>rule.message);
   const base={scaleId:scale.id,scaleVersion:scale.version,respondentRole:context.role,region:context.region,age:context.age,demo:scale.demo,norm:structuredClone(scale.norm),risk:riskMessages.length>0,riskMessages};
   if(reasons.length) return {...base,status:"ineligible",reasons,dimensions:[]};
-  const items=new Map(scale.items.map(item=>[item.id,item]));
   const dimensions:DimensionScore[]=scale.dimensions.map(d=>{
     const selected=d.items.map(id=>items.get(id)!);
     const missing=selected.filter(i=>numericScore(i,answers)===undefined).map(i=>i.id);

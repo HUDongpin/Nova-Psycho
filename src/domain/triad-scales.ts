@@ -48,6 +48,28 @@ function risk(target: Bag, itemId: string, values: number[], message: string): v
   target.risks.push({ itemId, values, message: pair(message) });
 }
 
+function markExclusive(target: Bag, id: string, labels: readonly string[]): void {
+  const item = target.items.find(entry => entry.id === id);
+  if (!item) throw new Error(`Missing ${id}`);
+  for (const label of labels) {
+    const choice = item.choices.find(entry => entry.label["zh-CN"] === label);
+    if (!choice) throw new Error(`Missing ${id} choice ${label}`);
+    choice.exclusive = true;
+  }
+}
+
+function holdAdvance(target: Bag, ids: readonly string[]): void {
+  for (const id of ids) {
+    const item = target.items.find(entry => entry.id === id);
+    if (!item) throw new Error(`Missing ${id}`);
+    item.noAutoAdvance = true;
+  }
+}
+
+const NONE = "以上均没有";
+const UNSURE = "不确定";
+const DECLINE = "不愿回答";
+
 function define(role: RespondentRole, id: string, title: string, description: string, built: Bag): ScaleDefinition {
   return {
     id, version: "1.0.0", title: pair(title), description: pair(description), demo: false,
@@ -70,6 +92,16 @@ function child(): ScaleDefinition {
   choose(built, "c_grade", "background", "关于你", "目前年级", numbered(GRADES));
   choose(built, "c_company", "background", "关于你", "今天是谁在你旁边", numbered(["我独立填写，身边没有人", "工作人员只帮助解释题目", "家长在附近但没有看答案", "家长在旁边看答案或帮助选择", "其他"]));
   checks(built, "c_help", "background", "关于你", "你现在最想得到哪些帮助", ["学习更有动力", "找到适合自己的学习方法", "更能专心和完成任务", "减少压力、焦虑或难过", "睡得更好或更有精神", "和家人更好沟通", "处理同伴或学校问题", "安排课程或未来方向", "发展兴趣或能力", "我暂时不需要帮助", "其他"], "priorities", 3);
+  checks(built, "c14", "safety", "先确认安全", "过去两周，你是否出现过以下情况", ["想到伤害自己", "觉得不想活了或活着没有意义", "担心自己会伤害别人或无法控制行为", "有人伤害、威胁、欺负或逼迫我做不愿意的事", "我现在没有安全的地方可以去", NONE, UNSURE, DECLINE]);
+  risk(built, "c14", [1, 2, 3, 4, 5], "孩子提到了伤害自己、不想活、可能伤害别人、被人伤害，或没有安全的地方。请先联系能保护孩子的大人。如有眼前危险，请联系当地紧急服务。");
+  risk(built, "c14", [7], "孩子对安全情况选择了“不确定”。请工作人员先查看，并确认孩子是否安全。如有眼前危险，请联系当地紧急服务。");
+  risk(built, "c14", [8], "孩子没有回答安全情况。请工作人员先查看，不要把未回答当成没有危险。如有眼前危险，请联系当地紧急服务。");
+  const safety = { itemId: "c14", anyOf: [1, 2, 3, 4, 5, 7, 8] };
+  choose(built, "c15", "safety", "先确认安全", "你现在是否处于立即危险中", numbered(["是", "可能是", "不是", UNSURE, DECLINE]), { showIf: safety });
+  risk(built, "c15", [1, 2], "孩子表示自己可能正处在危险中。请立即联系能提供保护的大人或当地紧急服务。");
+  checks(built, "c16", "safety", "先确认安全", "你希望工作人员怎样联系或帮助你", ["现在联系我", "先联系我信任的大人", "和我一起决定下一步", "我暂时不想说，但希望有人稍后再问", "其他"], "priorities", undefined, safety, false);
+  markExclusive(built, "c14", [NONE, UNSURE, DECLINE]);
+  holdAdvance(built, ["c14", "c15", "c16"]);
   matrix(built, { id: "c7", page: "learning", pageTitle: "我的感受与思考", panel: "我怎样理解和调节自己的学习", domain: "cognition", higher: "more_strength", options: RESOURCE, rows: ["我知道自己已经学会了什么，还有什么没弄懂。", "遇到困难时，我会先试一种方法，而不是马上放弃。", "我会用总结、画图、复述或自我测试帮助自己学习。", "做错后，我能找一找错误是怎样发生的。", "题目变了一点，我能试着用以前学过的方法。", "我相信通过合适的方法、练习和帮助，我可以进步。"] });
   matrix(built, { id: "c8", page: "learning", pageTitle: "我的感受与思考", panel: "我的目标和执行", domain: "cognition", higher: "more_strength", options: RESOURCE, rows: ["我知道自己最近最想改善的一件学习事情。", "我能把较大的任务分成几个小步骤。", "我通常能在需要时开始做任务。", "我能大概估计完成任务需要多长时间。", "做事分心以后，我通常能重新回到任务。", "我会检查自己是否完成了计划。"] });
   matrix(built, { id: "c9", page: "relationship", pageTitle: "家里和学校的关系", panel: "我的安全感和沟通体验", domain: "connection", higher: "more_strength", options: RESOURCE, rows: ["家里至少有一个人愿意认真听我说。", "我难过、紧张或遇到困难时，知道可以找谁。", "我和家人争吵以后，通常还有机会重新沟通。", "家人会尝试了解我的想法，而不只是告诉我该怎么做。", "在学校里，我至少有一个可以信任的成人。", "我和同伴在一起时，大多数时候觉得自己是被接纳的。"] });
@@ -77,12 +109,6 @@ function child(): ScaleDefinition {
   matrix(built, { id: "c11", page: "fit", pageTitle: "课程和支持", panel: "课程和活动是否适合我", domain: "curriculum", higher: "more_strength", options: RESOURCE, rows: ["现在的学习难度大体适合我的基础。", "我的时间里有学习、休息、运动和自己喜欢的活动。", "我有机会发展一项真正感兴趣的事情。", "我知道自己哪些学科或能力比较有优势。", "我参加课程或补习前，大人会听我的感受和想法。", "我对下一阶段想做什么有一个大概方向。"] });
   matrix(built, { id: "c12", page: "fit", pageTitle: "课程和支持", panel: "我在学校和周围获得的支持", domain: "community", higher: "more_strength", options: RESOURCE, rows: ["我知道遇到学习问题时可以向谁求助。", "我知道遇到同伴或安全问题时可以向谁求助。", "老师大体了解我的学习情况和需要。", "我有参加团队、运动、艺术、实践或集体活动的机会。", "我能接触到不同的人、观点和成长可能。", "当我需要帮助时，家长和学校通常能够一起想办法。"] });
   matrix(built, { id: "c13", page: "state", pageTitle: "过去两周", panel: "过去两周我的感受和状态", domain: "state", higher: "more_support", options: DISTRESS_CHILD, rows: ["我常常觉得紧张或担心，很难放松。", "我常常觉得难过、没希望或对事情没有兴趣。", "我容易生气或情绪一下子变得很强。", "我很累、没有精神，或睡眠明显不好。", "注意或冲动问题影响了学习或生活。", "我因为害怕、压力或身体不舒服而不想上学。", "我在学校被排挤、欺负或感到不安全。", "这些困难影响了我和家人或朋友的关系。"] });
-  checks(built, "c14", "state", "过去两周", "过去两周，你是否出现过以下情况", ["想到伤害自己", "觉得不想活了或活着没有意义", "担心自己会伤害别人或无法控制行为", "有人伤害、威胁、欺负或逼迫我做不愿意的事", "我现在没有安全的地方可以去", "以上均没有", "不确定", "不愿回答"]);
-  risk(built, "c14", [1, 2, 3, 4, 5], "孩子提到了伤害自己、不想活、可能伤害别人、被人伤害，或没有安全的地方。请先联系能保护孩子的大人。如有眼前危险，请联系当地紧急服务。");
-  const safety = { itemId: "c14", anyOf: [1, 2, 3, 4, 5] };
-  choose(built, "c15", "state", "过去两周", "你现在是否处于立即危险中", numbered(["是", "可能是", "不是", "不确定", "不愿回答"]), { showIf: safety });
-  risk(built, "c15", [1, 2], "孩子表示自己可能正处在危险中。请立即联系能提供保护的大人或当地紧急服务。");
-  checks(built, "c16", "state", "过去两周", "你希望工作人员怎样联系或帮助你", ["现在联系我", "先联系我信任的大人", "和我一起决定下一步", "我暂时不想说，但希望有人稍后再问", "其他"], "priorities", undefined, safety, false);
   scene(built, "cs1", "scenes", "遇到这些事情时，我通常会怎样做", "一道题做了几次仍然不会时，我通常会", ["继续用同一种方法反复做", "直接放弃或去做别的事", "看看自己卡在哪里，再换一种方法或求助", "等大人发现以后帮我", "先抄下答案，以后再说", "每次情况差别很大"]);
   scene(built, "cs2", "scenes", "遇到这些事情时，我通常会怎样做", "我和家长因为学习发生争吵后，我通常会", ["继续争到底", "不再说话，也不想再谈", "先离开一下，平静后再试着说明自己的想法", "答应大人的要求，但并不打算执行", "找另一个信任的人帮助沟通", "每次情况差别很大"]);
   scene(built, "cs3", "scenes", "遇到这些事情时，我通常会怎样做", "当很多任务同时要完成时，我通常会", ["先做最容易或最喜欢的", "一直担心，但不知道从哪里开始", "列出任务并选一个最重要的小步骤开始", "等到最后再集中完成", "请大人替我安排所有步骤", "每次情况差别很大"]);
@@ -123,8 +149,11 @@ function parent(): ScaleDefinition {
   matrix(built, { id: "q19", page: "child", pageTitle: month, panel: "学校和成长资源", domain: "community", higher: "more_strength", options: OBSERVE, rows: ["家庭与学校有稳定、双向而非只在出问题时才发生的沟通。", "家庭大体了解孩子在学校的学习、情绪和同伴表现。", "孩子知道遇到学习、同伴或安全问题时可以向谁求助。", "孩子有参与团队、运动、艺术、实践或社区活动的机会。", "家庭能够找到相对可靠的教育或心理支持渠道。", "家庭获取教育信息后能够筛选，而不是越看越混乱。"] });
   matrix(built, { id: "q20", page: "state", pageTitle: "过去四周", panel: "过去四周出现以下情况的频率", domain: "state", higher: "more_support", options: DISTRESS, rows: ["明显难以开始或完成日常学习任务。", "注意力或冲动问题明显影响家庭或学校生活。", "持续情绪低落、易怒、紧张或缺乏活力。", "睡眠、饮食或身体不适影响白天功能。", "拒绝上学、经常请假或出勤受到影响。", "同伴冲突、被孤立或遭受欺凌。", "反复咬指甲、拔头发或其他明显紧张行为。", "家庭冲突明显影响孩子的日常状态。"] });
   matrix(built, { id: "q21", page: "state", pageTitle: "过去四周", panel: "当前问题的实际影响", domain: "impact", higher: "more_support", options: IMPACT, rows: ["学习完成或成绩", "情绪和自信", "睡眠、饮食或身体状态", "亲子关系", "家庭日常生活", "上学出勤", "同伴关系"] });
-  checks(built, "q22", "state", "过去四周", "过去四周是否出现以下需要及时关注的情况", ["提到伤害自己、不想活或明显绝望", "伤害他人或无法控制的激烈行为", "疑似遭受欺凌、暴力、虐待或其他安全威胁", "长时间无法正常睡眠或进食", "持续拒绝上学并明显影响出勤", "出现幻听、妄想、意识混乱或与现实明显脱节", "以上均没有", "不确定", "不愿回答"]);
+  checks(built, "q22", "state", "过去四周", "过去四周是否出现以下需要及时关注的情况", ["提到伤害自己、不想活或明显绝望", "伤害他人或无法控制的激烈行为", "疑似遭受欺凌、暴力、虐待或其他安全威胁", "长时间无法正常睡眠或进食", "持续拒绝上学并明显影响出勤", "出现幻听、妄想、意识混乱或与现实明显脱节", NONE, UNSURE, DECLINE]);
   risk(built, "q22", [1, 2, 3, 4, 5, 6], "家长报告了自伤、他伤、受伤害、长时间无法睡眠或进食、持续拒绝上学，或现实感明显异常。请先确认孩子是否安全。如有眼前危险，请联系当地紧急服务。");
+  risk(built, "q22", [8], "家长对需要及时关注的情况选择了“不确定”。请工作人员先确认孩子是否安全。如有眼前危险，请联系当地紧急服务。");
+  risk(built, "q22", [9], "家长没有回答需要及时关注的情况。请工作人员先查看，不要把未回答当成没有危险。如有眼前危险，请联系当地紧急服务。");
+  markExclusive(built, "q22", [NONE, UNSURE, DECLINE]);
   const parentSafety = { itemId: "q22", anyOf: [1, 2, 3, 4, 5, 6] };
   writing(built, "q23", "state", "过去四周", "请说明发生时间、频率、最近一次及目前是否仍在发生", "staff", true, parentSafety);
   matrix(built, { id: "q24", page: "portrait", pageTitle: "您自己通常怎样处理和了解这些事", panel: "反思和观点转换", domain: "portrait", higher: "more_strength", options: OBSERVE, rows: ["面对孩子的问题，我会先区分事实、我的解释和我的情绪。", "我能意识到同一行为可能有不止一种原因。", "孩子的说法与我不同的时候，我愿意先弄清他的视角。", "我会回顾自己的反应是否加剧了问题。", "即使已有经验，我也愿意根据新情况调整判断。", "我能容许一段时间的不确定，而不是立即下结论。", "我会把一次事件与长期模式区分开。", "我能同时看到孩子的困难和已有资源。"] });
@@ -180,8 +209,11 @@ function teacher(): ScaleDefinition {
   matrix(built, { id: "t12", page: "school", pageTitle: observed, panel: "学校参与和支持资源", domain: "community", higher: "more_strength", options: OBSERVE, rows: ["学生有参与小组、班级或校园活动的机会。", "学生能接触到适合其需要的学习或心理支持资源。", "相关教师之间能够共享必要且合规的信息。", "学校与家庭之间有可使用的沟通渠道。", "遇到困难时，学生知道可以联系哪些校内人员。", "现有支持能够在一段时间内持续，而不是只在危机时出现。"] });
   matrix(built, { id: "t13", page: "state", pageTitle: "过去四周在学校的困难", panel: "过去四周在学校出现以下情况的频率", domain: "state", higher: "more_support", options: DISTRESS, rows: ["明显难以开始或完成课堂任务。", "注意力、冲动或活动水平明显影响学习。", "经常逃避较难、较长或需要耐心的任务。", "情绪低落、易怒、焦虑或明显缺乏活力。", "与同伴反复冲突、被孤立或遭受欺凌。", "因身体不适、睡眠不足或疲劳影响课堂状态。", "迟到、请假、拒绝到校或提前离校。", "激烈行为、退缩或情绪反应使日常支持难以进行。"] });
   matrix(built, { id: "t14", page: "state", pageTitle: "过去四周在学校的困难", panel: "这些困难对学校功能的影响", domain: "impact", higher: "more_support", options: IMPACT, rows: ["课程参与", "任务完成和成绩", "师生沟通", "同伴关系", "出勤和校园生活"] });
-  checks(built, "t15", "state", "过去四周在学校的困难", "您是否观察或获知以下需要及时处理的情况", ["学生表达自伤、自杀或明显绝望", "对他人存在明确伤害风险", "疑似遭受欺凌、暴力、虐待或其他安全威胁", "意识、言行或现实判断出现明显异常", "持续拒绝上学或出勤严重受损", "以上均没有", "不确定", "不便在本问卷中说明"]);
+  checks(built, "t15", "state", "过去四周在学校的困难", "您是否观察或获知以下需要及时处理的情况", ["学生表达自伤、自杀或明显绝望", "对他人存在明确伤害风险", "疑似遭受欺凌、暴力、虐待或其他安全威胁", "意识、言行或现实判断出现明显异常", "持续拒绝上学或出勤严重受损", NONE, UNSURE, "不便在本问卷中说明"]);
   risk(built, "t15", [1, 2, 3, 4, 5], "教师观察到自伤或绝望、伤害他人的风险、受伤害、现实判断异常，或出勤严重受损。请先按学校现有的保护流程处理，不要只等这份报告。");
+  risk(built, "t15", [7], "教师对需要及时处理的情况选择了“不确定”。请先按学校现有的保护流程核实，不要只等这份报告。");
+  risk(built, "t15", [8], "教师没有在问卷中说明需要及时处理的情况。请先按学校现有的保护流程核实，不要把未说明当成没有危险。");
+  markExclusive(built, "t15", [NONE, UNSURE, "不便在本问卷中说明"]);
   writing(built, "t16", "state", "过去四周在学校的困难", "请记录客观事实、发生时间、频率、最近一次和已采取措施", "staff", true, { itemId: "t15", anyOf: [1, 2, 3, 4, 5] });
   scene(built, "ts1", "scenes", "学校里通常会怎样处理", "学生多次未交作业，并说“太多了，我不知道从哪开始”", ["按班规直接处理，要求补齐", "减少全部任务，避免继续增加压力", "和学生确认卡点，选择一个最小步骤并约定检查时间", "立即联系家长，交由家庭处理", "安排同伴替他说明或完成部分任务", "暂时观察，不作处理"]);
   scene(built, "ts2", "scenes", "学校里通常会怎样处理", "学生考试成绩不错，但课堂经常走神并影响同伴", ["成绩没有问题，因此不特别处理", "反复提醒遵守纪律", "收集不同任务和时段的表现，与学生讨论走神的功能并调整支持", "立即建议家长做注意力诊断", "把学生调到单独座位并长期保持", "交给班主任处理"]);

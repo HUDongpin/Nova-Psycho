@@ -40,6 +40,17 @@ describe("assessment rows after a triad report exists", () => {
     expect(markup).not.toContain("查看报告");
   });
 
+  it("tells a waiting child that the other two people have not finished", () => {
+    const markup = html([
+      row({ id: "child", respondentRole: "student", respondentName: "孩子", status: "queued", phase: "waiting", reportId: null })
+    ], false);
+    expect(markup).toContain("等待另外两方");
+    expect(markup).toContain("孩子、家长和老师都交齐后");
+    expect(markup).not.toContain("无需再次填写");
+    expect(markup).not.toContain("已完成提交");
+    expect(markup).not.toContain("报告生成中");
+  });
+
   it("does not offer the parent report to the child or teacher themselves", () => {
     const markup = html([row({ id: "child", respondentRole: "student", respondentName: "孩子", reportId: null })], false);
     expect(markup).toContain("已完成提交");
