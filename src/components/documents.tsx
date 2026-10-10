@@ -4,14 +4,18 @@ import { AssessmentDraftSession } from "./draft-session";
 import { AccountDraftStore, type DraftOwner } from "./account-drafts";
 import dynamic from "next/dynamic";
 import { ArrowLeft, CheckCircle, CircleNotch, DownloadSimple, FileText } from "@phosphor-icons/react";
-import { api, ApiError, apiUrl, errorMessage, isAdult, type Locale, type Region, type Report, type Role, type SurveyRecord } from "./api";
+import { api, ApiError, apiUrl, errorMessage, isAdult, type Locale, type Region, type Report, type Role, type SubmissionPhase, type SurveyRecord } from "./api";
 import { copy, formatDate, safetyGuidanceText } from "./copy";
 import { Badge, Empty, ErrorNotice, Loading } from "./ui";
 const SurveyRunner = dynamic(() => import("./survey-runner"), { ssr: false, loading: () => <div className="loading-state"><CircleNotch className="spin" aria-label="Loading" /></div> });
-export function SubmissionPanel({ locale, region, role, phase, safetyGuidance, reportId, reportHeld = false, onViewReport, onBack }: { locale: Locale; region: Region; role: Role; phase: "waiting" | "reporting" | null; safetyGuidance: boolean; reportId: string | null; reportHeld?: boolean; onViewReport: (id: string) => void; onBack: () => void }) {
+export function SubmissionPanel({ locale, region, role, phase, safetyGuidance, reportId, reportHeld = false, onViewReport, onBack }: { locale: Locale; region: Region; role: Role; phase: SubmissionPhase; safetyGuidance: boolean; reportId: string | null; reportHeld?: boolean; onViewReport: (id: string) => void; onBack: () => void }) {
   const t = copy(locale);
   const waiting = phase === "waiting";
-  return <div className="panel submitted-panel">{safetyGuidance && <div className="safety-guidance" role="status"><strong>{t("safetyGuidanceTitle")}</strong><p>{safetyGuidanceText(region, locale)}</p></div>}<Empty title={waiting ? t("triadWaiting") : t("submitted")} text={waiting ? t("triadWaitingNote") : t("submittedNote")} icon={<CheckCircle size={44} weight="regular" />} />{isAdult(role) && <p className="muted centered">{t("automaticNote")}</p>}{isAdult(role) && reportId ? <p className="centered" role="status"><button className="button primary" onClick={() => onViewReport(reportId)}><FileText />{t("viewReport")}</button></p> : isAdult(role) && reportHeld ? <p className="muted centered" role="status">{t("reportNeedsParentConsent")}</p> : null}<div className="centered"><button className="button secondary" onClick={onBack}>{t("back")}</button></div></div>;
+  // Parents and staff can see why the parent report is held. Students and teachers only see that their own answers are in.
+  const explainConsent = isAdult(role) && !reportId && (phase === "consent" || reportHeld);
+  const title = waiting ? t("triadWaiting") : explainConsent ? t("reportNeedsParentConsent") : t("submitted");
+  const note = waiting ? t("triadWaitingNote") : explainConsent ? t("reportNeedsParentConsentNote") : t("submittedNote");
+  return <div className="panel submitted-panel">{safetyGuidance && <div className="safety-guidance" role="status"><strong>{t("safetyGuidanceTitle")}</strong><p>{safetyGuidanceText(region, locale)}</p></div>}<Empty title={title} text={note} icon={<CheckCircle size={44} weight="regular" />} />{isAdult(role) && !explainConsent && <p className="muted centered">{t("automaticNote")}</p>}{isAdult(role) && reportId ? <p className="centered" role="status"><button className="button primary" onClick={() => onViewReport(reportId)}><FileText />{t("viewReport")}</button></p> : null}<div className="centered"><button className="button secondary" onClick={onBack}>{t("back")}</button></div></div>;
 }
 export function AssessmentView({ owner, id, refreshKey, locale, region, role, draftSessions, reportId, onViewReport, onBack, onRefresh, openPrivacy }: { owner: DraftOwner; id: string; refreshKey: number; locale: Locale; region: Region; role: Role; draftSessions: AccountDraftStore; reportId: string | null; onViewReport: (id: string) => void; onBack: () => void; onRefresh: () => Promise<void>; openPrivacy: () => void }) {
   const t = copy(locale);
@@ -19,7 +23,7 @@ export function AssessmentView({ owner, id, refreshKey, locale, region, role, dr
   const [error, setError] = useState("");
   const [unavailable, setUnavailable] = useState(false);
   const [submitted, setSubmitted] = useState(false);
-  const [outcome, setOutcome] = useState<{ phase: "waiting" | "reporting" | null; safetyGuidance: boolean } | null>(null);
+  const [outcome, setOutcome] = useState<{ phase: SubmissionPhase; safetyGuidance: boolean } | null>(null);
   const [attempt, setAttempt] = useState(0);
   const draftRef = useRef<AssessmentDraftSession | null>(null);
   const localeRef = useRef(locale);

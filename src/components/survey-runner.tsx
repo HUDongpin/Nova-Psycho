@@ -5,7 +5,7 @@ import { Survey } from "survey-react-ui";
 import "survey-core/i18n/simplified-chinese";
 import "survey-core/i18n/traditional-chinese";
 import { ArrowClockwise, CheckCircle, CircleNotch, Copy, FloppyDisk, Warning } from "@phosphor-icons/react";
-import { ApiError, errorMessage, type Locale, type SurveyRecord } from "./api";
+import { ApiError, errorMessage, type Locale, type SubmissionPhase, type SurveyRecord } from "./api";
 import { AssessmentDraftSession } from "./draft-session";
 import { copy } from "./copy";
 import { bindChoiceAutoAdvance, CHOICE_AUTO_ADVANCE_MS, focusFirstUnanswered, questionProgressLabel, questionSkipsAutoAdvance } from "./survey-navigation";
@@ -15,7 +15,7 @@ export default function SurveyRunner({ record, draft, locale, onSubmitted, onRel
   record: SurveyRecord;
   draft: AssessmentDraftSession;
   locale: Locale;
-  onSubmitted: (result: { phase: "waiting" | "reporting" | null; safetyGuidance: boolean }) => Promise<void>;
+  onSubmitted: (result: { phase: SubmissionPhase; safetyGuidance: boolean }) => Promise<void>;
   onReloadLatest: () => Promise<void>;
   openPrivacy: () => void;
 }) {

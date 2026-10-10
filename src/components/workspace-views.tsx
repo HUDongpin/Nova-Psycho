@@ -18,7 +18,8 @@ export function assessmentProgressLabel(item: Pick<Assessment, "status" | "phase
 }
 export function assessmentProgressNote(item: Pick<Assessment, "status" | "phase">, adult: boolean, locale: Locale): string {
   const t = copy(locale);
-  if (item.phase === "consent") return t("reportNeedsParentConsentNote");
+  // Students and teachers get the same neutral submitted note the badge uses. The consent reason stays with parents and staff.
+  if (item.phase === "consent") return adult ? t("reportNeedsParentConsentNote") : t("submittedNote");
   if (item.phase === "waiting") return t("triadWaitingNote");
   if (item.status === "pending") return t("pendingHelp");
   if (!adult) return t("submittedNote");

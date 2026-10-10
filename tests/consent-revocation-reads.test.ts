@@ -104,7 +104,7 @@ describe("one revocation predicate for every consent read", () => {
         return { rows: [] };
       }
     })) as never);
-    await expect(submitAssessment(student, ASSESSMENT_ID, submission)).resolves.toMatchObject({ status: "queued", reportId: null });
+    await expect(submitAssessment(student, ASSESSMENT_ID, submission)).resolves.toMatchObject({ status: "queued", reportId: null, phase: "consent" });
     expect(clientSql).toContain(ACTIVE_CONSENT_ROWS_SQL);
     expect(clientSql.some(sql => sql.includes("INSERT INTO report_jobs"))).toBe(false);
   });

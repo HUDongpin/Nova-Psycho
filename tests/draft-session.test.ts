@@ -204,10 +204,18 @@ describe("submission",()=>{
     session.update({q1:1},LOCALE);
     const result=await session.submit(LOCALE);
     expect(result.status).toBe("queued");
+    expect(result.phase).toBeUndefined();
     expect(mockApi.mock.calls[0][2]).toMatchObject({method:"PATCH"});
     expect(mockApi.mock.calls[1][2]).toMatchObject({method:"POST"});
     expect(String(mockApi.mock.calls[1][0])).toContain("/submit");
     expect(session.getSnapshot().submitting).toBe(false);
+  });
+  it("returns an awaiting-consent phase from the submit response without dropping it",async()=>{
+    mockApi.mockResolvedValueOnce({ok:true,revision:1});
+    mockApi.mockResolvedValueOnce({id:"a",status:"queued",reportId:null,phase:"consent",safetyGuidance:false});
+    const session=ack(new AssessmentDraftSession(record()));
+    session.update({q1:1},LOCALE);
+    await expect(session.submit(LOCALE)).resolves.toMatchObject({status:"queued",phase:"consent",safetyGuidance:false});
   });
   it("clears the submitting flag when the submission fails",async()=>{
     mockApi.mockResolvedValueOnce({ok:true,revision:1});

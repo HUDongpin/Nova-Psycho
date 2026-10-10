@@ -123,6 +123,42 @@ describe("child safety guidance", () => {
     expect(html).not.toContain("110");
   });
 
+  it("shows parents the consent hold and keeps that reason off the child and teacher confirmation", () => {
+    const panelFor = (role: "parent" | "student" | "teacher", phase: "waiting" | "reporting" | "consent" | null, locale: "zh-CN" | "zh-HK" = "zh-CN") => renderToStaticMarkup(createElement(SubmissionPanel, {
+      locale, region: "CN", role, phase, safetyGuidance: false, reportId: null, onViewReport: () => undefined, onBack: () => undefined
+    }));
+    const parent = panelFor("parent", "consent");
+    expect(parent).toContain("等待家长报告同意");
+    expect(parent).toContain("尚未取得向家长提供综合报告的同意");
+    expect(parent).not.toContain("等待另外两方");
+    expect(parent).not.toContain("报告正在生成");
+    expect(parent).not.toContain("报告生成中");
+    expect(parent).not.toContain("报告由服务自动生成");
+    const parentHk = panelFor("parent", "consent", "zh-HK");
+    expect(parentHk).toContain("等待家長報告同意");
+    expect(parentHk).toContain("尚未取得向家長提供綜合報告的同意");
+    expect(parentHk).not.toContain("等待另外兩方");
+    for (const role of ["student", "teacher"] as const) {
+      const markup = panelFor(role, "consent");
+      expect(markup).toContain("已完成提交");
+      expect(markup).toContain("无需再次填写");
+      expect(markup).not.toContain("等待家长报告同意");
+      expect(markup).not.toContain("尚未取得向家长提供综合报告的同意");
+      expect(markup).not.toContain("等待另外两方");
+      expect(markup).not.toContain("报告正在生成");
+    }
+    const reporting = panelFor("parent", "reporting");
+    expect(reporting).toContain("已完成提交");
+    expect(reporting).toContain("报告由服务自动生成");
+    expect(reporting).not.toContain("等待另外两方");
+    expect(reporting).not.toContain("等待家长报告同意");
+    const held = renderToStaticMarkup(createElement(SubmissionPanel, {
+      locale: "zh-CN", region: "CN", role: "parent", phase: null, safetyGuidance: false, reportId: null, reportHeld: true, onViewReport: () => undefined, onBack: () => undefined
+    }));
+    expect(held).toContain("等待家长报告同意");
+    expect(held).not.toContain("报告由服务自动生成");
+  });
+
   it("shows region-specific guidance after a risk submission, without diagnosis language", () => {
     const cn = panel("CN", "zh-CN", "waiting", true);
     expect(cn).toContain("请先照顾你的安全");
