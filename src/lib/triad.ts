@@ -2,7 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
 import type { Actor, Locale, RespondentRole } from "../domain/types";
 import { z } from "zod";
-import { triadScales } from "../domain/triad-scales";
+import { childScale, parentScale, teacherScale, triadScales } from "../domain/triad-scales";
 import { TRIAD_BUNDLE, triadRolesReady } from "../domain/triad-report";
 import { pair } from "../domain/zh-pair";
 import { parseAdvice, parseScale, parseTemplate } from "../domain/validation";
@@ -16,7 +16,11 @@ import type { VerifiedClerkIdentity } from "./clerk-auth";
 import { formatJoinCode, joinCodeFormatMessage, parseJoinCode, registrationName, registrationPassword, registrationUsername } from "../domain/registration";
 export { formatJoinCode } from "../domain/registration";
 
-const SCALE_ID = { parent: "growth-parent@1.0.0", student: "growth-child@1.0.0", teacher: "growth-teacher@1.0.0" } as const;
+const SCALE_ID = {
+  parent: `${parentScale.id}@${parentScale.version}`,
+  student: `${childScale.id}@${childScale.version}`,
+  teacher: `${teacherScale.id}@${teacherScale.version}`
+} as const;
 const short = registrationName;
 const username = registrationUsername;
 const password = registrationPassword;
@@ -161,7 +165,10 @@ export async function ensureTriadInstruments(): Promise<void> {
   await query("CREATE UNIQUE INDEX IF NOT EXISTS staff_alerts_assessment ON staff_alerts(assessment_id) WHERE assessment_id IS NOT NULL");
   for (const scale of triadScales) {
     const parsed = parseScale(scale);
-    await query("INSERT INTO scales(id,scale_id,version,definition) VALUES($1,$2,$3,$4) ON CONFLICT(id) DO UPDATE SET definition=EXCLUDED.definition WHERE scales.definition IS DISTINCT FROM EXCLUDED.definition", [`${parsed.id}@${parsed.version}`, parsed.id, parsed.version, JSON.stringify(parsed)]);
+    const id = `${parsed.id}@${parsed.version}`;
+    // Insert only. scales_immutable rejects definition rewrites, and an open assessment scores the row it was opened with.
+    await query("INSERT INTO scales(id,scale_id,version,definition) VALUES($1,$2,$3,$4) ON CONFLICT(id) DO NOTHING", [id, parsed.id, parsed.version, JSON.stringify(parsed)]);
+    if (parsed.version !== "1.0.0") await query("UPDATE scales SET status='retired' WHERE id=$1 AND status='active'", [`${parsed.id}@1.0.0`]);
   }
   const advice = parseAdvice({ title: pair("三方了解说明"), blocks: [{ id: "triad_context", title: pair("先看具体情境"), body: pair("这份报告把孩子、家长和老师的观察放在一起，不合成一个总分，也不做诊断。"), source: "Nova growth triad intake, 2026-10", dimensionKeys: ["cognition"] }] });
   const template = parseTemplate({ title: pair("孩子的成长了解"), introduction: pair("这份报告给家长阅读。它把孩子、家长和老师各自看到的情况放在一起。"), limitation: pair("这不是诊断，也没有临床常模。三方说法不同时，不代表有人说了谎。香港繁体文本是便于阅读的字形转换，不是另行验证的译本。"), nextStep: pair("可以挑一个小变化，和孩子一起试四周。如果报告开头有安全提示，请先处理安全。") });
