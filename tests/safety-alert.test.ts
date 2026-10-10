@@ -2,14 +2,15 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { createElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
-vi.mock("../src/lib/db", () => ({ query: vi.fn() }));
-import { query } from "../src/lib/db";
+vi.mock("../src/lib/db", () => ({ query: vi.fn(), transaction: vi.fn() }));
+import { query, transaction } from "../src/lib/db";
 import { acknowledgeSafetyAlert, resolveSafetyAlert } from "../src/lib/triad";
 import { Dashboard, FamilyView } from "../src/components/workspace-views";
 import type { Family, Workspace as ClientWorkspace } from "../src/components/api";
 import type { Actor, Role } from "../src/domain/types";
 
 const mockQuery = vi.mocked(query);
+const mockTransaction = vi.mocked(transaction);
 const FAMILY_ID = "22222222-3333-4444-8555-666666666666";
 const ALERT_ID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
 const ACTOR_ID = "99999999-8888-4777-8666-555555555555";
@@ -23,11 +24,47 @@ beforeEach(() => {
   vi.stubEnv("NOVA_REPORT_DIR", "work/test-private");
   vi.stubEnv("NOVA_REPORT_KEY", "0".repeat(64));
   mockQuery.mockReset();
+  mockTransaction.mockReset();
+  mockTransaction.mockImplementation((async (fn: (client: { query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }> }) => Promise<unknown>) => fn({
+    query: async (sql: string, params?: unknown[]) => ({ rows: await mockQuery(sql, params) })
+  })) as never);
 });
 afterEach(() => vi.unstubAllEnvs());
 
 const sqls = () => mockQuery.mock.calls.map(call => String(call[0]));
-const familyRecord = { id: FAMILY_ID, region: "CN" as const, family_name: "Synthetic", child_name: "Synthetic child", birth_date: "2013-04-12", grade: "S2", guardian_label: "Mother", assigned_to: ACTOR_ID, created_at: new Date() };
+const OTHER_ID = "77777777-6666-4555-8444-333333333333";
+
+function stage(options: { role?: Role; assignedTo?: string | null; resolvedAt?: Date | null; viewedAt?: Date | null; disabled?: boolean; userRole?: Role; family?: boolean; alert?: boolean } = {}) {
+  const role = options.userRole ?? options.role ?? "staff";
+  mockQuery.mockImplementation((async (sql: string) => {
+    const text = String(sql);
+    if (text.includes("FROM staff_alerts WHERE id=$1")) {
+      if (options.alert === false) return [];
+      return [{ id: ALERT_ID, family_id: FAMILY_ID, resolved_at: options.resolvedAt ?? null, viewed_at: options.viewedAt ?? null }];
+    }
+    if (text.includes("FROM families WHERE id=$1")) {
+      if (options.family === false) return [];
+      return [{ id: FAMILY_ID, region: "CN", assigned_to: options.assignedTo === undefined ? ACTOR_ID : options.assignedTo }];
+    }
+    if (text.includes("FROM users WHERE id=$1")) return [{ id: ACTOR_ID, role, region: "CN", disabled: options.disabled === true }];
+    if (text.startsWith("UPDATE staff_alerts")) return [{ id: ALERT_ID }];
+    return [];
+  }) as never);
+}
+
+function expectLockedRecheckBeforeWrite() {
+  const order = sqls();
+  const alertLock = order.findIndex(sql => sql.includes("FROM staff_alerts") && sql.includes("FOR UPDATE"));
+  const familyLock = order.findIndex(sql => sql.includes("FROM families") && sql.includes("FOR UPDATE"));
+  const userLock = order.findIndex(sql => sql.includes("FROM users") && sql.includes("FOR SHARE"));
+  const update = order.findIndex(sql => sql.startsWith("UPDATE"));
+  expect(alertLock).toBeGreaterThanOrEqual(0);
+  expect(familyLock).toBeGreaterThan(alertLock);
+  expect(order[familyLock]).toContain("region=$2 FOR UPDATE");
+  expect(userLock).toBeGreaterThan(familyLock);
+  expect(update).toBeGreaterThan(userLock);
+  expect(mockTransaction).toHaveBeenCalledTimes(1);
+}
 
 describe("acknowledge safety alert", () => {
   it("refuses parents, students and teachers before looking anything up", async () => {
@@ -35,47 +72,38 @@ describe("acknowledge safety alert", () => {
       await expect(acknowledgeSafetyAlert(actor(role), ALERT_ID)).rejects.toMatchObject({ code: "ROLE_DENIED" });
     }
     expect(mockQuery).not.toHaveBeenCalled();
+    expect(mockTransaction).not.toHaveBeenCalled();
   });
   it("rejects a malformed id before querying", async () => {
     await expect(acknowledgeSafetyAlert(actor("staff"), "nope")).rejects.toMatchObject({ code: "NOT_FOUND" });
     expect(mockQuery).not.toHaveBeenCalled();
+    expect(mockTransaction).not.toHaveBeenCalled();
   });
   it("returns not found when this region has no such alert", async () => {
-    mockQuery.mockImplementation((async () => []) as never);
+    stage({ alert: false, role: "admin" });
     await expect(acknowledgeSafetyAlert(actor("admin"), ALERT_ID)).rejects.toMatchObject({ code: "NOT_FOUND" });
     expect(sqls().some(sql => sql.startsWith("UPDATE"))).toBe(false);
   });
-  it("does not mark an alert for a family the caller cannot reach", async () => {
-    mockQuery.mockImplementation((async (sql: string) => {
-      if (String(sql).includes("FROM staff_alerts WHERE id=$1")) return [{ id: ALERT_ID, family_id: FAMILY_ID, viewed_at: null }];
-      return [];
-    }) as never);
-    await expect(acknowledgeSafetyAlert(actor("staff"), ALERT_ID)).rejects.toMatchObject({ status: 404, code: "NOT_FOUND" });
-    const lookup = mockQuery.mock.calls.find(call => String(call[0]).includes("FROM families f WHERE f.id=$1"));
-    expect(String(lookup?.[0])).toContain("f.assigned_to IS NULL");
-    expect(String(lookup?.[0])).toContain("sa.resolved_at IS NULL");
+  it("does not mark an alert when the locked family is assigned to someone else", async () => {
+    stage({ assignedTo: OTHER_ID });
+    await expect(acknowledgeSafetyAlert(actor("staff"), ALERT_ID)).rejects.toMatchObject({ status: 403, code: "ROLE_DENIED" });
+    expect(sqls().some(sql => sql.includes("FROM families") && sql.includes("FOR UPDATE"))).toBe(true);
     expect(sqls().some(sql => sql.startsWith("UPDATE"))).toBe(false);
     expect(sqls().some(sql => sql.includes("INSERT INTO audit_events"))).toBe(false);
   });
+  it("returns not found when the family row is gone before the lock", async () => {
+    stage({ family: false });
+    await expect(acknowledgeSafetyAlert(actor("staff"), ALERT_ID)).rejects.toMatchObject({ status: 404, code: "NOT_FOUND" });
+    expect(sqls().some(sql => sql.startsWith("UPDATE"))).toBe(false);
+  });
   it("lets regional staff acknowledge an unassigned family's open alert", async () => {
-    mockQuery.mockImplementation((async (sql: string) => {
-      const text = String(sql);
-      if (text.includes("FROM staff_alerts WHERE id=$1")) return [{ id: ALERT_ID, family_id: FAMILY_ID, viewed_at: null }];
-      if (text.includes("FROM families f WHERE f.id=$1")) return [{ ...familyRecord, assigned_to: null }];
-      if (text.startsWith("UPDATE staff_alerts")) return [{ id: ALERT_ID }];
-      return [];
-    }) as never);
+    stage({ assignedTo: null });
     await expect(acknowledgeSafetyAlert(actor("staff"), ALERT_ID)).resolves.toEqual({ ok: true });
+    expectLockedRecheckBeforeWrite();
     expect(mockQuery.mock.calls.find(call => String(call[0]).startsWith("UPDATE staff_alerts"))?.[1]).toEqual([ACTOR_ID, ALERT_ID, "CN"]);
   });
   it("records who viewed an open alert", async () => {
-    mockQuery.mockImplementation((async (sql: string) => {
-      const text = String(sql);
-      if (text.includes("FROM staff_alerts WHERE id=$1")) return [{ id: ALERT_ID, family_id: FAMILY_ID, viewed_at: null }];
-      if (text.includes("FROM families f WHERE f.id=$1")) return [familyRecord];
-      if (text.startsWith("UPDATE staff_alerts")) return [{ id: ALERT_ID }];
-      return [];
-    }) as never);
+    stage();
     await expect(acknowledgeSafetyAlert(actor("staff"), ALERT_ID)).resolves.toEqual({ ok: true });
     const update = mockQuery.mock.calls.find(call => String(call[0]).startsWith("UPDATE staff_alerts"));
     expect(update?.[1]).toEqual([ACTOR_ID, ALERT_ID, "CN"]);
@@ -83,61 +111,58 @@ describe("acknowledge safety alert", () => {
     expect(recorded?.[1]).toEqual(["CN", ACTOR_ID, "safety.viewed", ALERT_ID]);
   });
   it("does not write again when the alert was already viewed", async () => {
-    mockQuery.mockImplementation((async (sql: string) => {
-      const text = String(sql);
-      if (text.includes("FROM staff_alerts WHERE id=$1")) return [{ id: ALERT_ID, family_id: FAMILY_ID, viewed_at: new Date("2026-10-06T00:00:00Z") }];
-      if (text.includes("FROM families f WHERE f.id=$1")) return [familyRecord];
-      return [];
-    }) as never);
+    stage({ role: "admin", viewedAt: new Date("2026-10-06T00:00:00Z") });
     await expect(acknowledgeSafetyAlert(actor("admin"), ALERT_ID)).resolves.toEqual({ ok: true });
     expect(sqls().some(sql => sql.startsWith("UPDATE"))).toBe(false);
-    expect(sqls().some(sql => sql.includes("safety.viewed"))).toBe(false);
+    expect(sqls().some(sql => sql.includes("INSERT INTO audit_events"))).toBe(false);
+  });
+  it("refuses a disabled account after locking the actor row", async () => {
+    stage({ disabled: true });
+    await expect(acknowledgeSafetyAlert(actor("staff"), ALERT_ID)).rejects.toMatchObject({ status: 403, code: "ACCOUNT_REVOKED" });
+    expect(sqls().some(sql => sql.startsWith("UPDATE"))).toBe(false);
   });
 });
 
 describe("resolve safety alert", () => {
-  const unassigned = { ...familyRecord, assigned_to: null as string | null };
-  function allow(family: typeof unassigned, resolvedAt: Date | null = null) {
-    mockQuery.mockImplementation((async (sql: string) => {
-      const text = String(sql);
-      if (text.includes("FROM staff_alerts WHERE id=$1")) return [{ id: ALERT_ID, family_id: FAMILY_ID, resolved_at: resolvedAt }];
-      if (text.includes("FROM families f WHERE f.id=$1")) return [family];
-      if (text.startsWith("UPDATE staff_alerts")) return [{ id: ALERT_ID }];
-      return [];
-    }) as never);
-  }
   it("refuses parents, students and teachers before looking anything up", async () => {
     for (const role of ["parent", "student", "teacher"] as const) {
       await expect(resolveSafetyAlert(actor(role), ALERT_ID)).rejects.toMatchObject({ code: "ROLE_DENIED" });
     }
     expect(mockQuery).not.toHaveBeenCalled();
+    expect(mockTransaction).not.toHaveBeenCalled();
   });
   it("rejects a malformed id before querying", async () => {
     await expect(resolveSafetyAlert(actor("admin"), "nope")).rejects.toMatchObject({ code: "NOT_FOUND" });
     expect(mockQuery).not.toHaveBeenCalled();
   });
   it("returns not found when this region has no such alert", async () => {
-    mockQuery.mockImplementation((async () => []) as never);
+    stage({ alert: false, role: "admin" });
     await expect(resolveSafetyAlert(actor("admin"), ALERT_ID)).rejects.toMatchObject({ code: "NOT_FOUND" });
     expect(sqls().some(sql => sql.startsWith("UPDATE"))).toBe(false);
   });
-  it("does not resolve an alert when the caller is outside the family's detail scope", async () => {
-    mockQuery.mockImplementation((async (sql: string) => String(sql).includes("FROM staff_alerts WHERE id=$1") ? [{ id: ALERT_ID, family_id: FAMILY_ID, resolved_at: null }] : []) as never);
-    await expect(resolveSafetyAlert(actor("staff"), ALERT_ID)).rejects.toMatchObject({ status: 404, code: "NOT_FOUND" });
-    const lookup = mockQuery.mock.calls.find(call => String(call[0]).includes("FROM families f WHERE f.id=$1"));
-    expect(String(lookup?.[0])).toContain("f.assigned_to=$3");
-    expect(String(lookup?.[0])).toContain("sa.resolved_at IS NULL");
-    expect(sqls().some(sql => sql.startsWith("UPDATE"))).toBe(false);
+  it("does not resolve an alert when the locked family is assigned to someone else", async () => {
+    stage({ assignedTo: OTHER_ID });
+    await expect(resolveSafetyAlert(actor("staff"), ALERT_ID)).rejects.toMatchObject({ status: 403, code: "ROLE_DENIED" });
+    const familyLock = sqls().findIndex(sql => sql.includes("FROM families") && sql.includes("FOR UPDATE"));
+    const update = sqls().findIndex(sql => sql.startsWith("UPDATE"));
+    expect(familyLock).toBeGreaterThanOrEqual(0);
+    expect(update).toBe(-1);
     expect(sqls().some(sql => sql.includes("INSERT INTO audit_events"))).toBe(false);
   });
+  it("returns not found when the family row is gone", async () => {
+    stage({ family: false });
+    await expect(resolveSafetyAlert(actor("staff"), ALERT_ID)).rejects.toMatchObject({ status: 404, code: "NOT_FOUND" });
+    expect(sqls().some(sql => sql.startsWith("UPDATE"))).toBe(false);
+  });
   it("lets regional staff close an unassigned family's open alert", async () => {
-    allow(unassigned);
+    stage({ assignedTo: null });
     await expect(resolveSafetyAlert(actor("staff"), ALERT_ID)).resolves.toEqual({ ok: true });
+    expectLockedRecheckBeforeWrite();
     expect(mockQuery.mock.calls.find(call => String(call[0]).startsWith("UPDATE staff_alerts"))?.[1]).toEqual([ACTOR_ID, ALERT_ID, "CN"]);
     expect(mockQuery.mock.calls.find(call => String(call[0]).includes("INSERT INTO audit_events"))?.[1]).toEqual(["CN", ACTOR_ID, "safety.resolved", ALERT_ID]);
   });
   it("lets the assigned staff member close the alert", async () => {
-    allow(familyRecord);
+    stage();
     await expect(resolveSafetyAlert(actor("staff"), ALERT_ID)).resolves.toEqual({ ok: true });
     const update = mockQuery.mock.calls.find(call => String(call[0]).startsWith("UPDATE staff_alerts"));
     expect(String(update?.[0])).toContain("resolved_at=now()");
@@ -145,16 +170,26 @@ describe("resolve safety alert", () => {
     expect(update?.[1]).toEqual([ACTOR_ID, ALERT_ID, "CN"]);
     expect(mockQuery.mock.calls.find(call => String(call[0]).includes("INSERT INTO audit_events"))?.[1]).toEqual(["CN", ACTOR_ID, "safety.resolved", ALERT_ID]);
   });
-  it("lets an administrator close an unassigned family's alert", async () => {
-    allow(unassigned);
+  it("lets an administrator close an alert assigned to someone else", async () => {
+    stage({ role: "admin", assignedTo: OTHER_ID });
     await expect(resolveSafetyAlert(actor("admin"), ALERT_ID)).resolves.toEqual({ ok: true });
     expect(mockQuery.mock.calls.find(call => String(call[0]).includes("INSERT INTO audit_events"))?.[1]).toEqual(["CN", ACTOR_ID, "safety.resolved", ALERT_ID]);
   });
   it("does not write again when the alert is already resolved", async () => {
-    allow(familyRecord, new Date("2026-10-08T00:00:00Z"));
+    stage({ resolvedAt: new Date("2026-10-08T00:00:00Z") });
     await expect(resolveSafetyAlert(actor("staff"), ALERT_ID)).resolves.toEqual({ ok: true });
     expect(sqls().some(sql => sql.startsWith("UPDATE"))).toBe(false);
     expect(sqls().some(sql => sql.includes("INSERT INTO audit_events"))).toBe(false);
+  });
+  it("refuses fallback staff once the locked alert is already resolved", async () => {
+    stage({ assignedTo: null, resolvedAt: new Date("2026-10-08T00:00:00Z") });
+    await expect(resolveSafetyAlert(actor("staff"), ALERT_ID)).rejects.toMatchObject({ status: 403, code: "ROLE_DENIED" });
+    expect(sqls().some(sql => sql.startsWith("UPDATE"))).toBe(false);
+  });
+  it("refuses when the locked actor row is no longer staff", async () => {
+    stage({ userRole: "parent" });
+    await expect(resolveSafetyAlert(actor("staff"), ALERT_ID)).rejects.toMatchObject({ status: 409, code: "ROLE_CONFLICT" });
+    expect(sqls().some(sql => sql.startsWith("UPDATE"))).toBe(false);
   });
 });
 

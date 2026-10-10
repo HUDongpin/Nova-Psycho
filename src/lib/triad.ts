@@ -1,13 +1,13 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
-import type { Actor, Locale, RespondentRole } from "../domain/types";
+import type { Actor, Locale, RespondentRole, Role } from "../domain/types";
 import { z } from "zod";
 import { triadScales } from "../domain/triad-scales";
 import { TRIAD_BUNDLE, triadRolesReady } from "../domain/triad-report";
 import { pair } from "../domain/zh-pair";
 import { parseAdvice, parseScale, parseTemplate } from "../domain/validation";
-import { ageAt, familyFor } from "./access";
-import { audit, hashPassword, limitLogin } from "./auth";
+import { ageAt } from "./access";
+import { hashPassword, limitLogin } from "./auth";
 import { getConfig } from "./config";
 import { query, transaction } from "./db";
 import { HttpError, requireRole, validateId } from "./http";
@@ -268,27 +268,52 @@ export async function queueTriadReport(client: PoolClient, familyId: string, rou
   await client.query("INSERT INTO report_jobs(id,assessment_id,source_assessment_ids) VALUES($1,$2,$3) ON CONFLICT(assessment_id) DO NOTHING", [randomUUID(), parent.id, rows.rows.map(row => row.id)]);
 }
 
-export async function acknowledgeSafetyAlert(actor: Actor, alertId: string) {
+// Alert handling is not report management: an unassigned family's regional staff may
+// acknowledge or resolve, but canManageFamilyReports stays assignee-or-admin only.
+function mayHandleSafetyAlert(role: Role, assignedTo: string | null, actorId: string, resolvedAt: Date | string | null): boolean {
+  if (role === "admin") return true;
+  if (role !== "staff") return false;
+  if (assignedTo === actorId) return true;
+  return assignedTo === null && resolvedAt === null;
+}
+
+// One transaction. The alert lock is taken first so a waiter does not pin the family
+// row (assignment can still commit). Authorization is decided only after the family
+// lock — the same id+region FOR UPDATE as assignment — and the actor row, which is
+// locked after the family so the order matches assignment's family-then-user locks.
+async function settleSafetyAlert(actor: Actor, alertId: string, action: "viewed" | "resolved") {
   requireRole(actor.role, ["admin", "staff"]);
   validateId(alertId);
-  const rows = await query<{ id: string; family_id: string; viewed_at: Date | string | null }>("SELECT id,family_id,viewed_at FROM staff_alerts WHERE id=$1 AND region=$2", [alertId, actor.region]);
-  if (!rows[0]) throw new HttpError(404, "未找到这条安全提示。", "NOT_FOUND");
-  await familyFor(actor, rows[0].family_id);
-  if (rows[0].viewed_at) return { ok: true };
-  const updated = await query("UPDATE staff_alerts SET viewed_at=now(),viewed_by=$1 WHERE id=$2 AND region=$3 AND viewed_at IS NULL RETURNING id", [actor.id, alertId, actor.region]);
-  if (updated[0]) await audit(actor, "safety.viewed", alertId);
-  return { ok: true };
+  return transaction(async client => {
+    const alerts = await client.query<{ id: string; family_id: string; resolved_at: Date | string | null; viewed_at: Date | string | null }>("SELECT id,family_id,resolved_at,viewed_at FROM staff_alerts WHERE id=$1 AND region=$2 FOR UPDATE", [alertId, actor.region]);
+    const alert = alerts.rows[0];
+    if (!alert) throw new HttpError(404, "未找到这条安全提示。", "NOT_FOUND");
+    const families = await client.query<{ id: string; region: "CN" | "HK"; assigned_to: string | null }>("SELECT id,region,assigned_to FROM families WHERE id=$1 AND region=$2 FOR UPDATE", [alert.family_id, actor.region]);
+    const family = families.rows[0];
+    if (!family) throw new HttpError(404, "未找到该家庭或没有访问权限。", "NOT_FOUND");
+    const users = await client.query<{ id: string; role: Role; region: "CN" | "HK"; disabled: boolean }>("SELECT id,role,region,disabled FROM users WHERE id=$1 FOR SHARE", [actor.id]);
+    const current = users.rows[0];
+    if (!current || current.disabled) throw new HttpError(403, "账号已停用，请联系服务人员。", "ACCOUNT_REVOKED");
+    if (current.region !== actor.region || current.region !== family.region) throw new HttpError(403, "请使用账号所属地区的入口。", "REGION_MISMATCH");
+    if (current.role !== actor.role) throw new HttpError(409, "账号角色已变更，请重新登录。", "ROLE_CONFLICT");
+    if (!mayHandleSafetyAlert(current.role, family.assigned_to, current.id, alert.resolved_at)) throw new HttpError(403, "您没有执行此操作的权限。", "ROLE_DENIED");
+    if (action === "resolved") {
+      if (alert.resolved_at) return { ok: true };
+      const updated = await client.query("UPDATE staff_alerts SET resolved_at=now(),resolved_by=$1 WHERE id=$2 AND region=$3 AND resolved_at IS NULL RETURNING id", [current.id, alertId, current.region]);
+      if (updated.rows[0]) await client.query("INSERT INTO audit_events(region,actor_id,action,entity_id) VALUES($1,$2,$3,$4)", [current.region, current.id, "safety.resolved", alertId]);
+      return { ok: true };
+    }
+    if (alert.viewed_at) return { ok: true };
+    const updated = await client.query("UPDATE staff_alerts SET viewed_at=now(),viewed_by=$1 WHERE id=$2 AND region=$3 AND viewed_at IS NULL RETURNING id", [current.id, alertId, current.region]);
+    if (updated.rows[0]) await client.query("INSERT INTO audit_events(region,actor_id,action,entity_id) VALUES($1,$2,$3,$4)", [current.region, current.id, "safety.viewed", alertId]);
+    return { ok: true };
+  });
+}
+
+export async function acknowledgeSafetyAlert(actor: Actor, alertId: string) {
+  return settleSafetyAlert(actor, alertId, "viewed");
 }
 
 export async function resolveSafetyAlert(actor: Actor, alertId: string) {
-  requireRole(actor.role, ["admin", "staff"]);
-  validateId(alertId);
-  const rows = await query<{ id: string; family_id: string; resolved_at: Date | string | null }>("SELECT id,family_id,resolved_at FROM staff_alerts WHERE id=$1 AND region=$2", [alertId, actor.region]);
-  if (!rows[0]) throw new HttpError(404, "未找到这条安全提示。", "NOT_FOUND");
-  // Same gate as the family record: admin, assignee, or regional staff only while the family is unassigned and this alert is still open.
-  await familyFor(actor, rows[0].family_id);
-  if (rows[0].resolved_at) return { ok: true };
-  const updated = await query("UPDATE staff_alerts SET resolved_at=now(),resolved_by=$1 WHERE id=$2 AND region=$3 AND resolved_at IS NULL RETURNING id", [actor.id, alertId, actor.region]);
-  if (updated[0]) await audit(actor, "safety.resolved", alertId);
-  return { ok: true };
+  return settleSafetyAlert(actor, alertId, "resolved");
 }
