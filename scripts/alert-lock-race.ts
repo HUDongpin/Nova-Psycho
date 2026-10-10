@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import fs from "node:fs/promises";
 import { deleteFamily } from "../src/lib/families";
 import { acknowledgeSafetyAlert, resolveSafetyAlert } from "../src/lib/triad";
 import { closeDatabase, pool } from "../src/lib/db";
 import { HttpError } from "../src/lib/http";
 import type { Actor } from "../src/domain/types";
+import { prepareDatabase } from "./setup";
+import { assertThrowawayDatabase } from "./test-database-guard";
 
 // DB regression for alert lock order. Family is locked before the alert, matching
 // deleteFamily (family, then actor, then the cascade into staff_alerts).
@@ -112,9 +113,8 @@ async function noDeadlockWithDelete() {
 }
 
 async function main() {
-  const schema = await fs.readFile(new URL("../src/lib/schema.sql", import.meta.url), "utf8");
-  await pool().query(schema);
-  await pool().query("INSERT INTO deployment_settings(singleton,region,mode) VALUES(true,$1,'demo') ON CONFLICT(singleton) DO NOTHING", [region]);
+  await assertThrowawayDatabase();
+  await prepareDatabase();
   for (const person of [oldStaff, newStaff, admin]) {
     await pool().query("INSERT INTO users(id,region,name,role,demo) VALUES($1,$2,$3,$4,false)", [person.id, region, person.name, person.role]);
   }
