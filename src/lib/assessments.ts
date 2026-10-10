@@ -12,7 +12,7 @@ import { ensureAdviceReferences } from "../domain/validation";
 import { ageAt,canManageFamilyReports,consentFor,familyFor } from "./access";
 import { audit } from "./auth";
 import { isDemoMode } from "./config";
-import { normValidated } from "../domain/validation";
+import { effectiveDemo, normValidated } from "../domain/validation";
 import { currentContent,getScale,lockContent } from "./content";
 import { query,transaction } from "./db";
 import { HttpError,requireRole,validateId } from "./http";
@@ -37,9 +37,9 @@ function safetyGuidanceFor(snapshot:AssessmentSnapshot|null|undefined):boolean{
   return snapshot?.score?.risk===true;
 }
 async function refuseDemoBesideOfficial(familyId:string,respondentId:string,region:"CN"|"HK",role:RespondentRole,age:number){
-  const held=await query("SELECT a.id FROM assessments a JOIN scales s ON s.id=a.scale_version_id WHERE a.family_id=$1 AND a.respondent_id=$2 AND a.region=$3 AND COALESCE(s.definition->>'demo','false')<>'true' LIMIT 1",[familyId,respondentId,region]);
+  const held=await query("SELECT a.id FROM assessments a JOIN scales s ON s.id=a.scale_version_id WHERE a.family_id=$1 AND a.respondent_id=$2 AND a.region=$3 AND COALESCE(s.definition->>'demo','false')<>'true' AND COALESCE(s.definition->'norm'->>'validated','false')='true' LIMIT 1",[familyId,respondentId,region]);
   if(held[0])throw new HttpError(409,"这位成员已经有正式问卷，不能再加一份演示卷。","DEMO_NOT_ASSIGNABLE");
-  const official=await query("SELECT id FROM scales WHERE status='active' AND COALESCE(definition->>'demo','false')<>'true' AND (definition->'regions') ? $1 AND (definition->'roles') ? $2 AND (definition->>'minAge')::int<=$3 AND (definition->>'maxAge')::int>=$3 LIMIT 1",[region,role,age]);
+  const official=await query("SELECT id FROM scales WHERE status='active' AND COALESCE(definition->>'demo','false')<>'true' AND COALESCE(definition->'norm'->>'validated','false')='true' AND (definition->'regions') ? $1 AND (definition->'roles') ? $2 AND (definition->>'minAge')::int<=$3 AND (definition->>'maxAge')::int>=$3 LIMIT 1",[region,role,age]);
   if(official[0])throw new HttpError(409,"正式问卷已经可以使用，不能再分配演示题。","DEMO_NOT_ASSIGNABLE");
 }
 function refuseUnvalidatedInService(scale:{demo:boolean;norm?:{validated?:boolean}},action:"assign"|"draft"|"submit"):void{
@@ -95,7 +95,7 @@ export async function assessmentDetail(actor:Actor,id:string,locale:Locale){
     const jobs=await query("SELECT id FROM report_jobs WHERE assessment_id=$1 OR $1=ANY(source_assessment_ids) LIMIT 1",[id]);
     phase=jobs[0]?"reporting":"waiting";
   }
-  return {id,status:a.status,childName:a.child_name,scaleTitle:text(s.title,locale),demo:s.demo||!normValidated(s.norm),description:text(s.description,locale),surveyJson:surveyDefinition(s,a.respondent_role,locale),draftAnswers:a.status==="pending"?a.draft_answers:{},draftRevision:a.draft_revision,consentRequired:!await consentFor(a.family_id),phase,safetyGuidance};
+  return {id,status:a.status,childName:a.child_name,scaleTitle:text(s.title,locale),demo:effectiveDemo(s),description:text(s.description,locale),surveyJson:surveyDefinition(s,a.respondent_role,locale),draftAnswers:a.status==="pending"?a.draft_answers:{},draftRevision:a.draft_revision,consentRequired:!await consentFor(a.family_id),phase,safetyGuidance};
 }
 export async function saveDraft(actor:Actor,id:string,input:unknown){
   const {answers,revision}=z.object({answers:answerSchema,acknowledged:z.literal(true),revision:z.number().int().nonnegative()}).strict().parse(input),a=await ownAssessment(actor,id);

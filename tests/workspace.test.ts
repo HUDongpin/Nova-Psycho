@@ -4,6 +4,7 @@ vi.mock("../src/lib/db",()=>({query:vi.fn()}));
 import { query } from "../src/lib/db";
 import { workspaceFor } from "../src/lib/workspace";
 import { demoScale } from "../src/domain/demo";
+import { childScale as oldChild } from "./fixtures/triad-scales-ed66f27";
 import type { Actor,Role } from "../src/domain/types";
 
 // workspaceFor decides how much of each family a role gets to see. The interesting
@@ -48,6 +49,28 @@ beforeEach(()=>{
 afterEach(()=>vi.unstubAllEnvs());
 
 const sqls=()=>mockQuery.mock.calls.map(call=>String(call[0]));
+
+describe("scale labels",()=>{
+  it("shows an unvalidated non-demo instrument as demo and leaves a validated official scale unmarked",async()=>{
+    const official=structuredClone(demoScale);
+    official.demo=false;
+    official.norm={...official.norm,validated:true};
+    mockQuery.mockImplementation((async(sql:string)=>{
+      const text=String(sql);
+      if(text.includes("FROM families f WHERE"))return [familyRow];
+      if(text.includes("FROM scales ORDER BY"))return [
+        {id:"legacy",scale_id:oldChild.id,version:oldChild.version,definition:oldChild,status:"retired"},
+        {id:"official@1.0.0",scale_id:"official",version:"1.0.0",definition:official,status:"active"}
+      ];
+      return [];
+    }) as never);
+    const workspace=await workspaceFor(actor("admin"),"zh-CN");
+    expect(workspace.scales.find(scale=>scale.id==="legacy")).toMatchObject({demo:true});
+    expect(workspace.scales.find(scale=>scale.id==="official@1.0.0")).toMatchObject({demo:false});
+    expect(oldChild.demo).toBe(false);
+    expect(oldChild.norm.validated).toBe(false);
+  });
+});
 
 describe("assessment scoping",()=>{
   it("restricts students and teachers to their own assessments in SQL",async()=>{

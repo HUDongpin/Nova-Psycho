@@ -1,8 +1,8 @@
 import type { Locale,ReportPayload,RespondentRole,TriadReport } from "./types";
 import { text } from "./types";
-import { normValidated } from "./validation";
+import { effectiveDemo } from "./validation";
 export function reportShowsDemo(p:Pick<ReportPayload,"score"|"scale">):boolean{
-  return p.score.demo||!normValidated(p.score.norm)||!normValidated(p.scale.norm);
+  return effectiveDemo({demo:p.score.demo,norm:p.score.norm})||effectiveDemo(p.scale);
 }
 export function escapeHtml(value:unknown):string{return String(value??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]!);}
 export const respondentLabel=(role:RespondentRole,locale:Locale)=>({student:locale==="zh-HK"?"學生自評":"学生自评",parent:locale==="zh-HK"?"家長觀察":"家长观察",teacher:locale==="zh-HK"?"教師觀察":"教师观察"})[role];

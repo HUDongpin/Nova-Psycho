@@ -69,11 +69,19 @@ async function runReportJob(jobId?:string):Promise<ReportJobResult>{
   const pdfs:Partial<Record<Locale,Buffer>>={};
   let unboundTriad=false;
   let blockCode:string|null=null;
+  const rejectSnapshot=(item:AssessmentSnapshot|null|undefined)=>{
+    if(isDemoMode())return;
+    const code=!normValidated(item?.scale?.norm)?"UNVALIDATED_INSTRUMENT":item?.scale?.demo?"DEMO_INSTRUMENT":null;
+    if(!code)return;
+    blockCode=code;
+    throw new Error(code==="UNVALIDATED_INSTRUMENT"?"Unvalidated instrument rejected in service mode":"Demo snapshot rejected in service mode");
+  };
   try{
     if(job.attempt_limit_reached)throw new Error("Report attempt limit reached");
     const rows=await query("SELECT * FROM assessments WHERE id=$1 AND region=$2",[job.assessment_id,getConfig().region]);
     const assessment=rows[0];if(!assessment?.snapshot)throw new Error("Missing assessment snapshot");
     const snapshot=assessment.snapshot as AssessmentSnapshot;
+    rejectSnapshot(snapshot);
     let payload:ReportPayload;
     let publishIds=[assessment.id as string];
     const sources:AssessmentSnapshot[]=[snapshot];
@@ -84,6 +92,7 @@ async function runReportJob(jobId?:string):Promise<ReportJobResult>{
       if(sourceIds.length!==3||new Set(sourceIds).size!==3||!sourceIds.includes(assessment.id))throw new Error("Invalid triad sources");
       const siblings=await query("SELECT id,respondent_role,answers,snapshot,submitted_at FROM assessments WHERE id=ANY($1::uuid[]) AND family_id=$2 AND region=$3 AND triad_round_id=$4 AND submitted_at IS NOT NULL",[sourceIds,assessment.family_id,getConfig().region,assessment.triad_round_id]);
       if(siblings.length!==3||!triadRolesReady(siblings.map(row=>row.respondent_role))||siblings.some(row=>row.snapshot?.scale?.bundle!==TRIAD_BUNDLE))throw new Error("Triad incomplete");
+      for(const row of siblings)rejectSnapshot(row.snapshot as AssessmentSnapshot);
       sources.splice(0,sources.length,...siblings.map(row=>row.snapshot as AssessmentSnapshot));
       const triad=composeTriad(siblings.map(row=>{const stored=row.snapshot as AssessmentSnapshot;return {role:row.respondent_role,scale:stored.scale,answers:row.answers as Record<string,StoredAnswer>,score:stored.score,submittedAt:new Date(row.submitted_at).toISOString()};}));
       payload={...snapshot,selectedAdviceIds:[],generationMode:"template",fallbackReason:"triad_combined",aiModel:null,comparison:{available:false,reason:"first_assessment"},triad,score:{...snapshot.score,risk:triad.safety.length>0,riskMessages:triad.safety}};
@@ -96,8 +105,6 @@ async function runReportJob(jobId?:string):Promise<ReportJobResult>{
       const prior=previous[0];
       payload={...snapshot,...selection,comparison:compareResults(snapshot.score,prior?(prior.snapshot as AssessmentSnapshot).score:null,prior?new Date(prior.submitted_at).toISOString():undefined)};
     }
-    if(!isDemoMode()&&sources.some(item=>!normValidated(item?.scale?.norm))){blockCode="UNVALIDATED_INSTRUMENT";throw new Error("Unvalidated instrument rejected in service mode");}
-    if(!isDemoMode()&&sources.some(item=>item?.scale?.demo)){blockCode="DEMO_INSTRUMENT";throw new Error("Demo snapshot rejected in service mode");}
     if(sources.some(item=>!normValidated(item?.scale?.norm)))payload={...payload,score:{...payload.score,demo:true}};
     const htmlDocuments={"zh-CN":reportHtml(payload,"zh-CN"),"zh-HK":reportHtml(payload,"zh-HK")};
     for(const locale of ["zh-CN","zh-HK"] as const){

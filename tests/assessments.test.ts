@@ -11,6 +11,7 @@ import { currentContent,getScale,lockContent } from "../src/lib/content";
 import { assessmentDetail,createAssessment,retryReport,saveDraft,submitAssessment } from "../src/lib/assessments";
 import { demoAdvice,demoScale,demoTemplate } from "../src/domain/demo";
 import { childScale,parentScale,teacherScale } from "../src/domain/triad-scales";
+import { childScale as oldChild } from "./fixtures/triad-scales-ed66f27";
 import { parseScale } from "../src/domain/validation";
 import { TRIAD_BUNDLE } from "../src/domain/triad-report";
 import type { Actor,Role } from "../src/domain/types";
@@ -128,9 +129,9 @@ describe("creating an assessment",()=>{
       if(text.includes("FROM families f WHERE f.id=$1"))return [{id:FAMILY_ID,region:"CN",family_name:"Synthetic",child_name:"Synthetic child",birth_date:"2013-04-12",grade:"S2",guardian_label:"Mother",assigned_to:null,created_at:new Date()}];
       if(text.includes("SELECT m.role FROM memberships"))return [{role:"student"}];
       if(text.includes("FROM scales WHERE status='active'")){
-        expect(text).toContain("definition->>'demo'");
+        expect(text).toContain("norm'->>'validated'");
         const [region,role,age]=values as ["CN"|"HK","student",number];
-        return [childScale,parentScale,teacherScale].filter(item=>!item.demo&&item.regions.includes(region)&&item.roles.includes(role)&&item.minAge<=age&&item.maxAge>=age).map(item=>({id:`${item.id}@${item.version}`}));
+        return [childScale,parentScale,teacherScale,oldChild].filter(item=>!item.demo&&item.norm.validated&&item.regions.includes(region)&&item.roles.includes(role)&&item.minAge<=age&&item.maxAge>=age).map(item=>({id:`${item.id}@${item.version}`}));
       }
       return [];
     }) as never);
@@ -144,13 +145,32 @@ describe("creating an assessment",()=>{
     expect(created.id).toEqual(expect.any(String));
     expect(clientCalls.some(sql=>sql.includes("INSERT INTO assessments"))).toBe(true);
   });
-  it("refuses a demo instrument when this member already holds an official questionnaire",async()=>{
-    withFamily(sql=>sql.includes("s.definition->>'demo'")?[{id:"official-task"}]:undefined);
+  it("does not treat a held unvalidated questionnaire as an official instrument",async()=>{
+    withFamily(sql=>{
+      if(!sql.includes("JOIN scales")||!sql.includes("definition->>'demo'"))return undefined;
+      const blocks=!oldChild.demo&&(sql.includes("validated")?oldChild.norm.validated:true);
+      return blocks?[{id:"legacy-task"}]:[];
+    });
+    const created=await createAssessment(actor("staff"),createInput);
+    expect(created.id).toEqual(expect.any(String));
+    expect(oldChild.demo).toBe(false);
+    expect(oldChild.norm.validated).toBe(false);
+  });
+  it("refuses a demo instrument when this member already holds a validated official questionnaire",async()=>{
+    withFamily(sql=>{
+      if(!sql.includes("JOIN scales")||!sql.includes("definition->>'demo'"))return undefined;
+      expect(sql).toContain("validated");
+      return [{id:"official-task"}];
+    });
     await expect(createAssessment(actor("staff"),createInput)).rejects.toMatchObject({status:409,code:"DEMO_NOT_ASSIGNABLE"});
     expect(mockTransaction).not.toHaveBeenCalled();
   });
-  it("refuses a demo instrument when an official questionnaire already fits this member",async()=>{
-    withFamily(sql=>sql.includes("FROM scales WHERE status='active'")?[{id:"growth-parent@1.0.0"}]:undefined);
+  it("refuses a demo instrument when a validated official questionnaire already fits this member",async()=>{
+    withFamily(sql=>{
+      if(!sql.includes("FROM scales WHERE status='active'"))return undefined;
+      expect(sql).toContain("norm'->>'validated'");
+      return [{id:"official@1.0.0"}];
+    });
     await expect(createAssessment(actor("admin"),createInput)).rejects.toMatchObject({status:409,code:"DEMO_NOT_ASSIGNABLE"});
     expect(mockTransaction).not.toHaveBeenCalled();
   });
