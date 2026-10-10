@@ -162,7 +162,7 @@ describe("recording guardian consent",()=>{
     const inserts=client.query.mock.calls.filter(call=>String(call[0]).includes("INSERT INTO consents"));
     expect(inserts.map(call=>JSON.parse(String((call[1] as unknown[])[7])))).toEqual([["assessment"],["sensitive_data"],["parent_report"]]);
     expect(inserts.every(call=>(call[1] as unknown[])[4]==="online_guardian"&&typeof (call[1] as unknown[])[6]==="string")).toBe(true);
-    expect(clientCalls.some(sql=>sql.includes("UPDATE consents SET revoked_at"))).toBe(false);
+    expect(clientCalls.filter(sql=>sql.includes("UPDATE consents SET revoked_at")).every(sql=>sql.includes("consent_scope_revocations"))).toBe(true);
   });
   it("grants a missing purpose without revoking the ones already recorded",async()=>{
     client.query.mockImplementation(async(sql:string,params?:unknown[])=>{
@@ -173,7 +173,8 @@ describe("recording guardian consent",()=>{
     await recordConsent(actor("parent"),FAMILY_ID,grant("parent_report"));
     const inserts=client.query.mock.calls.filter(call=>String(call[0]).includes("INSERT INTO consents"));
     expect(inserts.map(call=>JSON.parse(String((call[1] as unknown[])[7])))).toEqual([["parent_report"]]);
-    expect(clientCalls.some(sql=>sql.includes("UPDATE consents SET revoked_at"))).toBe(false);
+    const retire=clientCalls.filter(sql=>sql.includes("UPDATE consents SET revoked_at"));
+    expect(retire.every(sql=>sql.includes("consent_scope_revocations"))).toBe(true);
     expect(clientCalls.some(sql=>sql.includes("INSERT INTO consent_scope_revocations"))).toBe(false);
     expect(clientCalls.some(sql=>sql.includes("j.state='paused'")||sql.includes("j.state='ready'"))).toBe(true);
   });
@@ -192,10 +193,24 @@ describe("recording guardian consent",()=>{
       return answerClient(sql,params);
     });
     await recordConsent(actor("parent"),FAMILY_ID,{action:"withdraw",scope:"parent_report",guardianName:"Synthetic guardian"});
-    const revoke=client.query.mock.calls.find(call=>String(call[0]).includes("UPDATE consents SET revoked_at"));
-    expect(String(revoke?.[0])).toBe("UPDATE consents SET revoked_at=now() WHERE id=$1 AND revoked_at IS NULL");
-    expect(revoke?.[1]).toEqual([consentId]);
-    expect(clientCalls.some(sql=>sql.includes("INSERT INTO consents")||sql.includes("INSERT INTO consent_scope_revocations"))).toBe(false);
+    expect(clientCalls.some(sql=>sql.includes("UPDATE consents"))).toBe(false);
+    const revocation=client.query.mock.calls.find(call=>String(call[0]).includes("INSERT INTO consent_scope_revocations"));
+    expect(revocation?.[1]).toEqual([expect.any(String),consentId,FAMILY_ID,"parent_report",USER_ID,"Synthetic guardian","online_guardian",null]);
+    expect(clientCalls.some(sql=>sql.includes("INSERT INTO consents"))).toBe(false);
+  });
+  it("records evidence when the last remaining scope is withdrawn and does not rewrite the grant",async()=>{
+    const consentId="cccccccc-dddd-4eee-8fff-000000000000";
+    client.query.mockImplementation(async(sql:string,params?:unknown[])=>{
+      clientCalls.push(String(sql));
+      if(String(sql).includes("AS scopes FROM consents WHERE family_id=$1"))return {rows:[{scopes:["sensitive_data"]}]};
+      if(String(sql).includes("c.id, c.scopes"))return {rows:[{id:consentId,scopes:["sensitive_data"]}]};
+      return answerClient(sql,params);
+    });
+    await recordConsent(actor("staff"),FAMILY_ID,{action:"withdraw",scope:"sensitive_data",guardianName:"Synthetic guardian",reference:"SYNTHETIC-LAST",confirmWithdraw:true});
+    expect(clientCalls.some(sql=>sql.includes("UPDATE consents"))).toBe(false);
+    const revocation=client.query.mock.calls.find(call=>String(call[0]).includes("INSERT INTO consent_scope_revocations"));
+    expect(String(revocation?.[0])).toContain("guardian_name,method,reference");
+    expect(revocation?.[1]).toEqual([expect.any(String),consentId,FAMILY_ID,"sensitive_data",USER_ID,"Synthetic guardian","offline_signed","SYNTHETIC-LAST"]);
   });
   it("keeps a legacy combined row and records only the withdrawn purpose",async()=>{
     const consentId="bbbbbbbb-cccc-4ddd-8eee-ffffffffffff";
@@ -209,8 +224,8 @@ describe("recording guardian consent",()=>{
     await recordConsent(actor("parent"),FAMILY_ID,{action:"withdraw",scope:"parent_report",guardianName:"Synthetic current guardian"});
     expect(clientCalls.some(sql=>sql.includes("UPDATE consents")||sql.includes("INSERT INTO consents"))).toBe(false);
     const revocation=client.query.mock.calls.find(call=>String(call[0]).includes("INSERT INTO consent_scope_revocations"));
-    expect(String(revocation?.[0])).toContain("consent_id,family_id,scope,actor_id");
-    expect(revocation?.[1]).toEqual([expect.any(String),consentId,FAMILY_ID,"parent_report",USER_ID]);
+    expect(String(revocation?.[0])).toContain("guardian_name,method,reference");
+    expect(revocation?.[1]).toEqual([expect.any(String),consentId,FAMILY_ID,"parent_report",USER_ID,"Synthetic current guardian","online_guardian",null]);
     const familyLock=clientCalls.findIndex(sql=>sql.includes("FROM families f WHERE f.id=$1")&&sql.includes("FOR UPDATE"));
     const userLock=clientCalls.findIndex(sql=>sql.includes("NOT disabled FOR SHARE"));
     const write=clientCalls.findIndex(sql=>sql.includes("INSERT INTO consent_scope_revocations"));

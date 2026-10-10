@@ -58,15 +58,25 @@ DO $$ BEGIN
   ALTER TABLE consents ADD CONSTRAINT consents_scopes_nonempty CHECK(jsonb_typeof(scopes)='array' AND jsonb_array_length(scopes)>=1);
  END IF;
 END $$;
--- One withdrawn purpose from a combined legacy row. The consent row itself stays,
--- including its original scopes text, notice version and timestamp.
+-- One withdrawn purpose. The original grant row is not rewritten. This record
+-- keeps who withdrew it, when, and the guardian name, method and paper reference.
 CREATE TABLE IF NOT EXISTS consent_scope_revocations(
  id uuid PRIMARY KEY, consent_id uuid NOT NULL REFERENCES consents(id) ON DELETE CASCADE,
  family_id uuid NOT NULL REFERENCES families(id) ON DELETE CASCADE,
  scope text NOT NULL CHECK(scope IN ('assessment','parent_report','sensitive_data','ai_processing')),
- actor_id uuid REFERENCES users(id) ON DELETE SET NULL, created_at timestamptz NOT NULL DEFAULT now(),
+ actor_id uuid REFERENCES users(id) ON DELETE SET NULL,
+ guardian_name text NOT NULL, method text NOT NULL CHECK(method IN ('online_guardian','offline_signed','synthetic')),
+ reference text, created_at timestamptz NOT NULL DEFAULT now(),
  UNIQUE(consent_id, scope)
 );
+ALTER TABLE consent_scope_revocations ADD COLUMN IF NOT EXISTS guardian_name text;
+ALTER TABLE consent_scope_revocations ADD COLUMN IF NOT EXISTS method text;
+ALTER TABLE consent_scope_revocations ADD COLUMN IF NOT EXISTS reference text;
+DO $$ BEGIN
+ IF NOT EXISTS(SELECT 1 FROM pg_constraint WHERE conname='consent_scope_revocations_method_check') THEN
+  ALTER TABLE consent_scope_revocations ADD CONSTRAINT consent_scope_revocations_method_check CHECK(method IS NULL OR method IN ('online_guardian','offline_signed','synthetic'));
+ END IF;
+END $$;
 CREATE INDEX IF NOT EXISTS consent_scope_revocations_family ON consent_scope_revocations(family_id, scope);
 CREATE TABLE IF NOT EXISTS invitations(token_hash text PRIMARY KEY,family_id uuid NOT NULL REFERENCES families(id) ON DELETE CASCADE,role text NOT NULL CHECK(role IN ('parent','student','teacher')),expires_at timestamptz NOT NULL,used_at timestamptz,created_by uuid REFERENCES users(id));
 ALTER TABLE invitations ADD COLUMN IF NOT EXISTS accepted_by uuid REFERENCES users(id);

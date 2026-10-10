@@ -7,7 +7,7 @@ import { audit, hashPassword, hashToken } from "./auth";
 import { getConfig } from "./config";
 import { query, transaction } from "./db";
 import { HttpError, requireRole, validateId } from "./http";
-import { ACTIVE_CONSENT_ROWS_SQL, CONSENT_SCOPES, PARENT_REPORT_SCOPE, REQUIRED_WITHDRAW_SCOPES, hasGranted, insertConsentRecords, rejectBundledConsent, scopeList, scopeNotRevokedSql, type ConsentScope } from "./consent";
+import { ACTIVE_CONSENT_ROWS_SQL, CONSENT_SCOPES, PARENT_REPORT_SCOPE, REQUIRED_WITHDRAW_SCOPES, hasGranted, insertConsentRecords, rejectBundledConsent, scopeNotRevokedSql, type ConsentScope } from "./consent";
 import { noticeVersion } from "./privacy";
 import type { VerifiedClerkIdentity } from "./clerk-auth";
 import { assertTriadRegistrationReady, enqueueReportsHeldForConsent, joinTriadFamilyInTransaction, lockRegistrationActor, requireRegistrationConsent, type RegistrationFamily } from "./triad";
@@ -51,19 +51,17 @@ async function assertConsentAuthority(client:PoolClient,actor:Actor,familyId:str
     throw new HttpError(403,"账号已停用，请联系服务人员。","ACCOUNT_REVOKED");
   }
 }
-async function withdrawConsentScope(client:PoolClient,actor:Actor,familyId:string,scope:ConsentScope):Promise<void>{
-  const carriers=await client.query<{id:string;scopes:unknown}>(`SELECT c.id, c.scopes FROM consents c WHERE c.family_id=$1 AND c.revoked_at IS NULL AND c.scopes @> $2::jsonb AND ${scopeNotRevokedSql("c","$3")}`,[familyId,JSON.stringify([scope]),scope]);
+async function withdrawConsentScope(client:PoolClient,actor:Actor,familyId:string,scope:ConsentScope,evidence:{guardianName:string;method:"online_guardian"|"offline_signed";reference:string|null}):Promise<void>{
+  const carriers=await client.query<{id:string}>(`SELECT c.id, c.scopes FROM consents c WHERE c.family_id=$1 AND c.revoked_at IS NULL AND c.scopes @> $2::jsonb AND ${scopeNotRevokedSql("c","$3")}`,[familyId,JSON.stringify([scope]),scope]);
   for(const row of carriers.rows){
-    const listed=scopeList(row.scopes);
-    const prior=await client.query<{scope:string}>("SELECT scope FROM consent_scope_revocations WHERE consent_id=$1",[row.id]);
-    const revoked=new Set(prior.rows.map(item=>item.scope));
-    const remaining=listed.filter(item=>item!==scope&&!revoked.has(item));
-    if(remaining.length===0){
-      await client.query("UPDATE consents SET revoked_at=now() WHERE id=$1 AND revoked_at IS NULL",[row.id]);
-      continue;
-    }
-    await client.query("INSERT INTO consent_scope_revocations(id,consent_id,family_id,scope,actor_id) VALUES($1,$2,$3,$4,$5)",[randomUUID(),row.id,familyId,scope,actor.id]);
+    await client.query("INSERT INTO consent_scope_revocations(id,consent_id,family_id,scope,actor_id,guardian_name,method,reference) VALUES($1,$2,$3,$4,$5,$6,$7,$8)",[randomUUID(),row.id,familyId,scope,actor.id,evidence.guardianName,evidence.method,evidence.reference]);
   }
+}
+// A single-purpose grant stays in place after withdrawal so its original columns
+// do not change. The unique scope index ignores rows only after revoked_at is set,
+// so a later grant of that same purpose retires the already-revoked row first.
+async function retireRevokedSingleScope(client:PoolClient,familyId:string,scope:ConsentScope):Promise<void>{
+  await client.query(`UPDATE consents SET revoked_at=now() WHERE family_id=$1 AND revoked_at IS NULL AND jsonb_typeof(scopes)='array' AND jsonb_array_length(scopes)=1 AND scopes @> $2::jsonb AND NOT (${scopeNotRevokedSql("consents","$3")})`,[familyId,JSON.stringify([scope]),scope]);
 }
 export async function recordConsent(actor:Actor,id:string,input:unknown){
   requireRole(actor.role,["admin","staff","parent"]);
@@ -76,12 +74,16 @@ export async function recordConsent(actor:Actor,id:string,input:unknown){
   const queued=await transaction(async client=>{
     await assertConsentAuthority(client,actor,id);
     const active=await client.query<{scopes:unknown}>(ACTIVE_CONSENT_ROWS_SQL,[id]);
+    const method: "online_guardian" | "offline_signed" = offline ? "offline_signed" : "online_guardian";
     if(d.action==="grant"){
-      if(!hasGranted(active.rows,[d.scope]))await insertConsentRecords(client,{familyId:id,actorId:actor.id,guardianName:d.guardianName,method:offline?"offline_signed":"online_guardian",reference:d.reference??null,noticeVersion,scopes:[d.scope]});
+      if(!hasGranted(active.rows,[d.scope])){
+        await retireRevokedSingleScope(client,id,d.scope);
+        await insertConsentRecords(client,{familyId:id,actorId:actor.id,guardianName:d.guardianName,method,reference:d.reference??null,noticeVersion,scopes:[d.scope]});
+      }
       return d.scope===PARENT_REPORT_SCOPE?enqueueReportsHeldForConsent(client,id):[];
     }
     if(!hasGranted(active.rows,[d.scope]))return [];
-    await withdrawConsentScope(client,actor,id,d.scope);
+    await withdrawConsentScope(client,actor,id,d.scope,{guardianName:d.guardianName,method,reference:d.reference??null});
     return [];
   });
   if(queued.length){

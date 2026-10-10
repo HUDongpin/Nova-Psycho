@@ -6,7 +6,7 @@ import {createFamily,recordConsent,deleteFamily,createInvitation,acceptInvitatio
 import {query,transaction,closeDatabase} from "../src/lib/db";
 import {getConfig} from "../src/lib/config";
 import type {Actor,ReportPayload} from "../src/domain/types";
-import {consentScopeGrantedSql} from "../src/lib/consent";
+import {ACTIVE_CONSENT_ROWS_SQL,consentScopeGrantedSql,scopeList} from "../src/lib/consent";
 import {reportDetail,reportFor} from "../src/lib/reports";
 import {readPrivatePdf} from "../src/lib/storage";
 import {processDeletionJobs,cleanOrphanReports} from "../src/lib/worker";
@@ -26,8 +26,8 @@ try{
     const during=await query<{scopes:string[]}>("SELECT scopes FROM consents WHERE family_id=$1 AND revoked_at IS NULL",[id]);
     assert.deepEqual(during.map(row=>row.scopes[0]).sort(),["assessment","parent_report","sensitive_data"]);
     await recordConsent(admin,id,{action:"withdraw",scope:"parent_report",guardianName:"合成监护人",reference:"SYNTHETIC-REGRESSION"});
-    const current=await query<{scope:string}>("SELECT scopes->>0 AS scope FROM consents WHERE family_id=$1 AND revoked_at IS NULL ORDER BY 1",[id]);
-    assert.deepEqual(current.map(row=>row.scope),["assessment","sensitive_data"]);
+    const current=await query<{scopes:unknown}>(ACTIVE_CONSENT_ROWS_SQL,[id]);
+    assert.deepEqual(current.flatMap(row=>scopeList(row.scopes)).sort(),["assessment","sensitive_data"]);
     await assert.rejects(()=>query("INSERT INTO consents(id,family_id,guardian_name,method,notice_version,scopes) VALUES($1,$2,'synthetic','synthetic','test',$3)",[randomUUID(),id,JSON.stringify(["assessment"])]),(e:unknown)=>(e as {code?:string}).code==="23505");
     await assert.rejects(()=>query("INSERT INTO consents(id,family_id,guardian_name,method,notice_version,scopes) VALUES($1,$2,'synthetic','synthetic','test','[]')",[randomUUID(),id]),(e:unknown)=>(e as {code?:string}).code==="23514");
   });
