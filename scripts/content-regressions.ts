@@ -31,7 +31,7 @@ try{
   });
   const scale=await importScale(admin,{definition:demoScale});const family=await createFamily(admin,{familyName:"isolated",childName:"合成孩子",birthDate:"2013-01-01",grade:"七年级",guardianLabel:"母亲"});
   await query("INSERT INTO memberships(family_id,user_id,role) VALUES($1,$2,'student')",[family.id,student.id]);
-  await recordConsent(admin,family.id,{accepted:true,guardianName:"合成监护人",reference:"ISOLATED_TEST",aiProcessing:false});
+  await recordConsent(admin,family.id,{assessment:true,sensitiveData:true,parentReport:true,guardianName:"合成监护人",reference:"ISOLATED_TEST",aiProcessing:false});
   const assessment=await createAssessment(admin,{familyId:family.id,respondentId:student.id,scaleVersionId:scale.id,locale:"zh-CN"});
   const removed={...demoAdvice,blocks:demoAdvice.blocks.filter(b=>b.id!=="listen")};
   await check("retired scales keep advice needed by already-assigned pending assessments",async()=>{

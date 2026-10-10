@@ -15,13 +15,13 @@ export async function workspaceFor(actor:Actor,locale:Locale){
   const familyById=new Map(families.map(f=>[f.id,f]));
   const [members,consents,assessments,reports,goals,observations,scales,staff,content,alerts,triadAnswers]=await Promise.all([
     query("SELECT m.family_id,u.id,u.name,m.role FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.family_id=ANY($1::uuid[]) AND NOT u.disabled",[ids]),
-    query("SELECT DISTINCT family_id FROM consents WHERE family_id=ANY($1::uuid[]) AND revoked_at IS NULL",[ids]),
+    query("SELECT DISTINCT family_id FROM consents WHERE family_id=ANY($1::uuid[]) AND revoked_at IS NULL GROUP BY family_id HAVING bool_or(scopes @> '[\"assessment\"]'::jsonb) AND bool_or(scopes @> '[\"sensitive_data\"]'::jsonb)",[ids]),
     query(`SELECT a.id,a.family_id,a.respondent_id,a.respondent_role,a.scale_version_id,a.status,a.created_at,a.submitted_at,a.triad_round_id,j.id AS triad_job_id,f.child_name,u.name AS respondent_name,s.definition,r.id AS report_id,
       j.state AS job_state,COALESCE(a.snapshot<>'null'::jsonb,false) AS has_snapshot,COALESCE(a.answers<>'null'::jsonb,false) AS has_answers,a.submitted_at IS NOT NULL AS has_submission,
       COALESCE(a.snapshot->'scale'->>'bundle'=$5,false) AS is_triad,(a.triad_round_id IS NOT NULL AND j.source_assessment_ids IS NOT NULL) AS has_round_sources,
-      EXISTS(SELECT 1 FROM consents c WHERE c.family_id=a.family_id AND c.revoked_at IS NULL AND c.scopes @> '["assessment","parent_report","sensitive_data"]'::jsonb) AS has_consent
+      EXISTS(SELECT 1 FROM consents c WHERE c.family_id=a.family_id AND c.revoked_at IS NULL AND c.scopes @> '["parent_report"]'::jsonb) AS has_consent
       FROM assessments a JOIN families f ON f.id=a.family_id JOIN users u ON u.id=a.respondent_id JOIN scales s ON s.id=a.scale_version_id LEFT JOIN report_jobs j ON j.assessment_id=a.id OR a.id=ANY(j.source_assessment_ids) LEFT JOIN reports r ON r.assessment_id=COALESCE(j.assessment_id,a.id) WHERE a.family_id=ANY($1::uuid[]) AND a.region=$2 AND ($3::boolean OR a.respondent_id=$4) ORDER BY a.created_at DESC`,[ids,actor.region,care,actor.id,TRIAD_BUNDLE]),
-    care?query("SELECT * FROM reports WHERE family_id=ANY($1::uuid[]) AND region=$2 ORDER BY created_at DESC",[ids,actor.region]):Promise.resolve([]),
+    care?query("SELECT * FROM reports WHERE family_id=ANY($1::uuid[]) AND region=$2 AND EXISTS (SELECT 1 FROM consents c WHERE c.family_id=reports.family_id AND c.revoked_at IS NULL AND c.scopes @> '[\"parent_report\"]'::jsonb) ORDER BY created_at DESC",[ids,actor.region]):Promise.resolve([]),
     care?query("SELECT * FROM goals WHERE family_id=ANY($1::uuid[]) ORDER BY created_at DESC, id ASC",[ids]):Promise.resolve([]),
     team?query("SELECT o.*,u.name AS author_name FROM observations o LEFT JOIN users u ON u.id=o.created_by WHERE o.family_id=ANY($1::uuid[]) ORDER BY o.created_at DESC",[ids]):Promise.resolve([]),
     query("SELECT * FROM scales ORDER BY created_at DESC"),

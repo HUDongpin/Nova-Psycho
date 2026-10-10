@@ -162,7 +162,7 @@ describe("saving a draft",()=>{
   const withOwn=()=>{
     mockQuery.mockImplementation((async(sql:string)=>{
       if(String(sql).includes("FROM assessments a JOIN scales s"))return [{id:ASSESSMENT_ID,status:"pending",definition:scale,draft_answers:{},draft_revision:0,family_id:FAMILY_ID,child_name:"c",birth_date:"2013-04-12",respondent_role:"student",region:"CN"}];
-      if(String(sql).includes("SELECT id FROM consents"))return [{id:"c1"}];
+      if(String(sql).includes("SELECT scopes FROM consents"))return [{scopes:["assessment"]},{scopes:["sensitive_data"]}];
       if(String(sql).includes("UPDATE assessments SET draft_answers"))return [{id:ASSESSMENT_ID,draft_revision:1}];
       return [];
     }) as never);
@@ -170,6 +170,14 @@ describe("saving a draft",()=>{
   it("requires guardian consent before storing answers",async()=>{
     mockQuery.mockImplementation((async(sql:string)=>{
       if(String(sql).includes("FROM assessments a JOIN scales s"))return [{id:ASSESSMENT_ID,status:"pending",definition:scale,draft_answers:{},draft_revision:0,family_id:FAMILY_ID,child_name:"c",birth_date:"2013-04-12",respondent_role:"student",region:"CN"}];
+      return [];
+    }) as never);
+    await expect(saveDraft(actor("student"),ASSESSMENT_ID,draft)).rejects.toMatchObject({code:"GUARDIAN_CONSENT_REQUIRED"});
+  });
+  it("does not store answers when only the parent report was consented",async()=>{
+    mockQuery.mockImplementation((async(sql:string)=>{
+      if(String(sql).includes("FROM assessments a JOIN scales s"))return [{id:ASSESSMENT_ID,status:"pending",definition:scale,draft_answers:{},draft_revision:0,family_id:FAMILY_ID,child_name:"c",birth_date:"2013-04-12",respondent_role:"student",region:"CN"}];
+      if(String(sql).includes("SELECT scopes FROM consents"))return [{scopes:["parent_report"]}];
       return [];
     }) as never);
     await expect(saveDraft(actor("student"),ASSESSMENT_ID,draft)).rejects.toMatchObject({code:"GUARDIAN_CONSENT_REQUIRED"});
@@ -182,7 +190,7 @@ describe("saving a draft",()=>{
   it("refuses a stale revision rather than overwriting a newer draft",async()=>{
     mockQuery.mockImplementation((async(sql:string)=>{
       if(String(sql).includes("FROM assessments a JOIN scales s"))return [{id:ASSESSMENT_ID,status:"pending",definition:scale,draft_answers:{},draft_revision:0,family_id:FAMILY_ID,child_name:"c",birth_date:"2013-04-12",respondent_role:"student",region:"CN"}];
-      if(String(sql).includes("SELECT id FROM consents"))return [{id:"c1"}];
+      if(String(sql).includes("SELECT scopes FROM consents"))return [{scopes:"[\"assessment\",\"sensitive_data\"]"}];
       return [];
     }) as never);
     await expect(saveDraft(actor("student"),ASSESSMENT_ID,draft)).rejects.toMatchObject({code:"DRAFT_CONFLICT"});
@@ -209,12 +217,41 @@ describe("submitting",()=>{
     client.query.mockImplementationOnce(async()=>({rows:[{id:ASSESSMENT_ID,status:"pending",draft_revision:5,family_id:FAMILY_ID,respondent_id:USER_ID}]}));
     await expect(submitAssessment(actor("student"),ASSESSMENT_ID,submission)).rejects.toMatchObject({code:"DRAFT_CONFLICT"});
   });
-  it("refuses to submit without the full consent scope set",async()=>{
+  it("refuses to submit without both participation consents",async()=>{
     withOwn();
     client.query.mockImplementationOnce(async()=>({rows:[{id:FAMILY_ID}]}));
-    client.query.mockImplementationOnce(async()=>({rows:[{id:ASSESSMENT_ID,status:"pending",draft_revision:0,family_id:FAMILY_ID,respondent_id:USER_ID}]}));
-    client.query.mockImplementationOnce(async()=>({rows:[{scopes:["assessment"]}]}));
+    client.query.mockImplementationOnce(async()=>({rows:[{id:ASSESSMENT_ID,status:"pending",draft_revision:0,family_id:FAMILY_ID,respondent_id:USER_ID,respondent_role:"student"}]}));
+    client.query.mockImplementationOnce(async()=>({rows:[{scopes:["assessment"]},{scopes:["parent_report"]}]}));
     await expect(submitAssessment(actor("student"),ASSESSMENT_ID,submission)).rejects.toMatchObject({code:"GUARDIAN_CONSENT_REQUIRED"});
+  });
+  it("submits without a parent report and does not queue one until that consent exists",async()=>{
+    withOwn();
+    client.query.mockImplementation(async(sql:string)=>{
+      if(sql.includes("SELECT id FROM families"))return {rows:[{id:FAMILY_ID}]};
+      if(sql.includes("SELECT a.*,r.id AS report_id"))return {rows:[{id:ASSESSMENT_ID,status:"pending",draft_revision:0,family_id:FAMILY_ID,respondent_id:USER_ID,respondent_role:"student"}]};
+      if(sql.includes("SELECT scopes FROM consents"))return {rows:[{scopes:["assessment"]},{scopes:["sensitive_data"]}]};
+      return {rows:[]};
+    });
+    await expect(submitAssessment(actor("student"),ASSESSMENT_ID,submission)).resolves.toMatchObject({status:"queued",reportId:null});
+    expect(client.query.mock.calls.some(([sql])=>String(sql).includes("INSERT INTO report_jobs"))).toBe(false);
+    const snapshot=JSON.parse(String(client.query.mock.calls.find(([sql])=>String(sql).includes("UPDATE assessments SET answers"))?.[1]?.[1]));
+    expect(snapshot.aiConsented).toBe(false);
+  });
+  it("queues the parent report when that consent is a separate row or a legacy bundle",async()=>{
+    for(const rows of [[{scopes:["assessment"]},{scopes:["sensitive_data"]},{scopes:["parent_report"]},{scopes:["ai_processing"]}],[{scopes:["assessment","parent_report","sensitive_data","ai_processing"]}]]){
+      withOwn();
+      client.query.mockReset();
+      client.query.mockImplementation(async(sql:string)=>{
+        if(sql.includes("SELECT id FROM families"))return {rows:[{id:FAMILY_ID}]};
+        if(sql.includes("SELECT a.*,r.id AS report_id"))return {rows:[{id:ASSESSMENT_ID,status:"pending",draft_revision:0,family_id:FAMILY_ID,respondent_id:USER_ID,respondent_role:"student"}]};
+        if(sql.includes("SELECT scopes FROM consents"))return {rows};
+        return {rows:[]};
+      });
+      await expect(submitAssessment(actor("student"),ASSESSMENT_ID,submission)).resolves.toMatchObject({status:"queued"});
+      expect(client.query.mock.calls.some(([sql])=>String(sql).includes("INSERT INTO report_jobs"))).toBe(true);
+      const snapshot=JSON.parse(String(client.query.mock.calls.find(([sql])=>String(sql).includes("UPDATE assessments SET answers"))?.[1]?.[1]));
+      expect(snapshot.aiConsented).toBe(true);
+    }
   });
   it("returns the existing result for an already-submitted assessment instead of re-scoring",async()=>{
     withOwn();

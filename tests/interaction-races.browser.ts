@@ -20,7 +20,7 @@ try{
  const staff=await context();const session=await call(staff,'/api/session');assert.equal(session.mode,'demo');
  await call(staff,'/api/auth/demo',{accountId:session.demoAccounts.find((a:{role:string})=>a.role==='admin').id});
  const family=await call(staff,'/api/families',{familyName:'合成竞态测试家庭',childName:'合成孩子',birthDate:`${new Date().getUTCFullYear()-7}-01-01`,grade:'小学二年级',guardianLabel:'合成家长'});
- await call(staff,`/api/families/${family.id}/consent`,{accepted:true,guardianName:'合成家长',reference:'local-synthetic-fixture'});
+ await call(staff,`/api/families/${family.id}/consent`,{assessment:true,sensitiveData:true,parentReport:true,guardianName:'合成家长',reference:'local-synthetic-fixture'});
  let token='';
  if(process.argv[3]==='logout-only'){
   const invitation=await call(staff,`/api/families/${family.id}/invites`,{role:'parent'});

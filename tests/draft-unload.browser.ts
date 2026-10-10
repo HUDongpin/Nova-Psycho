@@ -29,7 +29,7 @@ assert.equal(initial.mode, "demo");
 await call(staff, "/api/auth/demo", { accountId: initial.demoAccounts.find((account: { role: string }) => account.role === "admin").id });
 async function fixture() {
   const family = await call(staff, "/api/families", { familyName: "合成草稿离页家庭", childName: "合成孩子", birthDate: `${new Date().getUTCFullYear() - 7}-01-01`, grade: "小学二年级", guardianLabel: "合成家长" });
-  await call(staff, `/api/families/${family.id}/consent`, { accepted: true, guardianName: "合成家长", reference: "local-synthetic-fixture" });
+  await call(staff, `/api/families/${family.id}/consent`, { assessment: true, sensitiveData: true, parentReport: true, guardianName: "合成家长", reference: "local-synthetic-fixture" });
   const invitation = await call(staff, `/api/families/${family.id}/invites`, { role: "parent" });
   const contextForParent = await context();
   const token = new URLSearchParams(new URL(invitation.url).hash.slice(1)).get("token");

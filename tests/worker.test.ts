@@ -113,6 +113,7 @@ describe("processing one job",()=>{
     await processOneJob();
     const sql=String(mockQuery.mock.calls[0][0]);
     expect(sql).toContain("FOR UPDATE OF j SKIP LOCKED");
+    expect(sql).toContain("parent_report");
     expect(sql).toContain("lease_until<now()");
     expect(sql).toContain("lease_until=now()+interval '5 minutes'");
   });

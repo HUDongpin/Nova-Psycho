@@ -20,11 +20,12 @@ const CODE = "TOPE-A2B3C4D5";
 const TOKEN = "a".repeat(64);
 const actor = (role: Role): Actor => ({ id: USER, name: "Synthetic adult", role, region: "CN" });
 const principal = { subject: "user_synthetic", issuer: "https://synthetic.clerk.invalid", sessionId: "sess_synthetic", region: "CN" as const, emailVerified: true as const };
-const parentInput = { requestId: REQUEST, relationship: "母亲", childName: "Synthetic child", birthDate: "2014-01-01", grade: "小学四至六年级", accepted: true };
+const parentInput = { requestId: REQUEST, relationship: "母亲", childName: "Synthetic child", birthDate: "2014-01-01", grade: "小学四至六年级", assessment: true as const, sensitiveData: true as const, parentReport: true };
 type Member = { family_id: string; user_id: string; role: Role };
 type Task = { id: string; family_id: string; respondent_id: string; respondent_role: Role };
 let user: Actor & { disabled: boolean; demo: boolean };
 let consent: boolean;
+let consentRows: { scopes: string[] }[] | null = null;
 let scaleActive: boolean;
 let currentFamily: { id: string; birth_date: string; join_code: string | null; region: string };
 let members: Member[];
@@ -41,7 +42,7 @@ const sql = vi.fn(async (text: string, values: unknown[] = []): Promise<{ rows: 
   }
   if (text.includes("FROM families WHERE join_code=$1")) return { rows: values[0] === CODE ? [currentFamily] : [] };
   if (text.includes("FROM families WHERE id=$1")) return { rows: values[0] === currentFamily.id ? [currentFamily] : [] };
-  if (text.includes("FROM consents WHERE family_id=$1")) return { rows: consent ? [{ id: "consent" }] : [] };
+  if (text.includes("FROM consents WHERE family_id=$1")) return { rows: consent ? (consentRows ?? [{ scopes: ["assessment"] }, { scopes: ["sensitive_data"] }, { scopes: ["parent_report"] }]) : [] };
   if (text.includes("FROM memberships WHERE family_id=$1")) return { rows: members.filter(row => row.family_id === values[0]) };
   if (text.startsWith("INSERT INTO memberships")) {
     members.push({ family_id: String(values[0]), user_id: String(values[1]), role: (values[2] ?? "parent") as Role });
@@ -66,6 +67,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   user = { ...actor("teacher"), disabled: false, demo: false };
   consent = scaleActive = true;
+  consentRows = null;
   currentFamily = { id: FAMILY, birth_date: "2014-01-01", join_code: CODE, region: "CN" };
   members = []; tasks = []; createdFamily = null;
   invite = { family_id: FAMILY, role: "teacher", used_at: null, accepted_by: null, expires_at: new Date(Date.now() + 3600000) };
@@ -107,11 +109,23 @@ describe("independent accounts joining families", () => {
     await expect(triad.joinFamily(actor("teacher"), { code: CODE }, "zh-CN")).rejects.toBeInstanceOf(Error);
     expect(sql.mock.calls.some(([text]) => text.startsWith("INSERT"))).toBe(false);
   });
-  it("requires all guardian scopes before adding a family member", async () => {
+  it("requires assessment and sensitive-data consent before adding a family member", async () => {
     expect(triad).toHaveProperty("joinFamily", expect.any(Function));
     consent = false;
     await expect(triad.joinFamily(actor("teacher"), { code: CODE }, "zh-CN")).rejects.toMatchObject({ code: "GUARDIAN_CONSENT_REQUIRED" });
     expect(sql.mock.calls.some(([text]) => text.startsWith("INSERT"))).toBe(false);
+  });
+  it("lets a member join when participation consents are separate and the parent report is withheld", async () => {
+    consentRows = [{ scopes: ["assessment"] }, { scopes: ["sensitive_data"] }];
+    await expect(triad.joinFamily(actor("teacher"), { code: CODE }, "zh-CN")).resolves.toHaveProperty("familyId");
+  });
+  it("still honours a legacy combined consent row", async () => {
+    consentRows = [{ scopes: ["assessment", "parent_report", "sensitive_data"] }];
+    await expect(triad.joinFamily(actor("teacher"), { code: CODE }, "zh-CN")).resolves.toHaveProperty("familyId");
+  });
+  it("does not treat parent-report consent alone as permission to join", async () => {
+    consentRows = [{ scopes: ["parent_report"] }];
+    await expect(triad.joinFamily(actor("teacher"), { code: CODE }, "zh-CN")).rejects.toMatchObject({ code: "GUARDIAN_CONSENT_REQUIRED" });
   });
   it("does not trust a client-supplied role or region", async () => {
     expect(triad).toHaveProperty("joinFamily", expect.any(Function));
@@ -128,13 +142,19 @@ describe("existing parent creates a family", () => {
     const second = await triad.createParentFamily(actor("parent"), parentInput, "zh-CN");
     expect(second).toEqual(first);
     expect(sql.mock.calls.filter(([text]) => text.startsWith("INSERT INTO families"))).toHaveLength(1);
-    expect(sql.mock.calls.filter(([text]) => text.startsWith("INSERT INTO consents"))).toHaveLength(1);
+    expect(sql.mock.calls.filter(([text]) => text.startsWith("INSERT INTO consents")).map(([, params]) => JSON.parse(String(params![7])))).toEqual([["assessment"], ["sensitive_data"], ["parent_report"]]);
     expect(sql.mock.calls.some(([text]) => text.startsWith("INSERT INTO users"))).toBe(false);
   });
   it("refuses teacher identity and omitted guardian acceptance", async () => {
     expect(triad).toHaveProperty("createParentFamily", expect.any(Function));
     await expect(triad.createParentFamily(actor("teacher"), parentInput, "zh-CN")).rejects.toMatchObject({ code: "ROLE_DENIED" });
-    await expect(triad.createParentFamily(actor("parent"), { ...parentInput, accepted: false }, "zh-CN")).rejects.toHaveProperty("name", "ZodError");
+    await expect(triad.createParentFamily(actor("parent"), { ...parentInput, assessment: false }, "zh-CN")).rejects.toHaveProperty("name", "ZodError");
+    await expect(triad.createParentFamily(actor("parent"), { ...parentInput, sensitiveData: false }, "zh-CN")).rejects.toHaveProperty("name", "ZodError");
+  });
+  it("records participation without a parent-report row when that consent is withheld", async () => {
+    user.role = "parent";
+    await triad.createParentFamily(actor("parent"), { ...parentInput, parentReport: false, requestId: "ffffffff-ffff-4fff-8fff-ffffffffffff" }, "zh-CN");
+    expect(sql.mock.calls.filter(([text]) => text.startsWith("INSERT INTO consents")).map(([, params]) => JSON.parse(String(params![7])))).toEqual([["assessment"], ["sensitive_data"]]);
   });
   it("does not silently reuse a request ID after the child details are edited", async () => {
     user.role = "parent";

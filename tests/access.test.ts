@@ -61,15 +61,22 @@ describe("familyFor",()=>{
 });
 
 describe("consentFor",()=>{
-  it("returns true when an active consent row exists",async()=>{
-    mockQuery.mockResolvedValueOnce([{id:"c1"}]);
+  it("requires both participation purposes, including when they are separate rows",async()=>{
+    mockQuery.mockResolvedValueOnce([{scopes:["assessment"]},{scopes:["sensitive_data"]}]);
     await expect(consentFor(FAMILY_ID)).resolves.toBe(true);
     const [sql]=mockQuery.mock.calls[0];
     expect(String(sql)).toContain("revoked_at IS NULL");
-    expect(String(sql)).toContain("assessment");
-    expect(String(sql)).toContain("parent_report");
-    expect(String(sql)).toContain("sensitive_data");
-    expect(String(sql)).toContain("@>");
+    expect(String(sql)).toContain("scopes");
+  });
+
+  it("accepts a legacy combined row that still lists both participation purposes",async()=>{
+    mockQuery.mockResolvedValueOnce([{scopes:["assessment","parent_report","sensitive_data"]}]);
+    await expect(consentFor(FAMILY_ID)).resolves.toBe(true);
+  });
+
+  it("returns false when sensitive-data consent is missing",async()=>{
+    mockQuery.mockResolvedValueOnce([{scopes:["assessment","parent_report"]}]);
+    await expect(consentFor(FAMILY_ID)).resolves.toBe(false);
   });
 
   it("returns false when no consent row exists",async()=>{

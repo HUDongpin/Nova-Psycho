@@ -38,9 +38,26 @@ CREATE TABLE IF NOT EXISTS consents(
  guardian_name text NOT NULL,method text NOT NULL CHECK(method IN ('online_guardian','offline_signed','synthetic')),reference text,
  notice_version text NOT NULL,scopes jsonb NOT NULL,created_at timestamptz NOT NULL DEFAULT now(),revoked_at timestamptz
 );
-WITH ranked AS(SELECT id,row_number() OVER(PARTITION BY family_id ORDER BY created_at DESC,id DESC) AS n FROM consents WHERE revoked_at IS NULL)
+-- Each purpose is its own active row. A legacy row that still lists several
+-- purposes stays valid; do not collapse those separate rows on the next apply.
+DROP INDEX IF EXISTS one_active_family_consent;
+WITH ranked AS(
+ SELECT id,row_number() OVER(PARTITION BY family_id,(scopes #>> '{0}') ORDER BY created_at DESC,id DESC) AS n
+ FROM consents WHERE revoked_at IS NULL AND jsonb_typeof(scopes)='array' AND jsonb_array_length(scopes)=1
+)
 UPDATE consents SET revoked_at=now() FROM ranked WHERE consents.id=ranked.id AND ranked.n>1;
-CREATE UNIQUE INDEX IF NOT EXISTS one_active_family_consent ON consents(family_id) WHERE revoked_at IS NULL;
+WITH ranked AS(
+ SELECT id,row_number() OVER(PARTITION BY family_id ORDER BY created_at DESC,id DESC) AS n
+ FROM consents WHERE revoked_at IS NULL AND jsonb_typeof(scopes)='array' AND jsonb_array_length(scopes)>1
+)
+UPDATE consents SET revoked_at=now() FROM ranked WHERE consents.id=ranked.id AND ranked.n>1;
+CREATE UNIQUE INDEX IF NOT EXISTS one_active_consent_scope ON consents(family_id,(scopes #>> '{0}')) WHERE revoked_at IS NULL AND jsonb_typeof(scopes)='array' AND jsonb_array_length(scopes)=1;
+CREATE UNIQUE INDEX IF NOT EXISTS one_active_legacy_consent_bundle ON consents(family_id) WHERE revoked_at IS NULL AND jsonb_typeof(scopes)='array' AND jsonb_array_length(scopes)>1;
+DO $$ BEGIN
+ IF NOT EXISTS(SELECT 1 FROM pg_constraint WHERE conname='consents_scopes_nonempty') THEN
+  ALTER TABLE consents ADD CONSTRAINT consents_scopes_nonempty CHECK(jsonb_typeof(scopes)='array' AND jsonb_array_length(scopes)>=1);
+ END IF;
+END $$;
 CREATE TABLE IF NOT EXISTS invitations(token_hash text PRIMARY KEY,family_id uuid NOT NULL REFERENCES families(id) ON DELETE CASCADE,role text NOT NULL CHECK(role IN ('parent','student','teacher')),expires_at timestamptz NOT NULL,used_at timestamptz,created_by uuid REFERENCES users(id));
 ALTER TABLE invitations ADD COLUMN IF NOT EXISTS accepted_by uuid REFERENCES users(id);
 -- Single-use links that let an EXISTING account set a new password. Issued by an

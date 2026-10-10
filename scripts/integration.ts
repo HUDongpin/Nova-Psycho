@@ -101,7 +101,7 @@ function triadAnswers(scale:ScaleDefinition,role:RespondentRole):Record<string,S
 }
 async function registerTriad(base:string,locale:Locale):Promise<Triad>{
   const region=locale==="zh-CN"?"cn":"hk",visitor={base,cookie:""};
-  const response=await request(visitor,`/api/triad/parent?locale=${locale}`,"POST",{parentName:"合成三方家长",username:`qa_triad_${region}_parent_${nonce}`,password:randomBytes(18).toString("base64url"),relationship:"母亲",childName:"合成三方孩子",birthDate:birthDateForAge(12),grade:"初中",accepted:true});assert.equal(response.status,201);
+  const response=await request(visitor,`/api/triad/parent?locale=${locale}`,"POST",{parentName:"合成三方家长",username:`qa_triad_${region}_parent_${nonce}`,password:randomBytes(18).toString("base64url"),relationship:"母亲",childName:"合成三方孩子",birthDate:birthDateForAge(12),grade:"初中",assessment:true,sensitiveData:true,parentReport:true});assert.equal(response.status,201);
   const created=await response.json() as {familyId:string;userId:string;joinCode:string};fixtures.push({familyId:created.familyId,scenario:`triad-age-12-${region}`,deleted:false});
   const clients={parent:sessionClient(base,response)} as Record<RespondentRole,Client>;
   for(const role of ["student","teacher"] as const){const joined=await request(visitor,`/api/triad/join?locale=${locale}`,"POST",{code:created.joinCode,role,name:`合成三方${role}`,username:`qa_triad_${region}_${role}_${nonce}`,password:randomBytes(18).toString("base64url")});assert.equal(joined.status,201);clients[role]=sessionClient(base,joined);}
@@ -141,7 +141,7 @@ async function main(){
     await rejected(parent,`/api/assessments/${ownStudentTask.id}`,"GET",undefined,404,"NOT_FOUND");await rejected(student,"/api/families","POST",{},403,"ROLE_DENIED");
   });
   await check("cross-family data access and untrusted origins are rejected",async()=>{
-    await rejected(parent,`/api/families/${other.id}/consent`,"POST",{accepted:true,guardianName:"合成家长"},404,"NOT_FOUND");
+    await rejected(parent,`/api/families/${other.id}/consent`,"POST",{assessment:true,sensitiveData:true,parentReport:true,guardianName:"合成家长"},404,"NOT_FOUND");
     await rejected(parent,"/api/goals","POST",{familyId:other.id,title:"不应写入",detail:""},404,"NOT_FOUND");
     await rejected(parent,"/api/goals","POST",{familyId:ownFamily.id,title:"不应写入",detail:""},403,"ORIGIN_DENIED",{Origin:"https://untrusted.invalid"});
   });
@@ -169,7 +169,7 @@ async function main(){
         const studentInvite=await ok<{url:string}>(admin,`/api/families/${demoFamily.id}/invites`,"POST",{role:"student"});
         const studentToken=new URLSearchParams(new URL(studentInvite.url).hash.slice(1)).get("token");assert.ok(studentToken);
         await rejected(visitor,"/api/invite","POST",{token:studentToken,name:"尚未授权的合成学生",username:`qa_unconsented_${nonce}`,password:randomBytes(18).toString("base64url")},409,"GUARDIAN_CONSENT_REQUIRED");
-        await ok(client,`/api/families/${demoFamily.id}/consent`,"POST",{accepted:true,guardianName:"合成家长",aiProcessing:false});
+        await ok(client,`/api/families/${demoFamily.id}/consent`,"POST",{assessment:true,sensitiveData:true,parentReport:true,guardianName:"合成家长",aiProcessing:false});
       }
     }
   });

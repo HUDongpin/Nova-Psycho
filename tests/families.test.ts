@@ -135,7 +135,7 @@ describe("assigning an existing family",()=>{
 });
 
 describe("recording guardian consent",()=>{
-  const consent={accepted:true as const,guardianName:"Synthetic guardian"};
+  const consent={assessment:true,parentReport:true,sensitiveData:true,guardianName:"Synthetic guardian"};
   it("refuses a student or teacher",async()=>{
     for(const role of ["student","teacher"] as const){
       await expect(recordConsent(actor(role),FAMILY_ID,consent)).rejects.toMatchObject({code:"ROLE_DENIED"});
@@ -156,16 +156,27 @@ describe("recording guardian consent",()=>{
     const values=client.query.mock.calls.find(call=>String(call[0]).includes("INSERT INTO consents"))?.[1] as unknown[];
     expect(values).toContain("online_guardian");
   });
-  it("always includes the mandatory scopes and adds AI only when granted",async()=>{
+  it("records each purpose as its own row and adds AI only when granted",async()=>{
     await recordConsent(actor("parent"),FAMILY_ID,consent);
-    const withoutAi=client.query.mock.calls.find(call=>String(call[0]).includes("INSERT INTO consents"))?.[1] as unknown[];
-    expect(String(withoutAi)).toContain("assessment");
-    expect(String(withoutAi)).toContain("parent_report");
-    expect(String(withoutAi)).toContain("sensitive_data");
+    const inserts=client.query.mock.calls.filter(call=>String(call[0]).includes("INSERT INTO consents"));
+    expect(inserts).toHaveLength(3);
+    expect(inserts.map(call=>JSON.parse(String((call[1] as unknown[])[7])))).toEqual([["assessment"],["sensitive_data"],["parent_report"]]);
+    expect(inserts.every(call=>(call[1] as unknown[])[4]==="online_guardian")).toBe(true);
+    expect(inserts.every(call=>JSON.parse(String((call[1] as unknown[])[7])).length===1)).toBe(true);
     client.query.mockClear();clientCalls.length=0;
     await recordConsent(actor("parent"),FAMILY_ID,{...consent,aiProcessing:true});
-    const withAi=client.query.mock.calls.find(call=>String(call[0]).includes("INSERT INTO consents"))?.[1] as unknown[];
-    expect(String(withAi)).toContain("ai_processing");
+    const withAi=client.query.mock.calls.filter(call=>String(call[0]).includes("INSERT INTO consents"));
+    expect(withAi.map(call=>JSON.parse(String((call[1] as unknown[])[7])))).toEqual([["assessment"],["sensitive_data"],["parent_report"],["ai_processing"]]);
+  });
+  it("omits a withheld purpose and does not queue a parent report for it",async()=>{
+    await recordConsent(actor("parent"),FAMILY_ID,{...consent,parentReport:false});
+    const scopes=client.query.mock.calls.filter(call=>String(call[0]).includes("INSERT INTO consents")).map(call=>JSON.parse(String((call[1] as unknown[])[7])));
+    expect(scopes).toEqual([["assessment"],["sensitive_data"]]);
+    expect(clientCalls.some(sql=>sql.includes("a.status='queued'"))).toBe(false);
+  });
+  it("rejects a submission that grants none of the three purposes",async()=>{
+    await expect(recordConsent(actor("parent"),FAMILY_ID,{...consent,assessment:false,parentReport:false,sensitiveData:false,aiProcessing:true})).rejects.toMatchObject({code:"CONSENT_SCOPE_REQUIRED"});
+    expect(clientCalls.some(sql=>sql.includes("INSERT INTO consents"))).toBe(false);
   });
   it("revokes any previous active consent first",async()=>{
     await recordConsent(actor("parent"),FAMILY_ID,consent);

@@ -61,6 +61,7 @@ async function runReportJob(jobId?:string):Promise<ReportJobResult>{
     SELECT j.id,j.attempts>=3 AS attempt_limit_reached FROM report_jobs j JOIN assessments a ON a.id=j.assessment_id
     WHERE a.region=$2 AND ($3::uuid IS NULL OR j.id=$3) AND j.available_at<=now()
       AND (j.state='ready' OR (j.state='running' AND j.lease_until<now()))
+      AND EXISTS (SELECT 1 FROM consents c WHERE c.family_id=a.family_id AND c.revoked_at IS NULL AND c.scopes @> '["parent_report"]'::jsonb)
     ORDER BY a.submitted_at,j.created_at LIMIT 1 FOR UPDATE OF j SKIP LOCKED
   ) UPDATE report_jobs j SET state='running',attempts=LEAST(j.attempts+1,3),lease_until=now()+interval '5 minutes',claim_token=$1 FROM candidate WHERE j.id=candidate.id RETURNING j.*,candidate.attempt_limit_reached`,[token,getConfig().region,jobId??null]);
   const job=jobs[0];if(!job)return unclaimedJobResult(jobId);

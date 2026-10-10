@@ -7,9 +7,10 @@ import { audit, hashPassword, hashToken } from "./auth";
 import { getConfig } from "./config";
 import { query, transaction } from "./db";
 import { HttpError, requireRole, validateId } from "./http";
+import { insertConsentRecords, recordedScopes } from "./consent";
 import { noticeVersion } from "./privacy";
 import type { VerifiedClerkIdentity } from "./clerk-auth";
-import { assertTriadRegistrationReady, joinTriadFamilyInTransaction, lockRegistrationActor, requireRegistrationConsent, type RegistrationFamily } from "./triad";
+import { assertTriadRegistrationReady, enqueueReportsHeldForConsent, joinTriadFamilyInTransaction, lockRegistrationActor, requireRegistrationConsent, type RegistrationFamily } from "./triad";
 import { registrationName, registrationPassword, registrationUsername } from "../domain/registration";
 const short=registrationName;
 const familyInput=z.object({familyName:short,childName:short,birthDate:z.string().regex(/^\d{4}-\d{2}-\d{2}$/),grade:short,guardianLabel:short,assignedTo:z.string().uuid().optional()}).strict();
@@ -35,16 +36,23 @@ export async function assignFamily(actor:Actor,id:string,input:unknown){
 }
 export async function recordConsent(actor:Actor,id:string,input:unknown){
   requireRole(actor.role,["admin","staff","parent"]);await familyFor(actor,id);
-  const d=z.object({accepted:z.literal(true),guardianName:short,reference:z.string().trim().max(500).optional(),aiProcessing:z.boolean().optional().default(false)}).strict().parse(input);
+  const d=z.object({guardianName:short,reference:z.string().trim().max(500).optional(),assessment:z.boolean(),parentReport:z.boolean(),sensitiveData:z.boolean(),aiProcessing:z.boolean().optional().default(false)}).strict().parse(input);
   const offline=actor.role!=="parent";
   if(offline&&!d.reference)throw new HttpError(422,"请记录监护人已签署的线下授权凭据。","CONSENT_REFERENCE_REQUIRED");
-  const scopes=["assessment","parent_report","sensitive_data",...(d.aiProcessing?["ai_processing"]:[])];
-  await transaction(async client=>{
+  if(!d.assessment&&!d.parentReport&&!d.sensitiveData)throw new HttpError(422,"请至少单独同意测评、家长报告或敏感资料中的一项。","CONSENT_SCOPE_REQUIRED");
+  const scopes=recordedScopes(d);
+  const queued=await transaction(async client=>{
     const lock=await client.query("SELECT id FROM families WHERE id=$1 FOR UPDATE",[id]);
     if(!lock.rows[0])throw new HttpError(404,"该家庭已删除。","NOT_FOUND");
     await client.query("UPDATE consents SET revoked_at=now() WHERE family_id=$1 AND revoked_at IS NULL",[id]);
-    await client.query("INSERT INTO consents(id,family_id,actor_id,guardian_name,method,reference,notice_version,scopes) VALUES($1,$2,$3,$4,$5,$6,$7,$8)",[randomUUID(),id,actor.id,d.guardianName,offline?"offline_signed":"online_guardian",d.reference??null,noticeVersion,JSON.stringify(scopes)]);
-  });await audit(actor,"consent.recorded",id);return {ok:true};
+    await insertConsentRecords(client,{familyId:id,actorId:actor.id,guardianName:d.guardianName,method:offline?"offline_signed":"online_guardian",reference:d.reference??null,noticeVersion,scopes});
+    return d.parentReport?enqueueReportsHeldForConsent(client,id):[];
+  });
+  if(queued.length){
+    const {dispatchAssessmentReport}=await import("./report-dispatch");
+    for(const assessmentId of queued)await dispatchAssessmentReport(assessmentId);
+  }
+  await audit(actor,"consent.recorded",id);return {ok:true};
 }
 export async function deleteFamily(actor:Actor,id:string,input:unknown){
   requireRole(actor.role,["admin","parent"]);const family=await familyFor(actor,id);

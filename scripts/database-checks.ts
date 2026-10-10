@@ -18,15 +18,29 @@ async function check(name:string,fn:()=>Promise<void>){await fn();results.push({
 const createdFamilies=new Set<string>();
 async function newFamily(){const f=await createFamily(admin,{familyName:"并发测试家庭",childName:"并发合成孩子",birthDate:"2014-04-10",grade:"六年级",guardianLabel:"母亲"});createdFamilies.add(f.id);return f.id;}
 try{
-  await check("consent renewals serialize and allow exactly one active grant",async()=>{
+  await check("consent renewals serialize and keep one active row per purpose",async()=>{
     const id=await newFamily();
-    const grant=(allow:boolean)=>recordConsent(admin,id,{accepted:true,guardianName:"合成监护人",reference:"SYNTHETIC-REGRESSION",aiProcessing:allow});
+    const grant=(allow:boolean)=>recordConsent(admin,id,{assessment:true,sensitiveData:true,parentReport:true,guardianName:"合成监护人",reference:"SYNTHETIC-REGRESSION",aiProcessing:allow});
     await grant(true);
     await Promise.all([grant(true),grant(false),grant(true),grant(false)]);
-    assert.equal((await query("SELECT id FROM consents WHERE family_id=$1 AND revoked_at IS NULL",[id])).length,1);
+    const during=await query<{scopes:string[]}>("SELECT scopes FROM consents WHERE family_id=$1 AND revoked_at IS NULL",[id]);
+    const duringScopes=during.map(row=>row.scopes[0]);
+    assert.deepEqual(duringScopes.filter(scope=>scope!=="ai_processing").sort(),["assessment","parent_report","sensitive_data"]);
+    assert.ok(during.length===3||during.length===4);
     await grant(false);
-    const current=await query("SELECT scopes FROM consents WHERE family_id=$1 AND revoked_at IS NULL",[id]);assert.ok(!current[0].scopes.includes("ai_processing"));
-    await assert.rejects(()=>query("INSERT INTO consents(id,family_id,guardian_name,method,notice_version,scopes) VALUES($1,$2,'synthetic','synthetic','test','[]')",[randomUUID(),id]),(e:unknown)=>(e as {code?:string}).code==="23505");
+    const current=await query<{scopes:string[]}>("SELECT scopes FROM consents WHERE family_id=$1 AND revoked_at IS NULL ORDER BY scopes->>0",[id]);
+    assert.deepEqual(current.map(row=>row.scopes),[["assessment"],["parent_report"],["sensitive_data"]]);
+    await assert.rejects(()=>query("INSERT INTO consents(id,family_id,guardian_name,method,notice_version,scopes) VALUES($1,$2,'synthetic','synthetic','test',$3)",[randomUUID(),id,JSON.stringify(["assessment"])]),(e:unknown)=>(e as {code?:string}).code==="23505");
+    await assert.rejects(()=>query("INSERT INTO consents(id,family_id,guardian_name,method,notice_version,scopes) VALUES($1,$2,'synthetic','synthetic','test','[]')",[randomUUID(),id]),(e:unknown)=>(e as {code?:string}).code==="23514");
+  });
+  await check("a legacy combined consent row still grants every listed purpose",async()=>{
+    const id=await newFamily();
+    await query("INSERT INTO consents(id,family_id,guardian_name,method,notice_version,scopes) VALUES($1,$2,'synthetic','synthetic','legacy',$3)",[randomUUID(),id,JSON.stringify(["assessment","parent_report","sensitive_data"])]);
+    const rows=await query<{scopes:string[]}>("SELECT scopes FROM consents WHERE family_id=$1 AND revoked_at IS NULL",[id]);
+    assert.equal(rows.length,1);
+    assert.deepEqual(rows[0].scopes,["assessment","parent_report","sensitive_data"]);
+    const granted=await query<{ok:boolean}>("SELECT (bool_or(scopes @> '[\"assessment\"]') AND bool_or(scopes @> '[\"parent_report\"]') AND bool_or(scopes @> '[\"sensitive_data\"]')) AS ok FROM consents WHERE family_id=$1 AND revoked_at IS NULL",[id]);
+    assert.equal(granted[0].ok,true);
   });
   await check("concurrent invitation admission and deletion leave no orphan account",async()=>{
     for(let i=0;i<5;i++){

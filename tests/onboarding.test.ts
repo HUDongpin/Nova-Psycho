@@ -2,6 +2,8 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { ParentFamilyFields } from "../src/components/family-entry";
+import { ConsentForm } from "../src/components/forms";
+import type { Family } from "../src/components/api";
 import { ErrorNotice, LocaleContext, LocaleSwitch, useLocale } from "../src/components/ui";
 import { privacyNotice } from "../src/lib/privacy";
 
@@ -22,7 +24,26 @@ describe("onboarding locale and policy", () => {
     expect(html).toContain('value="小学四至六年级"');
     expect(html).toMatch(locale === "zh-HK" ? />母親<|>小學四至六年級</ : />母亲<|>小学四至六年级</);
     expect(html).toMatch(/<button type="button" class="text-link">.*(?:隐私与知情同意|私隱與知情同意)<\/button>/);
-    expect(html).toContain('type="checkbox" required=""');
+    expect(html).toContain('name="assessment"');
+    expect(html).toContain('name="sensitiveData"');
+    expect(html).toContain('name="parentReport"');
+    expect(html).not.toContain('name="accepted"');
+    expect(html.match(/type="checkbox" required=""/g)).toHaveLength(2);
+    expect(html).toContain(locale === "zh-HK" ? "我同意參與這次評估" : "我同意参与这次测评");
+    expect(html).toContain(locale === "zh-HK" ? "敏感資料" : "敏感资料");
+    expect(html).toContain(locale === "zh-HK" ? "綜合報告" : "综合报告");
+  });
+  it("records renewal consents as separate checkboxes instead of one bundled grant", () => {
+    const family: Family = { id: "f", familyName: "Synthetic family", childName: "Synthetic child", age: 12, birthDate: "2014-01-01", grade: "小学", region: "CN", guardianLabel: "Synthetic guardian", assignedTo: null, canInviteMembers: false, createdAt: "2026-01-01T00:00:00Z", consent: false, members: [] };
+    const html = renderToStaticMarkup(createElement(ConsentForm, { family, staff: false, locale: "zh-CN", onClose() {}, onDone: async () => {}, openPrivacy() {} }));
+    expect(html).toContain("我同意参与这次测评");
+    expect(html).toContain("敏感资料");
+    expect(html).toContain("综合报告");
+    expect(html).toContain("每一项单独保存");
+    expect(html).not.toContain("同意为此家庭开展测评及生成报告");
+    expect(html).toContain('type="checkbox"');
+    expect(html.match(/type="checkbox"/g)).toHaveLength(4);
+    expect(html).toContain("disabled=\"\"");
   });
   it.each(["CN", "HK", "SG"] as const)("has no reported simplified words in the traditional %s policy", region => {
     const notice = JSON.stringify(privacyNotice("HK", "zh-HK", region));

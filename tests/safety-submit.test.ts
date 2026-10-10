@@ -75,10 +75,27 @@ describe("safety at accepted triad submission",()=>{
     await submitAssessment(actor("student"),assessmentId,{answers:previewAnswers(childScale,"risk"),acknowledged:true,revision:0});
     expect(calls().some(([sql])=>sql.includes("staff_alerts"))).toBe(false);
   });
+  function readyRound(scopes: unknown[]){
+    client.query.mockImplementation(async sql=>{
+      if(sql.includes("SELECT scopes FROM consents"))return {rows:scopes.map(scope=>Array.isArray(scope)?{scopes:scope}:{scopes:[scope]})};
+      if(sql.startsWith("SELECT"))return {rows:["parent","student","teacher"].map((role,i)=>({id:`source-${i}`,respondent_role:role,snapshot:{score:{risk:true}}}))};
+      return {rows:[{id:"job"}]};
+    });
+  }
   it("does not notify again when the complete round is queued",async()=>{
-    client.query.mockImplementation(async sql=>({rows:sql.startsWith("SELECT")?["parent","student","teacher"].map((role,i)=>({id:`source-${i}`,respondent_role:role,snapshot:{score:{risk:true}}})):[{id:"job"}]}));
+    readyRound([["assessment","parent_report","sensitive_data"]]);
     await queueTriadReport(client as unknown as PoolClient,familyId,roundId);
     expect(calls().filter(([sql])=>sql.includes("INSERT INTO report_jobs"))).toHaveLength(1);
     expect(calls().some(([sql])=>sql.includes("staff_alerts")||sql.includes("safety_notified"))).toBe(false);
+  });
+  it("queues the parent report from separate consent rows",async()=>{
+    readyRound(["assessment","parent_report","sensitive_data"]);
+    await queueTriadReport(client as unknown as PoolClient,familyId,roundId);
+    expect(calls().filter(([sql])=>sql.includes("INSERT INTO report_jobs"))).toHaveLength(1);
+  });
+  it("does not queue a parent report when that consent is missing",async()=>{
+    readyRound(["assessment","sensitive_data"]);
+    await queueTriadReport(client as unknown as PoolClient,familyId,roundId);
+    expect(calls().some(([sql])=>sql.includes("INSERT INTO report_jobs"))).toBe(false);
   });
 });

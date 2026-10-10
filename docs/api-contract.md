@@ -19,7 +19,7 @@ GET `/api/workspace?locale=...` -> `{user,region,mode,families,assessments,repor
 - staff: `{id,name}`[]; contentVersions: `{id,kind,version,createdAt}`[]; summary counts derive from scoped records.
 
 POST `/api/families` `{familyName,childName,birthDate,grade,guardianLabel,assignedTo?}` -> `{id}` (admin/staff).
-POST `/api/families/:id/consent` `{accepted:true,guardianName:string,reference?:string}` -> `{ok:true}`. A parent can provide online consent. Staff/admin must include a signed-offline-consent reference; the method is recorded explicitly.
+POST `/api/families/:id/consent` `{assessment:boolean,sensitiveData:boolean,parentReport:boolean,aiProcessing?:boolean,guardianName:string,reference?:string}` -> `{ok:true}`. Each true purpose is stored as its own consent row. The submission replaces the active set. At least one of assessment, sensitive data, or the parent report is required. A parent can provide online consent. Staff/admin must include a signed-offline-consent reference; the method is recorded explicitly.
 DELETE `/api/families/:id` `{confirmation:childName}` -> `{ok:true}` (parent/admin; revokes data and related private files).
 POST `/api/families/:id/invites` `{role:'parent'|'student'|'teacher'}` -> `{url,expiresAt}` (admin/staff). Show a copyable invitation URL; never auto-send email.
 GET `/api/invite?token=...` -> `{familyName,role,region,expiresAt}`.

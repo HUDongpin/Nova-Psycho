@@ -57,6 +57,18 @@ describe("assessment scoping",()=>{
     expect(values).toContain(SELF);
     expect(values).toContain(false);
   });
+  it("gates family participation and report visibility on separate consents",async()=>{
+    await workspaceFor(actor("parent"),"zh-CN");
+    const consentSql=String(mockQuery.mock.calls.find(call=>String(call[0]).includes("DISTINCT family_id FROM consents"))![0]);
+    expect(consentSql).toContain('["assessment"]');
+    expect(consentSql).toContain('["sensitive_data"]');
+    expect(consentSql).not.toContain('["assessment","parent_report","sensitive_data"]');
+    const reportSql=String(mockQuery.mock.calls.find(call=>String(call[0]).includes("FROM reports WHERE family_id"))![0]);
+    expect(reportSql).toContain('["parent_report"]');
+    const assessmentSql=String(mockQuery.mock.calls.find(call=>String(call[0]).includes("FROM assessments a JOIN families f"))![0]);
+    expect(assessmentSql).toContain('["parent_report"]');
+    expect(assessmentSql).not.toContain('["assessment","parent_report","sensitive_data"]');
+  });
   it("lets caring roles see every assessment in their families",async()=>{
     await workspaceFor(actor("parent"),"zh-CN");
     const [,values]=mockQuery.mock.calls.find(call=>String(call[0]).includes("FROM assessments a JOIN families f"))!;
