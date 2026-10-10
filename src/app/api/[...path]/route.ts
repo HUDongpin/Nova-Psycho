@@ -4,7 +4,7 @@ import { demoScale } from "@/domain/demo";
 import { actorOf,audit,authStateOf,createClerkProfile,createLocalProfile,endSession,endTestSession,limitLogin,linkLegacyIdentity,listAuditEvents,requireActor,setPasswordSession,setTestPasswordSession,setSession,signOutClerk,hasTestSession } from "@/lib/auth";
 import { getAuthProvider,hasTestAccountLogin } from "@/lib/auth-provider";
 import { getVerifiedClerkIdentity } from "@/lib/clerk-auth";
-import { getConfig } from "@/lib/config";
+import { getConfig, isDemoMode } from "@/lib/config";
 import { query } from "@/lib/db";
 import { body,checkOrigin,handle,HttpError,json,localeOf,requireRole } from "@/lib/http";
 import { privacyNotice } from "@/lib/privacy";
@@ -29,12 +29,12 @@ async function dispatch(request:Request,context:Context):Promise<Response>{retur
     const r=await query("SELECT region FROM deployment_settings");return json({ok:r[0]?.region===config.region,region:config.region,mode:config.mode});
   }
   if(method==="GET"&&route==="session"){
-    const state=await authStateOf(request);const demoAccounts=config.mode==="demo"&&state.authProvider==="local"?await query("SELECT id,name,role FROM users WHERE demo AND region=$1 AND NOT disabled ORDER BY CASE role WHEN 'admin' THEN 1 WHEN 'staff' THEN 2 WHEN 'parent' THEN 3 WHEN 'student' THEN 4 ELSE 5 END,name",[config.region]):[];
+    const state=await authStateOf(request);const demoAccounts=isDemoMode()&&state.authProvider==="local"?await query("SELECT id,name,role FROM users WHERE demo AND region=$1 AND NOT disabled ORDER BY CASE role WHEN 'admin' THEN 1 WHEN 'staff' THEN 2 WHEN 'parent' THEN 3 WHEN 'student' THEN 4 ELSE 5 END,name",[config.region]):[];
     return json({...state,region:config.region,mode:config.mode,demoAccounts,siblingUrl:config.siblingUrl,testAccountLoginEnabled:hasTestAccountLogin()});
   }
   if(method==="GET"&&route==="privacy")return json(privacyNotice(config.region,locale,config.dataRegion,getAuthProvider()));
   if(method==="POST"&&route==="auth/demo"){
-    if(config.mode!=="demo"||getAuthProvider()!=="local")throw new HttpError(404,"未找到该入口。","NOT_FOUND");
+    if(!isDemoMode()||getAuthProvider()!=="local")throw new HttpError(404,"未找到该入口。","NOT_FOUND");
     const d=z.object({accountId:z.string().uuid()}).strict().parse(await body(request));const rows=await query("SELECT id FROM users WHERE id=$1 AND region=$2 AND demo AND NOT disabled",[d.accountId,config.region]);
     if(!rows[0])throw new HttpError(403,"演示账号不可用。","INVALID_DEMO_ACCOUNT");const response=json({ok:true});await setSession(response,rows[0].id);return response;
   }
