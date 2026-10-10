@@ -18,8 +18,21 @@ describe("throwaway database target", () => {
     expect(() => assertThrowawayTarget({ mode: "demo", databaseUrl: "postgresql://db.internal:5432/nova", aiEnabled: false })).toThrow(TestDatabaseRefused);
     expect(() => assertThrowawayTarget({ mode: "demo", databaseUrl: "postgresql://db.internal:5432/nova", aiEnabled: false })).toThrow(/loopback/);
   });
-  it("refuses a database URL with no host", () => {
-    expect(() => assertThrowawayTarget({ mode: "demo", databaseUrl: "postgresql:///nova", aiEnabled: false })).toThrow(/loopback/);
+  it("allows a local unix socket, which is the host pg would dial", () => {
+    expect(() => assertThrowawayTarget({ mode: "demo", databaseUrl: "postgresql://%2Ftmp/nova_alert_race", aiEnabled: false })).not.toThrow();
+  });
+  it("refuses a loopback URL whose host query parameter retargets the connection", () => {
+    const url = "postgresql://127.0.0.1:55461/synthetic?host=example.invalid";
+    expect(() => assertThrowawayTarget({ mode: "demo", databaseUrl: url, aiEnabled: false })).toThrow(TestDatabaseRefused);
+    expect(() => assertThrowawayTarget({ mode: "demo", databaseUrl: url, aiEnabled: false })).toThrow(/retarget/);
+  });
+  it.each([
+    "postgresql://127.0.0.1:55432/synthetic?hostaddr=8.8.8.8",
+    "postgresql://127.0.0.1:55432/synthetic?hostaddr=::1",
+    "postgresql://127.0.0.1:55432/synthetic?service=prod",
+    "postgresql://127.0.0.1:55432/synthetic?port=55461"
+  ])("refuses a retargeting parameter in %s", url => {
+    expect(() => assertThrowawayTarget({ mode: "demo", databaseUrl: url, aiEnabled: false })).toThrow(/retarget/);
   });
   it("refuses service mode", () => {
     expect(() => assertThrowawayTarget({ mode: "service", databaseUrl: loopback, aiEnabled: false })).toThrow(/NOVA_MODE is not demo/);

@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { randomUUID } from "node:crypto";
 import { deleteFamily } from "../src/lib/families";
 import { acknowledgeSafetyAlert, resolveSafetyAlert } from "../src/lib/triad";
 import { closeDatabase, pool } from "../src/lib/db";
+import { getConfig } from "../src/lib/config";
 import { HttpError } from "../src/lib/http";
-import type { Actor } from "../src/domain/types";
+import type { Actor, Region } from "../src/domain/types";
 import { prepareDatabase } from "./setup";
 import { assertThrowawayDatabase } from "./test-database-guard";
 
@@ -16,10 +19,12 @@ import { assertThrowawayDatabase } from "./test-database-guard";
 //   NOVA_REPORT_DIR=/Volumes/Mars/nova-psycho-fixes-pgtmp/reports \
 //   NOVA_REPORT_KEY=<64 hex chars> npm run test:alert-race
 
-const region = "CN" as const;
-const oldStaff: Actor = { id: randomUUID(), name: "Synthetic old staff", role: "staff", region };
-const newStaff: Actor = { id: randomUUID(), name: "Synthetic new staff", role: "staff", region };
-const admin: Actor = { id: randomUUID(), name: "Synthetic admin", role: "admin", region };
+export function raceFixture(region: Region) {
+  const oldStaff: Actor = { id: randomUUID(), name: "Synthetic old staff", role: "staff", region };
+  const newStaff: Actor = { id: randomUUID(), name: "Synthetic new staff", role: "staff", region };
+  const admin: Actor = { id: randomUUID(), name: "Synthetic admin", role: "admin", region };
+  return { region, oldStaff, newStaff, admin };
+}
 
 function isDeadlock(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && (error as { code?: string }).code === "40P01";
@@ -38,7 +43,7 @@ async function waitForFamilyLock(minWaiters: number): Promise<void> {
   throw new Error(`timed out waiting for ${minWaiters} family-row lock waiter(s)`);
 }
 
-async function seed(familyId: string, alertId: string, assignee: string) {
+async function seed(region: Region, familyId: string, alertId: string, assignee: string) {
   await pool().query(
     "INSERT INTO families(id,region,family_name,child_name,birth_date,grade,guardian_label,assigned_to) VALUES($1,$2,'Synthetic race family','Synthetic child','2014-01-02','S2','Synthetic guardian',$3)",
     [familyId, region, assignee]
@@ -46,10 +51,10 @@ async function seed(familyId: string, alertId: string, assignee: string) {
   await pool().query("INSERT INTO staff_alerts(id,family_id,region) VALUES($1,$2,$3)", [alertId, familyId, region]);
 }
 
-async function authorityWhileFamilyReassigned(action: "resolved" | "viewed") {
+async function authorityWhileFamilyReassigned(region: Region, oldStaff: Actor, newStaff: Actor, action: "resolved" | "viewed") {
   const familyId = randomUUID();
   const alertId = randomUUID();
-  await seed(familyId, alertId, oldStaff.id);
+  await seed(region, familyId, alertId, oldStaff.id);
   const holder = await pool().connect();
   let open = false;
   try {
@@ -83,10 +88,10 @@ async function authorityWhileFamilyReassigned(action: "resolved" | "viewed") {
   }
 }
 
-async function noDeadlockWithDelete() {
+async function noDeadlockWithDelete(region: Region, oldStaff: Actor, admin: Actor) {
   const familyId = randomUUID();
   const alertId = randomUUID();
-  await seed(familyId, alertId, oldStaff.id);
+  await seed(region, familyId, alertId, oldStaff.id);
   const holder = await pool().connect();
   let open = false;
   try {
@@ -114,19 +119,22 @@ async function noDeadlockWithDelete() {
 
 async function main() {
   await assertThrowawayDatabase();
+  const { region, oldStaff, newStaff, admin } = raceFixture(getConfig().region);
   await prepareDatabase();
   for (const person of [oldStaff, newStaff, admin]) {
     await pool().query("INSERT INTO users(id,region,name,role,demo) VALUES($1,$2,$3,$4,false)", [person.id, region, person.name, person.role]);
   }
-  await authorityWhileFamilyReassigned("resolved");
-  await authorityWhileFamilyReassigned("viewed");
-  await noDeadlockWithDelete();
-  console.log(JSON.stringify({ synthetic: true, resolveRefusedAfterReassignment: true, acknowledgeRefusedAfterReassignment: true, resolvedByUnchanged: true, deleteDidNotDeadlock: true }));
+  await authorityWhileFamilyReassigned(region, oldStaff, newStaff, "resolved");
+  await authorityWhileFamilyReassigned(region, oldStaff, newStaff, "viewed");
+  await noDeadlockWithDelete(region, oldStaff, admin);
+  console.log(JSON.stringify({ synthetic: true, region, resolveRefusedAfterReassignment: true, acknowledgeRefusedAfterReassignment: true, resolvedByUnchanged: true, deleteDidNotDeadlock: true }));
 }
 
-main().catch(error => {
-  console.error(error instanceof Error ? error.stack ?? error.message : "alert lock race failed");
-  process.exitCode = 1;
-}).finally(async () => {
-  await closeDatabase();
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+  main().catch(error => {
+    console.error(error instanceof Error ? error.stack ?? error.message : "alert lock race failed");
+    process.exitCode = 1;
+  }).finally(async () => {
+    await closeDatabase();
+  });
+}
