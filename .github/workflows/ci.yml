@@ -8,8 +8,6 @@ on:
 
 permissions:
   contents: read
-  # Saving the Playwright browser cache needs this scope on the workflow token.
-  actions: write
 
 concurrency:
   group: ci-${{ github.ref }}
