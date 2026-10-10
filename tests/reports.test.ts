@@ -58,6 +58,13 @@ describe("who may read a report",()=>{
     expect(String(sql)).toContain("region=$2");
     expect(values).toContain("CN");
   });
+  it("reads a staff report through assignment or the unresolved unassigned-alert fallback",async()=>{
+    await reportFor(actor("staff"),REPORT_ID);
+    const lookup=mockQuery.mock.calls.find(([sql])=>String(sql).includes("FROM families f WHERE f.id=$1"));
+    expect(String(lookup?.[0])).toContain("f.assigned_to IS NULL");
+    expect(String(lookup?.[0])).toContain("sa.resolved_at IS NULL");
+    expect(String(lookup?.[0])).not.toContain("viewed_at");
+  });
   it("still applies family scoping, so a parent cannot read another family's report",async()=>{
     mockQuery.mockImplementation((async(sql:string)=>{
       if(String(sql).includes("FROM reports WHERE id=$1"))return [row];

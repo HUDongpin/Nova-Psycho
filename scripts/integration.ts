@@ -136,7 +136,7 @@ async function main(){
     assert.equal(parentW.families.length,1);assert.equal(parentW.observations.length,0);assert.equal(parentW.staff.length,0);assert.equal(parentW.staffNotes.length,0);
     const s=await workspace(student),t=await workspace(teacher),st=await workspace(staff);
     assert.equal(s.reports.length,0);assert.equal(t.reports.length,0);assert.equal(s.goals.length,0);assert.ok(s.assessments.every(a=>a.respondentId===s.user.id));assert.ok(t.assessments.every(a=>a.respondentId===t.user.id));
-    assert.ok(st.families.every(f=>f.assignedTo===st.user.id||st.alerts.some(alert=>alert.familyId===f.id)),"Staff may see assigned families or families covered by the safety workflow");
+    assert.ok(st.families.every(f=>f.assignedTo===st.user.id||(f.assignedTo===null&&st.alerts.some(alert=>alert.familyId===f.id))),"Staff may see a family they are assigned to, or an unassigned family with an unresolved safety alert");
     const ownStudentTask=adminW.assessments.find(a=>a.respondentRole==="student"&&a.familyId===ownFamily.id);assert.ok(ownStudentTask);
     await rejected(parent,`/api/assessments/${ownStudentTask.id}`,"GET",undefined,404,"NOT_FOUND");await rejected(student,"/api/families","POST",{},403,"ROLE_DENIED");
   });

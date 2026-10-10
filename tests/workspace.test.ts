@@ -234,10 +234,11 @@ describe("administrator extras",()=>{
 });
 
 describe("safety alerts on the workbench",()=>{
-  it("asks only for alerts that nobody has marked viewed",async()=>{
+  it("asks for unresolved alerts and does not drop them when they have been acknowledged",async()=>{
     await workspaceFor(actor("staff"),"zh-CN");
     const sql=sqls().find(item=>item.includes("FROM staff_alerts a"));
-    expect(sql).toContain("a.viewed_at IS NULL");
+    expect(sql).toContain("a.resolved_at IS NULL");
+    expect(sql).not.toContain("viewed_at IS NULL");
   });
   it("does not query alerts for a parent or a student",async()=>{
     await workspaceFor(actor("parent"),"zh-CN");
@@ -258,12 +259,38 @@ describe("safety alerts on the workbench",()=>{
       mockQuery.mockClear();
       const workspace=await workspaceFor(actor(role),"zh-CN");
       expect(workspace.families[0].assignedTo).toBeNull();
-      expect(workspace.alerts).toEqual([{id:"alert-unassigned",familyId:FAMILY_ID,childName:"Synthetic child",createdAt:"2026-10-06T00:00:00.000Z"}]);
+      expect(workspace.alerts).toEqual([{id:"alert-unassigned",familyId:FAMILY_ID,childName:"Synthetic child",createdAt:"2026-10-06T00:00:00.000Z",viewedAt:null}]);
       const sql=sqls().find(item=>item.includes("FROM staff_alerts a"));
       expect(sql).toContain("a.region=$1");
-      expect(sql).toContain("a.viewed_at IS NULL");
-      expect(sql).not.toMatch(/assigned_to/);
+      expect(sql).toContain("a.resolved_at IS NULL");
+      if(role==="staff"){
+        expect(sql).toContain("f.assigned_to IS NULL");
+        expect(sql).toContain("f.assigned_to=$2");
+        expect(mockQuery.mock.calls.find(([query])=>String(query).includes("FROM staff_alerts a"))?.[1]).toEqual(["CN",SELF]);
+      }else expect(sql).not.toMatch(/assigned_to/);
     }
+  });
+  it("does not list an assigned family's alert for other regional staff",async()=>{
+    await workspaceFor(actor("staff"),"zh-CN");
+    const sql=sqls().find(item=>item.includes("FROM staff_alerts a"));
+    expect(sql).toContain("(f.assigned_to IS NULL OR f.assigned_to=$2)");
+    expect(sql).not.toContain("viewed_at IS NULL");
+  });
+  it("keeps an acknowledged unassigned alert in the payload until it is resolved",async()=>{
+    const unassigned={...familyRow,assigned_to:null,assigned_name:null};
+    mockQuery.mockImplementation((async(sql:string)=>{
+      const text=String(sql);
+      if(text.includes("FROM families f WHERE"))return [unassigned];
+      if(text.includes("FROM staff_alerts"))return [{id:"alert-1",family_id:FAMILY_ID,child_name:"Synthetic child",created_at:new Date("2026-10-06T00:00:00Z"),viewed_at:new Date("2026-10-07T00:00:00Z")}];
+      return [];
+    }) as never);
+    const workspace=await workspaceFor(actor("staff"),"zh-CN");
+    expect(workspace.families[0].assignedTo).toBeNull();
+    expect(workspace.alerts).toEqual([{id:"alert-1",familyId:FAMILY_ID,childName:"Synthetic child",createdAt:"2026-10-06T00:00:00.000Z",viewedAt:"2026-10-07T00:00:00.000Z"}]);
+    const scope=sqls().find(item=>item.includes("FROM families f WHERE"));
+    expect(scope).toContain("f.assigned_to IS NULL");
+    expect(scope).toContain("sa.resolved_at IS NULL");
+    expect(scope).not.toContain("viewed_at");
   });
   it("maps an open alert onto the workbench",async()=>{
     mockQuery.mockImplementation((async(sql:string)=>{
@@ -273,7 +300,7 @@ describe("safety alerts on the workbench",()=>{
       return [];
     }) as never);
     const workspace=await workspaceFor(actor("staff"),"zh-CN");
-    expect(workspace.alerts).toEqual([{id:"alert-1",familyId:FAMILY_ID,childName:"Synthetic child",createdAt:"2026-10-06T00:00:00.000Z"}]);
+    expect(workspace.alerts).toEqual([{id:"alert-1",familyId:FAMILY_ID,childName:"Synthetic child",createdAt:"2026-10-06T00:00:00.000Z",viewedAt:null}]);
   });
 });
 

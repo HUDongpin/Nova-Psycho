@@ -4,7 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 vi.mock("../src/lib/db", () => ({ query: vi.fn() }));
 import { query } from "../src/lib/db";
-import { acknowledgeSafetyAlert } from "../src/lib/triad";
+import { acknowledgeSafetyAlert, resolveSafetyAlert } from "../src/lib/triad";
 import { Dashboard, FamilyView } from "../src/components/workspace-views";
 import type { Family, Workspace as ClientWorkspace } from "../src/components/api";
 import type { Actor, Role } from "../src/domain/types";
@@ -81,6 +81,66 @@ describe("acknowledge safety alert", () => {
   });
 });
 
+describe("resolve safety alert", () => {
+  const unassigned = { ...familyRecord, assigned_to: null as string | null };
+  function allow(family: typeof unassigned, resolvedAt: Date | null = null) {
+    mockQuery.mockImplementation((async (sql: string) => {
+      const text = String(sql);
+      if (text.includes("FROM staff_alerts WHERE id=$1")) return [{ id: ALERT_ID, family_id: FAMILY_ID, resolved_at: resolvedAt }];
+      if (text.includes("FROM families f WHERE f.id=$1")) return [family];
+      if (text.startsWith("UPDATE staff_alerts")) return [{ id: ALERT_ID }];
+      return [];
+    }) as never);
+  }
+  it("refuses parents, students and teachers before looking anything up", async () => {
+    for (const role of ["parent", "student", "teacher"] as const) {
+      await expect(resolveSafetyAlert(actor(role), ALERT_ID)).rejects.toMatchObject({ code: "ROLE_DENIED" });
+    }
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+  it("rejects a malformed id before querying", async () => {
+    await expect(resolveSafetyAlert(actor("admin"), "nope")).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+  it("returns not found when this region has no such alert", async () => {
+    mockQuery.mockImplementation((async () => []) as never);
+    await expect(resolveSafetyAlert(actor("admin"), ALERT_ID)).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(sqls().some(sql => sql.startsWith("UPDATE"))).toBe(false);
+  });
+  it("does not resolve an alert for a family the caller cannot reach", async () => {
+    mockQuery.mockImplementation((async (sql: string) => String(sql).includes("FROM staff_alerts WHERE id=$1") ? [{ id: ALERT_ID, family_id: FAMILY_ID, resolved_at: null }] : []) as never);
+    await expect(resolveSafetyAlert(actor("staff"), ALERT_ID)).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(sqls().some(sql => sql.startsWith("UPDATE"))).toBe(false);
+    expect(sqls().some(sql => sql.includes("INSERT INTO audit_events"))).toBe(false);
+  });
+  it("refuses regional staff who can see an unassigned family but are not assigned to it", async () => {
+    allow(unassigned);
+    await expect(resolveSafetyAlert(actor("staff"), ALERT_ID)).rejects.toMatchObject({ code: "ROLE_DENIED" });
+    expect(sqls().some(sql => sql.startsWith("UPDATE"))).toBe(false);
+    expect(sqls().some(sql => sql.includes("INSERT INTO audit_events"))).toBe(false);
+  });
+  it("lets the assigned staff member close the alert", async () => {
+    allow(familyRecord);
+    await expect(resolveSafetyAlert(actor("staff"), ALERT_ID)).resolves.toEqual({ ok: true });
+    const update = mockQuery.mock.calls.find(call => String(call[0]).startsWith("UPDATE staff_alerts"));
+    expect(String(update?.[0])).toContain("resolved_at=now()");
+    expect(String(update?.[0])).toContain("resolved_at IS NULL");
+    expect(update?.[1]).toEqual([ACTOR_ID, ALERT_ID, "CN"]);
+    expect(mockQuery.mock.calls.find(call => String(call[0]).includes("INSERT INTO audit_events"))?.[1]).toEqual(["CN", ACTOR_ID, "safety.resolved", ALERT_ID]);
+  });
+  it("lets an administrator close an unassigned family's alert", async () => {
+    allow(unassigned);
+    await expect(resolveSafetyAlert(actor("admin"), ALERT_ID)).resolves.toEqual({ ok: true });
+    expect(mockQuery.mock.calls.find(call => String(call[0]).includes("INSERT INTO audit_events"))?.[1]).toEqual(["CN", ACTOR_ID, "safety.resolved", ALERT_ID]);
+  });
+  it("does not write again when the alert is already resolved", async () => {
+    allow(familyRecord, new Date("2026-10-08T00:00:00Z"));
+    await expect(resolveSafetyAlert(actor("staff"), ALERT_ID)).resolves.toEqual({ ok: true });
+    expect(sqls().some(sql => sql.startsWith("UPDATE"))).toBe(false);
+    expect(sqls().some(sql => sql.includes("INSERT INTO audit_events"))).toBe(false);
+  });
+});
+
 const clientFamily = (over: Partial<Family> = {}): ClientWorkspace["families"][number] => ({
   id: FAMILY_ID, familyName: "合成家庭", childName: "小林", age: 12, birthDate: "2014-01-02", grade: "小学", region: "CN", guardianLabel: "母亲", assignedTo: null, canInviteMembers: false, createdAt: "2026-01-01T00:00:00.000Z", consent: true, members: [], ...over,
 });
@@ -118,5 +178,33 @@ describe("safety alert controls", () => {
     const workspace = clientWorkspace("parent", [openAlert]);
     const html = markup(createElement(FamilyView, { workspace, family: workspace.families[0], locale: "zh-CN", navigate: () => undefined, openForm: () => undefined, onRefresh: async () => undefined, openPrivacy: () => undefined }));
     expect(html).not.toContain("已查看");
+    expect(html).not.toContain("已处理");
+  });
+  it("hides an acknowledged alert from the workbench while the family remains available to follow up", () => {
+    const html = markup(createElement(Dashboard, { workspace: clientWorkspace("staff", [{ ...openAlert, viewedAt: "2026-10-07T00:00:00.000Z" }]), locale: "zh-CN", navigate: () => undefined, openForm: () => undefined, onRefresh: async () => undefined }));
+    expect(html).not.toContain("需要人工查看");
+    expect(html).not.toContain("已查看 · 小林");
+  });
+  it("does not let non-assigned regional staff close the alert", () => {
+    const workspace = clientWorkspace("staff", [openAlert]);
+    const html = markup(createElement(FamilyView, { workspace, family: workspace.families[0], locale: "zh-CN", navigate: () => undefined, openForm: () => undefined, onRefresh: async () => undefined, openPrivacy: () => undefined }));
+    expect(workspace.families[0].assignedTo).toBeNull();
+    expect(html).toContain("已查看");
+    expect(html).not.toContain("已处理");
+    expect(html).not.toContain("没有负责人的同事不能再查看");
+  });
+  it("offers 已处理 to an administrator, including after acknowledgement", () => {
+    const viewed = clientWorkspace("admin", [{ ...openAlert, viewedAt: "2026-10-07T00:00:00.000Z" }]);
+    const html = markup(createElement(FamilyView, { workspace: viewed, family: viewed.families[0], locale: "zh-CN", navigate: () => undefined, openForm: () => undefined, onRefresh: async () => undefined, openPrivacy: () => undefined }));
+    expect(html).toContain("已处理");
+    expect(html).toContain("没有负责人的同事不能再查看");
+    expect(html).not.toContain("已查看");
+  });
+  it("offers 已处理 to the assigned staff member", () => {
+    const workspace = clientWorkspace("staff", [openAlert]);
+    workspace.families[0] = clientFamily({ assignedTo: ACTOR_ID });
+    const html = markup(createElement(FamilyView, { workspace, family: workspace.families[0], locale: "zh-HK", navigate: () => undefined, openForm: () => undefined, onRefresh: async () => undefined, openPrivacy: () => undefined }));
+    expect(html).toContain("已處理");
+    expect(html).toContain("沒有負責人的同事不能再查看");
   });
 });

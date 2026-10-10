@@ -27,8 +27,11 @@ export async function workspaceFor(actor:Actor,locale:Locale){
     query("SELECT * FROM scales ORDER BY created_at DESC"),
     team?query("SELECT id,name FROM users WHERE region=$1 AND role='staff' AND NOT disabled ORDER BY name",[actor.region]):Promise.resolve([]),
     actor.role==="admin"?query("SELECT id,kind,version,created_at FROM content_versions ORDER BY created_at DESC"):Promise.resolve([]),
-    // Unassigned families stay in this regional list. An immediate-danger alert must not wait for an assignee.
-    team?query("SELECT a.id,a.family_id,f.child_name,a.created_at FROM staff_alerts a JOIN families f ON f.id=a.family_id WHERE a.region=$1 AND a.viewed_at IS NULL ORDER BY a.created_at DESC",[actor.region]):Promise.resolve([]),
+    // Unassigned alerts stay with every regional admin and staff member until resolved. An assigned family's alert is not listed for other staff.
+    team?query(actor.role==="admin"
+      ?"SELECT a.id,a.family_id,f.child_name,a.created_at,a.viewed_at FROM staff_alerts a JOIN families f ON f.id=a.family_id WHERE a.region=$1 AND a.resolved_at IS NULL ORDER BY a.created_at DESC"
+      :"SELECT a.id,a.family_id,f.child_name,a.created_at,a.viewed_at FROM staff_alerts a JOIN families f ON f.id=a.family_id WHERE a.region=$1 AND a.resolved_at IS NULL AND (f.assigned_to IS NULL OR f.assigned_to=$2) ORDER BY a.created_at DESC",
+      actor.role==="admin"?[actor.region]:[actor.region,actor.id]):Promise.resolve([]),
     team?query("SELECT a.family_id,a.answers,s.definition FROM assessments a JOIN scales s ON s.id=a.scale_version_id WHERE a.family_id=ANY($1::uuid[]) AND a.region=$2 AND a.answers IS NOT NULL AND s.definition->>'bundle'=$3",[ids,actor.region,TRIAD_BUNDLE]):Promise.resolve([])
   ]);
   const scopedFamilies=families.map(f=>{
@@ -54,7 +57,7 @@ export async function workspaceFor(actor:Actor,locale:Locale){
     goals:goals.map(g=>({id:g.id,familyId:g.family_id,title:g.title,detail:g.detail,status:g.status,createdAt:iso(g.created_at)})),
     observations:observations.map(o=>({id:o.id,familyId:o.family_id,body:o.body,createdAt:iso(o.created_at),authorName:o.author_name??""})),staff,
     contentVersions:content.map(c=>({id:c.id,kind:c.kind,version:c.version,createdAt:iso(c.created_at)})),
-    alerts:alerts.map(alert=>({id:alert.id,familyId:alert.family_id,childName:alert.child_name,createdAt:iso(alert.created_at)})),
+    alerts:alerts.map(alert=>({id:alert.id,familyId:alert.family_id,childName:alert.child_name,createdAt:iso(alert.created_at),viewedAt:iso(alert.viewed_at??null)})),
     staffNotes:triadAnswers.flatMap(row=>staffOnlyText(row.definition as ScaleDefinition,(row.answers??{}) as Record<string,StoredAnswer>).map(note=>({familyId:row.family_id,label:text(note.label,locale),value:note.value}))),
     summary:{families:families.length,pendingAssessments:assessments.filter(a=>a.status==="pending").length,publishedReports:reports.length,activeGoals:goals.filter(g=>g.status==="active").length,riskReports:scopedReports.filter(r=>r.risk).length}
   };
