@@ -12,11 +12,13 @@ export interface ScaleItem {
   label: TextPair;
   observerLabel?: TextPair;
   kind?: ItemKind;
-  choices: { value: number; label: TextPair }[];
+  choices: { value: number; label: TextPair; exclusive?: boolean }[];
   reverse: boolean;
   required: boolean;
   excludeValues?: number[];
   maxChoices?: number;
+  /** Single-choice safety items must not advance on a timer. */
+  noAutoAdvance?: boolean;
   showIf?: { itemId: string; anyOf: number[] };
   page?: string;
   pageTitle?: TextPair;

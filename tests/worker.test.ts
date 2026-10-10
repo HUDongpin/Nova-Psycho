@@ -216,6 +216,8 @@ describe("fixed triad report sources",()=>{
     expect(lookup?.[1]).toEqual([sourceIds,"family","CN","round"]);
     const publish=calls.find(call=>call.sql.includes("UPDATE assessments SET status='published'"));
     expect(publish?.values).toEqual([sourceIds]);
+    expect(mockQuery.mock.calls.some(([sql])=>String(sql).includes("staff_alerts"))).toBe(false);
+    expect(calls.some(call=>call.sql.includes("staff_alerts"))).toBe(false);
   });
   it("fails an unbound legacy job without selecting historical answers or rendering",async()=>{
     configure(null);await processOneJob();

@@ -47,7 +47,7 @@ export const dictionary = {
   ops: ["报告队列", "報告隊列"], opsIntro: ["查看本区域报告生成队列与后台进程是否在运行。仅管理员可见。", "查看本區域報告產生隊列與背景程序是否在運行。僅管理員可見。"], opsNote: ["此页读取实时状态，不会修改队列。请根据警告代码排查，而不是只看绝对数量。", "此頁讀取即時狀態，不會修改隊列。請根據警告代碼排查，而不是只看絕對數量。"], opsCheckedAt: ["检查时间", "檢查時間"], opsWorker: ["报告进程", "報告程序"], opsWorkerAlive: ["运行中", "運行中"], opsWorkerDown: ["未响应", "未回應"], opsWorkerId: ["进程标识", "程序標識"], opsHeartbeatAge: ["心跳距今（秒）", "心跳距今（秒）"], opsUptime: ["已运行（秒）", "已運行（秒）"], opsCycles: ["已处理轮次", "已處理輪次"], opsJobs: ["队列计数", "隊列計數"], opsReady: ["待处理", "待處理"], opsRunning: ["处理中", "處理中"], opsDone: ["已完成", "已完成"], opsFailed: ["失败", "失敗"], opsOldestReady: ["最久等待（秒）", "最久等待（秒）"], opsExpiredLeases: ["过期租约", "過期租約"], opsWarnings: ["警告", "警告"], opsNoWarnings: ["当前没有警告。", "目前沒有警告。"], opsNone: ["无", "無"],
   healthProbe: ["基础探活", "基礎探活"], healthProbeNote: ["检查数据库连通、当前区域与运行模式。通过不代表报告进程正常；报告管线请看上方队列与进程状态。", "檢查資料庫連通、目前區域與運行模式。通過不代表報告程序正常；報告管線請看上方隊列與程序狀態。"], healthCheck: ["检查探活", "檢查探活"], healthChecking: ["正在检查…", "正在檢查…"], healthOk: ["探活通过", "探活通過"], healthFail: ["探活失败", "探活失敗"], healthRegion: ["区域", "區域"], healthMode: ["模式", "模式"],
   warn_worker_never_started: ["报告进程尚未启动", "報告程序尚未啟動"], warn_worker_stale: ["报告进程心跳过期", "報告程序心跳過期"], warn_failed_jobs: ["存在失败的报告任务", "存在失敗的報告任務"], warn_expired_leases: ["存在过期租约", "存在過期租約"], warn_queue_backlog: ["待处理任务等待过久", "待處理任務等待過久"],
-  entryTitle: ["选择你的入口", "選擇你的入口"], parentDoor: ["我是家长", "我是家長"], parentDoorNote: ["先创建家长账号，再填写家庭情况。", "先建立家長帳號，再填寫家庭情況。"], studentDoor: ["我是学生", "我是學生"], studentDoorNote: ["用家长给你的家庭编号，填写自己的感受。", "用家長給你的家庭編號，填寫自己的感受。"], teacherDoor: ["我是老师", "我是老師"], teacherDoorNote: ["先创建教师账号，收到家庭编号后再加入。", "先建立教師帳號，收到家庭編號後再加入。"], haveAccount: ["已有账号", "已有帳號"], startParent: ["开始家长问卷", "開始家長問卷"], joinStudent: ["进入学生问卷", "進入學生問卷"], joinTeacher: ["进入教师问卷", "進入教師問卷"], childName: ["孩子的姓名", "孩子的姓名"], relationship: ["与孩子的关系", "與孩子的關係"], joinCode: ["家庭编号", "家庭編號"], joinCodeHint: ["请输入家长提供的完整家庭编号，例如 TOPE-A2B3C4D5", "請輸入家長提供的完整家庭編號，例如 TOPE-A2B3C4D5"], joinCodeReady: ["请把这个编号给孩子和老师", "請把這個編號給孩子和老師"], joinCodeNote: ["孩子和老师用同一个编号，从各自的入口进入。三份都交齐后，才会生成给家长的报告。", "孩子和老師用同一個編號，從各自的入口進入。三份都交齊後，才會產生給家長的報告。"], enterWorkspace: ["进入问卷", "進入問卷"], copyCode: ["复制编号", "複製編號"], triadWaiting: ["等待另外两方", "等待另外兩方"], triadWaitingNote: ["你的回答已提交。孩子、家长和老师都交齐后，才会生成给家长的报告。", "你的回答已提交。孩子、家長和老師都交齊後，才會產生給家長的報告。"], safetyAlert: ["已提交的问卷中出现了需要人工查看的安全信号。请及时查看家庭档案并跟进，无需等待三方交齐或报告生成。", "已提交的問卷中出現了需要人工查看的安全訊號。請及時查看家庭檔案並跟進，無需等待三方交齊或報告產生。"], safetyViewed: ["已查看", "已查看"], safetyViewedNote: ["看过这份家庭档案后，确认已经看过这条安全提示。确认后，工作台上的提示会收起。", "看過這份家庭檔案後，確認已經看過這條安全提示。確認後，工作台上的提示會收起。"], staffOnlyNotes: ["只给工作人员的信息", "只給工作人員的資訊"], backToLogin: ["返回登录", "返回登入"],
+  entryTitle: ["选择你的入口", "選擇你的入口"], parentDoor: ["我是家长", "我是家長"], parentDoorNote: ["先创建家长账号，再填写家庭情况。", "先建立家長帳號，再填寫家庭情況。"], studentDoor: ["我是学生", "我是學生"], studentDoorNote: ["用家长给你的家庭编号，填写自己的感受。", "用家長給你的家庭編號，填寫自己的感受。"], teacherDoor: ["我是老师", "我是老師"], teacherDoorNote: ["先创建教师账号，收到家庭编号后再加入。", "先建立教師帳號，收到家庭編號後再加入。"], haveAccount: ["已有账号", "已有帳號"], startParent: ["开始家长问卷", "開始家長問卷"], joinStudent: ["进入学生问卷", "進入學生問卷"], joinTeacher: ["进入教师问卷", "進入教師問卷"], childName: ["孩子的姓名", "孩子的姓名"], relationship: ["与孩子的关系", "與孩子的關係"], joinCode: ["家庭编号", "家庭編號"], joinCodeHint: ["请输入家长提供的完整家庭编号，例如 TOPE-A2B3C4D5", "請輸入家長提供的完整家庭編號，例如 TOPE-A2B3C4D5"], joinCodeReady: ["请把这个编号给孩子和老师", "請把這個編號給孩子和老師"], joinCodeNote: ["孩子和老师用同一个编号，从各自的入口进入。三份都交齐后，才会生成给家长的报告。", "孩子和老師用同一個編號，從各自的入口進入。三份都交齊後，才會產生給家長的報告。"], enterWorkspace: ["进入问卷", "進入問卷"], copyCode: ["复制编号", "複製編號"], triadWaiting: ["等待另外两方", "等待另外兩方"], triadWaitingNote: ["你的回答已提交。孩子、家长和老师都交齐后，才会生成给家长的报告。", "你的回答已提交。孩子、家長和老師都交齊後，才會產生給家長的報告。"], safetyGuidanceTitle: ["请先照顾你的安全", "請先照顧你的安全"], safetyNoAutoAdvance: ["这一题不会自动翻页。请看完后再点「下一题」。", "這一題不會自動翻頁。請看完後再點「下一題」。"], safetyAlert: ["已提交的问卷中出现了需要人工查看的安全信号。请及时查看家庭档案并跟进，无需等待三方交齐或报告生成。", "已提交的問卷中出現了需要人工查看的安全訊號。請及時查看家庭檔案並跟進，無需等待三方交齊或報告產生。"], safetyViewed: ["已查看", "已查看"], safetyViewedNote: ["看过这份家庭档案后，确认已经看过这条安全提示。确认后，工作台上的提示会收起。", "看過這份家庭檔案後，確認已經看過這條安全提示。確認後，工作台上的提示會收起。"], staffOnlyNotes: ["只给工作人员的信息", "只給工作人員的資訊"], backToLogin: ["返回登录", "返回登入"],
   clerkRecoveryNote: ["请让账号本人在邮箱登录页选择“忘记密码”，通过已验证的邮箱恢复账号。", "請讓帳號本人在電郵登入頁選擇「忘記密碼」，透過已驗證的電郵恢復帳號。"], clerkRecoveryRequired: ["此服务使用邮箱登录。请前往邮箱登录页自助恢复密码，原有本地恢复链接不再适用。", "此服務使用電郵登入。請前往電郵登入頁自助恢復密碼，原有本地恢復連結不再適用。"],
   verifyEmail: ["验证邮箱", "驗證電郵"],
   testAccountLogin: ["测试账号登录", "測試帳號登入"], testAccountLoginNote: ["使用已有测试账号的用户名和密码登录。", "使用現有測試帳號的用戶名稱及密碼登入。"],
@@ -55,6 +55,20 @@ export const dictionary = {
 } as const;
 export type CopyKey = keyof typeof dictionary;
 export const copy = (locale: Locale) => (key: CopyKey): string => dictionary[key][locale === "zh-HK" ? 1 : 0];
+
+const safetyGuidanceByRegion = {
+  CN: [
+    "如果你现在感到不安全，请马上告诉身边一位你信任的大人。如果有眼前的危险，请联系当地紧急服务，例如 110 或 120。你不需要自己一个人处理。",
+    "如果你現在感到不安全，請立刻告訴身邊一位你信任的大人。如果有眼前的危險，請聯絡當地緊急服務，例如 110 或 120。你不需要自己一個人處理。"
+  ],
+  HK: [
+    "如果你现在感到不安全，请马上告诉身边一位你信任的大人。如果有眼前的危险，请联系当地紧急服务，例如 999。你不需要自己一个人处理。",
+    "如果你現在感到不安全，請立刻告訴身邊一位你信任的大人。如果有眼前的危險，請聯絡當地緊急服務，例如 999。你不需要自己一個人處理。"
+  ]
+} as const;
+export function safetyGuidanceText(region: "CN" | "HK", locale: Locale): string {
+  return safetyGuidanceByRegion[region][locale === "zh-HK" ? 1 : 0];
+}
 export const roleName = (role: Role, locale: Locale) => ({ admin: ["管理员", "管理員"], staff: ["工作人员", "工作人員"], parent: ["家长", "家長"], student: ["学生", "學生"], teacher: ["教师", "教師"] }[role][locale === "zh-HK" ? 1 : 0]);
 export const statusName = (status: AssessmentStatus, locale: Locale) => ({ pending: ["待作答", "待作答"], queued: ["报告生成中", "報告產生中"], published: ["已完成", "已完成"], failed: ["生成失败", "產生失敗"] }[status][locale === "zh-HK" ? 1 : 0]);
 export function formatDate(value: string, locale: Locale, withTime = false): string { const date = new Date(value); return Number.isNaN(date.getTime()) ? value : new Intl.DateTimeFormat(locale, { year: "numeric", month: "short", day: "numeric", ...(withTime ? { hour: "2-digit", minute: "2-digit" } as const : {}) }).format(date); }

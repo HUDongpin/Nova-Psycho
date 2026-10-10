@@ -91,6 +91,12 @@ const openAlert = { id: ALERT_ID, familyId: FAMILY_ID, childName: "小林", crea
 const markup = (node: ReactNode) => renderToStaticMarkup(node);
 
 describe("safety alert controls", () => {
+  it("lists an unassigned family's alert for staff", () => {
+    const html = markup(createElement(Dashboard, { workspace: clientWorkspace("staff", [openAlert]), locale: "zh-CN", navigate: () => undefined, openForm: () => undefined, onRefresh: async () => undefined }));
+    expect(clientWorkspace("staff", [openAlert]).families[0].assignedTo).toBeNull();
+    expect(html).toContain("需要人工查看");
+    expect(html).toContain("小林");
+  });
   it("puts 已查看 next to the child name on the workbench", () => {
     const html = markup(createElement(Dashboard, { workspace: clientWorkspace("staff", [openAlert]), locale: "zh-CN", navigate: () => undefined, openForm: () => undefined, onRefresh: async () => undefined }));
     expect(html).toContain("小林");

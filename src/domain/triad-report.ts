@@ -165,9 +165,12 @@ export function previewAnswers(scale: ScaleDefinition, mode: "calm" | "risk" = "
     const risks = scale.riskRules.filter(rule => rule.itemId === item.id).flatMap(rule => rule.values);
     if (kind === "text") { answers[item.id] = item.report === "staff" ? "13800001111" : "想被理解"; continue; }
     if (kind === "multi") {
+      const exclusive = new Set(item.choices.filter(choice => choice.exclusive).map(choice => choice.value));
       const pool = item.choices.map(choice => choice.value).filter(value => mode === "risk" ? risks.includes(value) : !risks.includes(value));
-      const picked = (pool.length ? pool : item.choices.map(choice => choice.value)).slice(0, item.maxChoices ?? 1);
-      answers[item.id] = picked;
+      const source = pool.length ? pool : item.choices.map(choice => choice.value);
+      const open = source.filter(value => !exclusive.has(value));
+      const limit = item.maxChoices ?? (open.length || 1);
+      answers[item.id] = (open.length ? open : source).slice(0, limit);
       continue;
     }
     const usable = item.choices.map(choice => choice.value).filter(value => !item.excludeValues?.includes(value) && (mode === "risk" || !risks.includes(value)));
