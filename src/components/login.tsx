@@ -8,8 +8,12 @@ import { api, type Locale, type Session } from "./api";
 import { copy, roleName } from "./copy";
 import { Brand, ErrorNotice, LocaleSwitch, PrivacyModal, useMutation } from "./ui";
 function demoLoginAccounts(accounts: Session["demoAccounts"]) {
-  const pick = (role: Session["demoAccounts"][number]["role"], hint?: string) => accounts.find(account => account.role === role && (hint === undefined || account.name.includes(hint))) ?? accounts.find(account => account.role === role);
-  return [pick("parent", "林"), pick("student", "林"), pick("teacher")].filter(account => account !== undefined);
+  // One door per role. 林 is the showcase family. 陈/陳 is that family's seeded case worker; the other seeded staff account stays off this screen.
+  const named = (role: Session["demoAccounts"][number]["role"], hints: readonly string[]) => {
+    const matches = accounts.filter(account => account.role === role);
+    return matches.find(account => hints.some(hint => account.name.includes(hint))) ?? matches[0];
+  };
+  return [named("admin", []), named("staff", ["陈", "陳"]), named("parent", ["林"]), named("student", ["林"]), named("teacher", [])].filter(account => account !== undefined);
 }
 const doors = ["parent", "student", "teacher"] as const;
 type Door = typeof doors[number];
