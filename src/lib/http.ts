@@ -23,7 +23,7 @@ export async function handle(fn:()=>Promise<Response>):Promise<Response>{
     if(e instanceof HttpError)return json({error:e.message,code:e.code,...(e.field?{field:e.field}:{})},e.status);
     if(e instanceof ZodError){
       const field=e.issues[0]?.path[0];
-      const messages:Record<string,string>={username:"用户名须为 3 至 100 个英文字母、数字或 _ . @ -。",password:"密码须为 12 至 256 个字符。",name:"请输入你的姓名，不超过 100 个字符。",parentName:"请输入家长姓名，不超过 100 个字符。",accepted:"请先阅读并确认监护人知情同意。",birthDate:"请输入有效的孩子出生日期。"};
+      const messages:Record<string,string>={username:"用户名须为 3 至 100 个英文字母、数字或 _ . @ -。",password:"密码须为 12 至 256 个字符。",name:"请输入你的姓名，不超过 100 个字符。",parentName:"请输入家长姓名，不超过 100 个字符。",accepted:"请分别确认测评、敏感资料和家长报告同意。",assessment:"请先单独同意参与测评。",sensitiveData:"请先单独同意处理敏感资料。",parentReport:"请确认是否同意向家长提供综合报告。",birthDate:"请输入有效的孩子出生日期。"};
       const known=typeof field==="string"&&Object.hasOwn(messages,field);
       return json({error:known?messages[field]:"输入不符合要求，请检查必填项和格式。",code:"VALIDATION_FAILED",...(known?{field}:{})},422);
     }

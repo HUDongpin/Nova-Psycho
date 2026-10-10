@@ -44,7 +44,7 @@ try{
   const scale=await importScale(admin,{definition:demoScale});
   const family=await createFamily(admin,{familyName:"isolated retry",childName:"合成孩子",birthDate:"2013-01-01",grade:"七年级",guardianLabel:"母亲",assignedTo:staff.id});
   await query("INSERT INTO memberships(family_id,user_id,role) VALUES($1,$2,'student'),($1,$3,'parent'),($1,$4,'teacher')",[family.id,student.id,parent.id,teacher.id]);
-  await recordConsent(admin,family.id,{accepted:true,guardianName:"合成监护人",reference:"ISOLATED_RETRY",aiProcessing:false});
+  for(const scope of ["assessment","sensitive_data","parent_report"])await recordConsent(admin,family.id,{action:"grant",scope,guardianName:"合成监护人",reference:"ISOLATED_RETRY"});
   const assessment=await createAssessment(admin,{familyId:family.id,respondentId:student.id,scaleVersionId:scale.id,locale:"zh-CN"});
   const answers={q1:1,q2:2,q3:1,q4:2,q5:1,q6:2,q7:1,q8:2,q9:0};
   assert.equal((await submitAssessment(student,assessment.id,{answers,acknowledged:true,revision:0})).status,"queued");
@@ -66,7 +66,7 @@ try{
     await assert.rejects(()=>retryReport(otherStaff,assessment.id),e=>codeOf(e)==="NOT_FOUND");
     await query("UPDATE consents SET revoked_at=now() WHERE family_id=$1 AND revoked_at IS NULL",[family.id]);
     await assert.rejects(()=>retryReport(staff,assessment.id),e=>codeOf(e)==="GUARDIAN_CONSENT_REQUIRED");
-    await recordConsent(admin,family.id,{accepted:true,guardianName:"合成监护人",reference:"ISOLATED_RETRY_REGRANT",aiProcessing:false});
+    for(const scope of ["assessment","sensitive_data","parent_report"])await recordConsent(admin,family.id,{action:"grant",scope,guardianName:"合成监护人",reference:"ISOLATED_RETRY_REGRANT"});
     assert.equal((await query("SELECT status FROM assessments WHERE id=$1",[assessment.id]))[0].status,"failed");
     assert.deepEqual((await query("SELECT state,attempts FROM report_jobs WHERE assessment_id=$1",[assessment.id]))[0],beforeJob);
     assert.deepEqual((await query("SELECT answers,snapshot,submitted_at FROM assessments WHERE id=$1",[assessment.id]))[0],frozen);

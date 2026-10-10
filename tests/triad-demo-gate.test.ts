@@ -8,17 +8,17 @@ import { transaction } from "../src/lib/db";
 import { limitLogin } from "../src/lib/auth";
 import { createParentFamily, joinClerkStudent, joinFamily, joinWithCode, startParentCase } from "../src/lib/triad";
 
-const parent = { parentName: "Synthetic parent", username: "synthetic.parent", password: "synthetic-password-1", relationship: "母亲" as const, childName: "Synthetic child", birthDate: "2014-06-01", grade: "初中" as const, accepted: true as const };
+const parent = { parentName: "Synthetic parent", username: "synthetic.parent", password: "synthetic-password-1", relationship: "母亲" as const, childName: "Synthetic child", birthDate: "2014-06-01", grade: "初中" as const, assessment: true as const, sensitiveData: true as const, parentReport: true };
 const joining = { code: "TOPE-A2B3C4D5", role: "student" as const, name: "Synthetic student", username: "synthetic.student", password: "synthetic-password-1" };
 const actor: Actor = { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", name: "Synthetic student", role: "student", region: "CN" };
 const parentActor: Actor = { ...actor, id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", name: "Synthetic parent", role: "parent" };
 const principal = { subject: "user_synthetic", issuer: "https://synthetic.clerk.invalid", sessionId: "sess_synthetic", region: "CN" as const, emailVerified: true as const };
-const familyInput = { requestId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", relationship: "母亲" as const, childName: "Synthetic child", birthDate: "2014-06-01", grade: "初中" as const, accepted: true as const };
+const familyInput = { requestId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", relationship: "母亲" as const, childName: "Synthetic child", birthDate: "2014-06-01", grade: "初中" as const, assessment: true as const, sensitiveData: true as const, parentReport: true };
 
 const sql = vi.fn(async (text: string) => {
   if (text.startsWith("SELECT id FROM scales")) return { rows: [{ id: "growth-parent@1.2.0" }] };
   if (text.startsWith("SELECT id,birth_date FROM families")) return { rows: [{ id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", birth_date: "2014-06-01" }] };
-  if (text.startsWith("SELECT id FROM consents")) return { rows: [{ id: "consent" }] };
+  if (text.includes("AS scopes FROM consents")) return { rows: [{ scopes: ["assessment", "sensitive_data", "parent_report"] }] };
   return { rows: [] };
 });
 

@@ -1,4 +1,5 @@
 import type { Actor } from "../domain/types";
+import { ACTIVE_CONSENT_ROWS_SQL, PARTICIPATION_SCOPES, hasGranted } from "./consent";
 import { query } from "./db";
 import { HttpError, validateId } from "./http";
 export interface FamilyRow {
@@ -30,6 +31,9 @@ export function ageAt(birthDate:string,at=new Date()):number{
   return age;
 }
 export const iso=(value:Date|string|null):string|null=>value===null?null:new Date(value).toISOString();
+// Answering stores the child's responses, so both participation and sensitive-data
+// consent are required. A legacy combined row still satisfies both.
 export async function consentFor(familyId:string):Promise<boolean>{
-  const rows=await query("SELECT id FROM consents WHERE family_id=$1 AND revoked_at IS NULL AND scopes @> '[\"assessment\",\"parent_report\",\"sensitive_data\"]'::jsonb LIMIT 1",[familyId]);return rows.length>0;
+  const rows=await query<{scopes:unknown}>(ACTIVE_CONSENT_ROWS_SQL,[familyId]);
+  return hasGranted(rows,PARTICIPATION_SCOPES);
 }
