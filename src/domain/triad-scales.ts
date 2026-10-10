@@ -69,10 +69,12 @@ function holdAdvance(target: Bag, ids: readonly string[]): void {
 const NONE = "以上均没有";
 const UNSURE = "不确定";
 const DECLINE = "不愿回答";
+// New row on each definition change. An assessment keeps scoring the version it was opened with.
+const TRIAD_VERSION = "1.1.0";
 
 function define(role: RespondentRole, id: string, title: string, description: string, built: Bag): ScaleDefinition {
   return {
-    id, version: "1.0.0", title: pair(title), description: pair(description), demo: false,
+    id, version: TRIAD_VERSION, title: pair(title), description: pair(description), demo: false,
     source: "2026-10 家庭、孩子与教师三方了解问卷。没有临床常模，不用于诊断。",
     rights: { digital: true, commercial: true, reference: "Operator intake, October 2026. zh-HK text is an OpenCC Hong Kong script conversion for reading, not a separately validated translation." },
     minAge: 8, maxAge: 17, regions: ["CN", "HK"], roles: [role], retakeDays: 90,
