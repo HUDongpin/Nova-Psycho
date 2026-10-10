@@ -51,6 +51,13 @@ describe("assessment rows after a triad report exists", () => {
     expect(markup).not.toContain("报告生成中");
   });
 
+  it("shows a staff age-mismatch note without printing a birth date", () => {
+    const markup = html([row({ respondentRole: "student", respondentName: "孩子", reviewFlags: ["age_mismatch"], statedAge: 15 })]);
+    expect(markup).toContain("填写的年龄是 15 岁，和出生日期不一致，请工作人员核对。");
+    expect(markup).not.toContain("出生日期是");
+    expect(html([row({ respondentRole: "student", respondentName: "孩子" })])).not.toContain("出生日期不一致");
+  });
+
   it("does not offer the parent report to the child or teacher themselves", () => {
     const markup = html([row({ id: "child", respondentRole: "student", respondentName: "孩子", reportId: null })], false);
     expect(markup).toContain("已完成提交");

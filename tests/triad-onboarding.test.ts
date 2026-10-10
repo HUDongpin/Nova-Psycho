@@ -99,7 +99,7 @@ describe("P27/P36/P42 correct family, role, locale and consent binding", () => {
     const family = sql.mock.calls.find(([text]) => text.startsWith("SELECT id,birth_date"))!;
     expect(family[0]).toContain("region=$2 FOR UPDATE"); expect(family[1]).toEqual([joining.code, "HK"]);
     const task = sql.mock.calls.find(([text]) => text.startsWith("INSERT INTO assessments"))![1]!;
-    expect(task.slice(1, 7)).toEqual(["synthetic-family", "HK", result.userId, role, role === "student" ? "growth-child@1.2.0" : "growth-teacher@1.2.0", "zh-HK"]);
+    expect(task.slice(1, 7)).toEqual(["synthetic-family", "HK", result.userId, role, role === "student" ? "growth-child@1.3.0" : "growth-teacher@1.2.0", "zh-HK"]);
   });
   it("rejects reuse of an occupied role before creating another user or task", async () => {
     roleTaken = true;

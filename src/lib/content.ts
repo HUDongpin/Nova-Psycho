@@ -6,9 +6,15 @@ import { ensureAdviceReferences,parseAdvice,parseScale,parseTemplate } from "../
 import { audit } from "./auth";
 import { query,transaction } from "./db";
 import { HttpError,requireRole } from "./http";
-export async function currentContent<T=AdviceLibrary|ReportTemplate>(kind:"advice"|"template",client?:PoolClient):Promise<ContentSnapshot<T>>{
-  const sql="SELECT id,version,content FROM content_versions WHERE kind=$1 ORDER BY created_at DESC,id DESC LIMIT 1";
-  const r=client?(await client.query(sql,[kind])).rows:await query(sql,[kind]);
+// libraryKey selects one seeded library. Omitted, this is the general library
+// (library_key IS NULL), which is what administrators publish and edit.
+export async function currentContent<T=AdviceLibrary|ReportTemplate>(kind:"advice"|"template",client?:PoolClient,libraryKey?:string|null):Promise<ContentSnapshot<T>>{
+  const keyed=typeof libraryKey==="string"&&libraryKey.length>0;
+  const sql=keyed
+    ?"SELECT id,version,content FROM content_versions WHERE kind=$1 AND library_key=$2 ORDER BY created_at DESC,id DESC LIMIT 1"
+    :"SELECT id,version,content FROM content_versions WHERE kind=$1 AND library_key IS NULL ORDER BY created_at DESC,id DESC LIMIT 1";
+  const params=keyed?[kind,libraryKey]:[kind];
+  const r=client?(await client.query(sql,params)).rows:await query(sql,params);
   if(!r[0])throw new HttpError(409,"请先配置报告内容。","CONTENT_NOT_CONFIGURED");
   return {id:r[0].id,version:r[0].version,content:r[0].content as T};
 }

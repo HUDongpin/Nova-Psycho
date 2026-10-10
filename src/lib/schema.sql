@@ -53,7 +53,17 @@ CREATE TABLE IF NOT EXISTS recovery_tokens(
 );
 CREATE INDEX IF NOT EXISTS recovery_expiry ON recovery_tokens(expires_at);
 CREATE TABLE IF NOT EXISTS scales(id text PRIMARY KEY,scale_id text NOT NULL,version text NOT NULL,definition jsonb NOT NULL,status text NOT NULL DEFAULT 'active' CHECK(status IN ('active','retired')),created_at timestamptz NOT NULL DEFAULT now(),UNIQUE(scale_id,version));
-CREATE TABLE IF NOT EXISTS content_versions(id uuid PRIMARY KEY,kind text NOT NULL CHECK(kind IN ('advice','template')),version text NOT NULL,content jsonb NOT NULL,created_at timestamptz NOT NULL DEFAULT now(),UNIQUE(kind,version));
+CREATE TABLE IF NOT EXISTS content_versions(
+ id uuid PRIMARY KEY,kind text NOT NULL CHECK(kind IN ('advice','template')),version text NOT NULL,content jsonb NOT NULL,
+ library_key text,origin text NOT NULL DEFAULT 'staff' CHECK(origin IN ('seed','staff')),created_at timestamptz NOT NULL DEFAULT now()
+);
+ALTER TABLE content_versions ADD COLUMN IF NOT EXISTS library_key text;
+ALTER TABLE content_versions ADD COLUMN IF NOT EXISTS origin text NOT NULL DEFAULT 'staff';
+ALTER TABLE content_versions DROP CONSTRAINT IF EXISTS content_versions_kind_version_key;
+ALTER TABLE content_versions DROP CONSTRAINT IF EXISTS content_versions_origin_check;
+ALTER TABLE content_versions ADD CONSTRAINT content_versions_origin_check CHECK(origin IN ('seed','staff'));
+CREATE UNIQUE INDEX IF NOT EXISTS content_versions_general_version ON content_versions(kind,version) WHERE library_key IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS content_versions_library_version ON content_versions(kind,library_key,version) WHERE library_key IS NOT NULL;
 CREATE TABLE IF NOT EXISTS triad_rounds(
  id uuid PRIMARY KEY,family_id uuid NOT NULL REFERENCES families(id) ON DELETE CASCADE,region text NOT NULL,
  created_at timestamptz NOT NULL DEFAULT now(),UNIQUE(id,family_id,region)

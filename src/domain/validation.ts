@@ -10,6 +10,7 @@ const item=z.object({
   reverse:z.boolean(),required:z.boolean(),excludeValues:z.array(z.number().int()).max(10).optional(),
   maxChoices:z.number().int().min(1).max(20).optional(),noAutoAdvance:z.boolean().optional(),
   showIf:z.object({itemId:key,anyOf:z.array(z.number().int()).min(1).max(20)}).strict().optional(),
+  visibleFromAge:z.number().int().min(0).max(25).optional(),
   page:z.string().trim().min(1).max(80).optional(),pageTitle:localized.optional(),panel:localized.optional(),
   shuffle:z.boolean().optional(),gate:z.number().int().optional(),report:z.enum(["omit","words","situation","priorities","staff"]).optional()
 }).strict();

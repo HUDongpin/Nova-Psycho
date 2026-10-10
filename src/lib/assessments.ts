@@ -3,6 +3,7 @@ import type { PoolClient } from "pg";
 import { z } from "zod";
 import type { Actor,AdviceLibrary,AssessmentSnapshot,Locale,ReportTemplate,RespondentRole,ScaleDefinition } from "../domain/types";
 import { text } from "../domain/types";
+import { statedAgeMismatch } from "../domain/age-review";
 import { scoreAssessment,ScoringError,validateAnswers } from "../domain/scoring";
 import { surveyDefinition } from "../domain/survey";
 import { TRIAD_BUNDLE } from "../domain/triad-report";
@@ -13,6 +14,7 @@ import { ageAt,canManageFamilyReports,consentFor,familyFor } from "./access";
 import { audit } from "./auth";
 import { isDemoMode } from "./config";
 import { effectiveDemo, normValidated } from "../domain/validation";
+import { TRIAD_LIBRARY_KEY } from "./content-seed";
 import { currentContent,getScale,lockContent } from "./content";
 import { query,transaction } from "./db";
 import { HttpError,requireRole,validateId } from "./http";
@@ -95,7 +97,7 @@ export async function assessmentDetail(actor:Actor,id:string,locale:Locale){
     const jobs=await query("SELECT id FROM report_jobs WHERE assessment_id=$1 OR $1=ANY(source_assessment_ids) LIMIT 1",[id]);
     phase=jobs[0]?"reporting":"waiting";
   }
-  return {id,status:a.status,childName:a.child_name,scaleTitle:text(s.title,locale),demo:effectiveDemo(s),description:text(s.description,locale),surveyJson:surveyDefinition(s,a.respondent_role,locale),draftAnswers:a.status==="pending"?a.draft_answers:{},draftRevision:a.draft_revision,consentRequired:!await consentFor(a.family_id),phase,safetyGuidance};
+  return {id,status:a.status,childName:a.child_name,scaleTitle:text(s.title,locale),demo:effectiveDemo(s),description:text(s.description,locale),surveyJson:surveyDefinition(s,a.respondent_role,locale,{age:ageAt(String(a.birth_date).slice(0,10))}),draftAnswers:a.status==="pending"?a.draft_answers:{},draftRevision:a.draft_revision,consentRequired:!await consentFor(a.family_id),phase,safetyGuidance};
 }
 export async function saveDraft(actor:Actor,id:string,input:unknown){
   const {answers,revision}=z.object({answers:answerSchema,acknowledged:z.literal(true),revision:z.number().int().nonnegative()}).strict().parse(input),a=await ownAssessment(actor,id);
@@ -120,14 +122,17 @@ export async function submitAssessment(actor:Actor,id:string,input:unknown){
     const consent=await client.query("SELECT scopes FROM consents WHERE family_id=$1 AND revoked_at IS NULL ORDER BY created_at DESC LIMIT 1",[a.family_id]);
     const scopes=consent.rows[0]?.scopes as string[]|undefined;
     if(!scopes||!["assessment","parent_report","sensitive_data"].every(s=>scopes.includes(s)))throw new HttpError(409,"请先完成监护人授权。","GUARDIAN_CONSENT_REQUIRED");
-    let score;try{score=scoreAssessment(scale,d.answers,{age:ageAt(family.birth_date),region:actor.region,role:a.respondent_role});}catch(e){if(e instanceof ScoringError)throw new HttpError(422,"答案格式不符合量表要求。","INVALID_ANSWERS");throw e;}
+    const age=ageAt(String(family.birth_date).slice(0,10));
+    let score;try{score=scoreAssessment(scale,d.answers,{age,region:actor.region,role:a.respondent_role});}catch(e){if(e instanceof ScoringError)throw new HttpError(422,"答案格式不符合量表要求。","INVALID_ANSWERS");throw e;}
     if(score.status==="ineligible")throw new HttpError(422,"当前量表不适用于此孩子。","INELIGIBLE");
+    if(statedAgeMismatch(scale,d.answers,age))score={...score,reviewFlags:["age_mismatch" as const]};
     if(scale.items.some(item=>item.gate!==undefined&&d.answers[item.id]!==item.gate))throw new HttpError(422,"需要先同意参加这次了解，才能提交。","ENTRY_GATE");
     if(scale.bundle===TRIAD_BUNDLE&&score.status!=="valid")throw new HttpError(422,"还有必答部分没完成，或某个方面的有效回答不足。选择“不确定或不适用”不会被算进分数。","INCOMPLETE_TRIAD");
     // Only a new submission depends on current content. Replays above retain the
     // accepted snapshot even when its retired scale's advice is later removed.
     await lockContent(client);
-    const advice=await currentContent<AdviceLibrary>("advice",client),template=await currentContent<ReportTemplate>("template",client);
+    const libraryKey=scale.bundle===TRIAD_BUNDLE?TRIAD_LIBRARY_KEY:null;
+    const advice=await currentContent<AdviceLibrary>("advice",client,libraryKey),template=await currentContent<ReportTemplate>("template",client,libraryKey);
     try{ensureAdviceReferences(scale,advice.content);}catch{throw new HttpError(409,"量表的报告建议配置需要更新。","ADVICE_MISMATCH");}
     const roundId=scale.bundle===TRIAD_BUNDLE?(a.triad_round_id??await triadRoundFor(client,a.family_id,a.respondent_role)):null;
     const submittedAt=new Date().toISOString();
@@ -138,6 +143,7 @@ export async function submitAssessment(actor:Actor,id:string,input:unknown){
         const alert=await client.query("INSERT INTO staff_alerts(id,family_id,region,assessment_id) VALUES($1,$2,$3,$4) ON CONFLICT(assessment_id) WHERE assessment_id IS NOT NULL DO NOTHING RETURNING id",[randomUUID(),a.family_id,actor.region,id]);
         if(alert.rows[0])await client.query("INSERT INTO audit_events(region,action,entity_id) VALUES($1,'triad.safety_notified',$2)",[actor.region,id]);
       }
+      if(score.reviewFlags?.includes("age_mismatch"))await client.query("INSERT INTO audit_events(region,action,entity_id) VALUES($1,'triad.age_mismatch',$2)",[actor.region,id]);
       await queueTriadReport(client,a.family_id,roundId);
       return {id,status:"queued",reportId:null,phase:await submissionPhase(client,id,"queued",scale),safetyGuidance:score.risk};
     }

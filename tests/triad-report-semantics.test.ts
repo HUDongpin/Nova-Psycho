@@ -191,7 +191,8 @@ describe("portrait, safety and privacy boundaries", () => {
     const before = JSON.stringify(sources);
     const report = composeTriad(sources);
     expect(JSON.stringify(sources)).toBe(before);
-    expect(sources.every(item => item.scale.version === "1.2.0" && item.scale.demo && item.scale.norm.validated === false)).toBe(true);
+    expect(sources.map(item => item.scale.version)).toEqual(["1.3.0", "1.2.0", "1.2.0"]);
+    expect(sources.every(item => item.scale.demo && item.scale.norm.validated === false)).toBe(true);
     expect(report.safety.length).toBeGreaterThan(0);
     for (const collection of [report.situations, report.priorities, report.words]) expect(collection.every(item => item.role !== "student")).toBe(true);
     for (const locale of locales) {
