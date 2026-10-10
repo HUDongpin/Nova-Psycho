@@ -309,8 +309,10 @@ async function main(){
   });
   await check("safety acknowledgement is authorized, idempotent and never duplicates alerts",async()=>{
     const alertId=alertIds.find(Boolean);assert.ok(alertId);await rejected(triad.clients.parent,`/api/alerts/${alertId}/viewed`,"POST",{},403,"ROLE_DENIED");await rejected(hkAdmin,`/api/alerts/${alertId}/viewed`,"POST",{},404,"NOT_FOUND");
-    await ok(staff,`/api/alerts/${alertId}/viewed`,"POST",{});await ok(staff,`/api/alerts/${alertId}/viewed`,"POST",{});assert.equal((await workspace(admin)).alerts.filter(alert=>alert.familyId===triad.familyId).length,2);
-    await ok(triad.clients.student,`/api/assessments/${triad.tasks.student.id}/submit`,"POST",{answers:answers.student,acknowledged:true,revision:0});assert.equal((await workspace(admin)).alerts.filter(alert=>alert.familyId===triad.familyId).length,2);assert.equal((await workspace(triad.clients.parent)).reports.filter(r=>r.familyId===triad.familyId).length,1);
+    await ok(staff,`/api/alerts/${alertId}/viewed`,"POST",{});await ok(staff,`/api/alerts/${alertId}/viewed`,"POST",{});const familyAlerts=async()=>(await workspace(admin)).alerts.filter(alert=>alert.familyId===triad.familyId);
+    const afterViewed=await familyAlerts();assert.equal(afterViewed.length,3,"Viewing an alert must not close it or duplicate it");assert.ok(afterViewed.find(alert=>alert.id===alertId)?.viewedAt,"The viewed alert must carry viewedAt");
+    await ok(triad.clients.student,`/api/assessments/${triad.tasks.student.id}/submit`,"POST",{answers:answers.student,acknowledged:true,revision:0});assert.equal((await familyAlerts()).length,3,"A repeated submit must not add an alert");assert.equal((await workspace(triad.clients.parent)).reports.filter(r=>r.familyId===triad.familyId).length,1);
+    await ok(staff,`/api/alerts/${alertId}/resolved`,"POST",{});await ok(staff,`/api/alerts/${alertId}/resolved`,"POST",{});const afterResolved=await familyAlerts();assert.equal(afterResolved.length,2,"Resolving closes exactly that alert");assert.ok(!afterResolved.some(alert=>alert.id===alertId),"The resolved alert must leave the open list");
   });
   const hkTriad=await check("Hong Kong three-party flow publishes a private combined template report",async()=>{
     const triad=await registerTriad(hk,"zh-HK");
