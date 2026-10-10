@@ -1,4 +1,4 @@
-import type { RespondentRole, ScaleDefinition, ScaleItem, StoredAnswer, TextPair, TriadReport } from "./types";
+import type { DimensionScore, Locale, RespondentRole, ScaleDefinition, ScaleDimension, ScaleItem, StoredAnswer, TextPair, TriadReport } from "./types";
 import { scoreAssessment } from "./scoring";
 import { pair } from "./zh-pair";
 
@@ -37,39 +37,59 @@ function joinLabel(role: TextPair, label: TextPair): TextPair {
   return { "zh-CN": `${role["zh-CN"]} · ${label["zh-CN"]}`, "zh-HK": `${role["zh-HK"]} · ${label["zh-HK"]}` };
 }
 
-function frequency(raw: number | null, difficulty: boolean): TextPair {
-  if (raw === null) return pair("有效回答还不到四分之三，这里先不概括。");
-  if (difficulty) {
-    if (raw >= 3) return pair("这类情况比较经常出现，值得进一步了解。");
-    if (raw >= 2) return pair("这类情况有时出现。");
-    if (raw >= 1) return pair("这类情况偶尔出现。");
-    return pair("这段时间几乎没有报告这类情况。");
+function commonAnchors(scale: ScaleDefinition, dimension: ScaleDimension): ScaleItem["choices"] | null {
+  if (dimension.aggregation !== "mean" || dimension.prorate) return null;
+  const choices: ScaleItem["choices"][] = [];
+  for (const id of dimension.items) {
+    const item = scale.items.find(candidate => candidate.id === id);
+    if (!item || (item.kind ?? "single") !== "single" || item.reverse) return null;
+    choices.push(item.choices.filter(choice => !item.excludeValues?.includes(choice.value)).sort((left, right) => left.value - right.value));
   }
-  if (raw >= 4) return pair("过去这段时间，这一方面的做法比较经常出现。");
-  if (raw >= 3) return pair("过去这段时间，这一方面有时出现。");
-  if (raw >= 2) return pair("过去这段时间，这一方面较少出现。");
-  return pair("过去这段时间，这一方面很少出现。");
+  const anchors = choices[0];
+  if (!anchors || anchors.length < 2) return null;
+  return choices.every(list => list.length === anchors.length && list.every((choice, index) => {
+    const anchor = anchors[index];
+    return choice.value === anchor.value && choice.label["zh-CN"] === anchor.label["zh-CN"] && choice.label["zh-HK"] === anchor.label["zh-HK"];
+  })) ? anchors : null;
 }
 
-function withScore(body: TextPair, raw: number, low: number, high: number, difficulty: boolean): TextPair {
-  const shown = Number.isInteger(raw) ? String(raw) : raw.toFixed(1);
-  const extra = difficulty
-    ? pair(`原始平均分 ${shown}（${low} 到 ${high}，分数越高表示这类情况越多。这不是诊断，也不是名次）。`)
-    : pair(`原始平均分 ${shown}（${low} 到 ${high}。这不是诊断，也不是和其他孩子比较的名次）。`);
-  return { "zh-CN": `${body["zh-CN"]}${extra["zh-CN"]}`, "zh-HK": `${body["zh-HK"]}${extra["zh-HK"]}` };
-}
-
-function portraitSentence(label: TextPair, raw: number | null): TextPair {
-  const template = raw === null
-    ? pair("「{name}」的有效回答还不够，这里先不概括。")
-    : raw >= 4
-      ? pair("在「{name}」里，您描述自己比较经常会这样做。")
-      : raw >= 3
-        ? pair("在「{name}」里，您描述自己有时会这样做。")
-        : pair("在「{name}」里，您描述自己较少这样做。");
+function anchorReference(scale: ScaleDefinition, dimension: ScaleDimension, raw: number, showValues: boolean): TextPair | null {
+  const anchors = commonAnchors(scale, dimension);
+  if (!anchors) return null;
+  const exact = anchors.find(choice => choice.value === raw);
+  const lower = exact ?? anchors.filter(choice => choice.value < raw).at(-1);
+  const upper = exact ?? anchors.find(choice => choice.value > raw);
+  if (!lower || !upper) return null;
+  // These are the frozen questionnaire's answer anchors, not new score bands.
+  const template = exact
+    ? pair(showValues ? "对应问卷选项 {lower}。" : "对应问卷选项{lower}。")
+    : pair(showValues ? "位于问卷选项 {lower}与 {upper}之间。" : "位于问卷选项{lower}与{upper}之间。");
+  const at = (choice: ScaleItem["choices"][number], locale: Locale) => `${showValues ? choice.value : ""}「${choice.label[locale]}」`;
   return {
-    "zh-CN": template["zh-CN"].replaceAll("{name}", label["zh-CN"]),
-    "zh-HK": template["zh-HK"].replaceAll("{name}", label["zh-HK"])
+    "zh-CN": template["zh-CN"].replace("{lower}", at(lower, "zh-CN")).replace("{upper}", at(upper, "zh-CN")),
+    "zh-HK": template["zh-HK"].replace("{lower}", at(lower, "zh-HK")).replace("{upper}", at(upper, "zh-HK"))
+  };
+}
+
+function dimensionBody(scale: ScaleDefinition, dimension: ScaleDimension, scored: DimensionScore | undefined): TextPair {
+  if (scored?.raw === null || scored?.raw === undefined) return pair("有效回答还不到四分之三，这里先不概括。");
+  const reference = anchorReference(scale, dimension, scored.raw, true);
+  const scoreLabel = dimension.aggregation === "mean" ? "原始平均分" : "原始分";
+  const template = pair(`${scoreLabel} ${scored.raw}（${scored.min} 到 ${scored.max}）${reference ? "，{reference}" : "。请结合本维度各题的回答理解。"}这不是诊断，也不是名次。`);
+  return {
+    "zh-CN": template["zh-CN"].replace("{reference}", reference?.["zh-CN"] ?? ""),
+    "zh-HK": template["zh-HK"].replace("{reference}", reference?.["zh-HK"] ?? "")
+  };
+}
+
+function portraitSentence(scale: ScaleDefinition, dimension: ScaleDimension, raw: number | null): TextPair {
+  const reference = raw === null ? null : anchorReference(scale, dimension, raw, false);
+  const template = raw === null ? pair("「{name}」的有效回答还不够，这里先不概括。")
+    : reference ? pair("在「{name}」里，本组回答的平均位置{reference}")
+      : pair("在「{name}」里，请结合本组各题的回答理解，这里不作统一概括。");
+  return {
+    "zh-CN": template["zh-CN"].replace("{name}", dimension.label["zh-CN"]).replace("{reference}", reference?.["zh-CN"] ?? ""),
+    "zh-HK": template["zh-HK"].replace("{name}", dimension.label["zh-HK"]).replace("{reference}", reference?.["zh-HK"] ?? "")
   };
 }
 
@@ -90,39 +110,36 @@ export function composeTriad(sources: TriadSource[]): TriadReport {
     const views = ordered.flatMap(source => source.scale.dimensions.filter(dimension => dimension.domain === key).map(dimension => {
       const scored = source.score.dimensions.find(item => item.key === dimension.key);
       const raw = scored?.raw ?? null;
-      const difficulty = dimension.higherMeans === "more_support";
-      const body = frequency(raw, difficulty);
       return {
         role: source.role,
         label: joinLabel(ROLE_LABEL[source.role], dimension.label),
-        body: raw === null ? body : withScore(body, raw, scored?.min ?? 0, scored?.max ?? 0, difficulty),
+        body: dimensionBody(source.scale, dimension, scored),
         raw,
         submittedAt: source.submittedAt
       };
     }));
     if (!views.length) return [];
-    const numbers = views.flatMap(view => view.raw === null ? [] : [view.raw]);
-    const note = numbers.length >= 2 && Math.max(...numbers) - Math.min(...numbers) >= 1.5
-      ? pair("这几方看到的情况相差比较明显。这不代表谁在撒谎。家里、学校和孩子自己的感受可以不一样，适合一起核对具体情境。")
-      : null;
-    return [{ key, label: pair(label), note, views }];
+    // A domain can contain different subdimensions and observation windows.
+    // Keep each view without inferring cross-respondent disagreement from a spread.
+    return [{ key, label: pair(label), note: null, views }];
   });
   const portrait = ordered.filter(source => source.role === "parent").flatMap(source => source.scale.dimensions.filter(dimension => dimension.domain === "portrait").map(dimension => {
     const raw = source.score.dimensions.find(item => item.key === dimension.key)?.raw ?? null;
-    return { heading: dimension.label, body: portraitSentence(dimension.label, raw) };
+    return { heading: dimension.label, body: portraitSentence(source.scale, dimension, raw) };
   }));
-  const situations = ordered.flatMap(source => source.scale.items.filter(item => item.report === "situation").flatMap(item => {
+  const adultSources = ordered.filter(source => source.role === "parent" || source.role === "teacher");
+  const situations = adultSources.flatMap(source => source.scale.items.filter(item => item.report === "situation").flatMap(item => {
     const value = source.answers[item.id];
     const choice = typeof value === "number" ? choiceLabel(item, value) : null;
     return choice ? [{ role: source.role, prompt: item.label, choice }] : [];
   }));
-  const priorities = ordered.flatMap(source => source.scale.items.filter(item => item.report === "priorities").flatMap(item => {
+  const priorities = adultSources.flatMap(source => source.scale.items.filter(item => item.report === "priorities").flatMap(item => {
     const value = source.answers[item.id];
     if (!Array.isArray(value)) return [];
     const choices = value.flatMap(entry => { const label = choiceLabel(item, entry); return label ? [label] : []; });
     return choices.length ? [{ role: source.role, prompt: item.label, choices }] : [];
   }));
-  const words = ordered.flatMap(source => source.scale.items.filter(item => item.report === "words").flatMap(item => {
+  const words = adultSources.flatMap(source => source.scale.items.filter(item => item.report === "words").flatMap(item => {
     const value = source.answers[item.id];
     return typeof value === "string" && value.trim() ? [{ role: source.role, prompt: item.label, value: value.trim() }] : [];
   }));
@@ -166,4 +183,3 @@ export function staffOnlyText(scale: ScaleDefinition, answers: Record<string, St
     return typeof value === "string" && value.trim() ? [{ label: item.label, value: value.trim() }] : [];
   });
 }
-

@@ -4,6 +4,12 @@ import { HttpError, validateId } from "./http";
 export interface FamilyRow {
   id:string;region:"CN"|"HK";family_name:string;child_name:string;birth_date:string;grade:string;guardian_label:string;assigned_to:string|null;join_code?:string|null;created_at:Date;
 }
+export function canManageFamilyReports(actor:Actor,family:Pick<FamilyRow,"region"|"assigned_to">):boolean{
+  return family.region===actor.region&&(actor.role==="admin"||(actor.role==="staff"&&family.assigned_to===actor.id));
+}
+export function canInviteFamilyMembers(actor:Actor,family:Pick<FamilyRow,"region"|"assigned_to">):boolean{
+  return family.region===actor.region&&(actor.role==="admin"||(actor.role==="staff"&&family.assigned_to===actor.id));
+}
 export function familyScope(actor:Actor,start=1):{sql:string;values:unknown[]}{
   const region=`f.region=$${start}`;
   if(actor.role==="admin")return {sql:region,values:[actor.region]};

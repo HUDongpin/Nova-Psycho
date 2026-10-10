@@ -1,6 +1,6 @@
 # Nova Psycho Helper 0.1.0 local delivery and acceptance
 
-Date: 2026-09-10. Main development directory: `/Volumes/Starship/Nova Psycho Helper`.
+Date: 2026-09-10. Main development directory: `/Volumes/Mars/Nova Psycho Helper`.
 
 ## Delivery scope
 
@@ -21,7 +21,7 @@ This is a locally runnable version using synthetic data. No professional instrum
 | `docker build -f deploy/Dockerfile -t nova-psycho-helper:0.1.0 .` | passed | application image with Chromium and Noto CJK fonts |
 | CN and HK Compose configuration checks | passed | both environments' configuration parses; not yet started as real cloud environments |
 
-**Later changes.** This table records the 2026-09-10 delivery point and is left as recorded. Since then: the unit suite has grown well beyond the figure above (run `npm test` for the current count, and see the CI badge in the README); the AI adapter has been verified against the real service (see `docs/ai-regional-verification.md`); and the single runtime image has been split into `-web` and `-worker` targets, so the bare `docker build` command above no longer matches the deployment. Use `docker compose up`, which builds both targets. See `docs/deployment.md`.
+**Later changes.** This table records the 2026-09-10 delivery point and is left as recorded. Since then: the unit suite has grown well beyond the figure above (run `npm test` for the current count, and see the CI badge in the README), and the single runtime image has been split into `-web` and `-worker` targets, so the bare `docker build` command above no longer matches the deployment. Use `docker compose up`, which builds both targets. See `docs/deployment.md`. Real-service AI verification has not yet been performed (see `docs/ai-regional-verification.md`).
 
 Run evidence is in `work/qa/` in the main development directory. Interface checks used two local demo services; content lifecycle checks used an isolated database that was created and then dropped, without covering or deleting existing families.
 
@@ -55,4 +55,4 @@ For restart instructions see the root `README.md`; for the production content fo
 3. If enabling AI, provide the Bailian configuration for the corresponding regional business workspace, verify the actual inference scope, and validate the permissions and data scope of real calls.
 4. Confirm the institution's formal information notice and service-responsibility arrangements, and verify complete answering, login and report download on target phones and inside WeChat.
 
-A demo database cannot be changed directly into a service database. Subsequent development continues in the main directory on Starship; the delivered source archive is a snapshot of this version and contains no runtime keys, database, logged-in sessions, dependency directory or build cache.
+A demo database cannot be changed directly into a service database. Subsequent development continues in the main directory at `/Volumes/Mars/Nova Psycho Helper`; the delivered source archive is a snapshot of this version and contains no runtime keys, database, logged-in sessions, dependency directory or build cache.

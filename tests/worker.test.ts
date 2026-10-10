@@ -7,9 +7,11 @@ vi.mock("../src/domain/narrative",()=>({selectNarrative:vi.fn(async()=>({selecte
 import { query,transaction } from "../src/lib/db";
 import { renderPdf } from "../src/lib/pdf";
 import { listPrivatePdfKeys,removePrivatePdf,writePrivatePdf } from "../src/lib/storage";
-import { cleanOrphanReports,processDeletionJobs,processOneJob,recordHeartbeat } from "../src/lib/worker";
+import { cleanOrphanReports,processDeletionJobs,processOneJob,processReportJob,recordHeartbeat } from "../src/lib/worker";
 import { demoAdvice,demoScale,demoTemplate } from "../src/domain/demo";
 import { scoreAssessment } from "../src/domain/scoring";
+import { childScale,parentScale,teacherScale } from "../src/domain/triad-scales";
+import { previewAnswers } from "../src/domain/triad-report";
 import type { AssessmentSnapshot } from "../src/domain/types";
 
 const mockQuery=vi.mocked(query);
@@ -184,5 +186,104 @@ describe("processing one job",()=>{
     mockRender.mockRejectedValueOnce(new Error("render failed"));
     await processOneJob();
     expect(mockRemove).toHaveBeenCalled();
+  });
+});
+
+
+describe("fixed triad report sources",()=>{
+  const rows=([childScale,parentScale,teacherScale]).map((scale,index)=>{
+    const role=scale.roles[0],answers=previewAnswers(scale);
+    return {id:`source-${index}`,family_id:"family",triad_round_id:"round",respondent_role:role,answers,submitted_at:snapshot.submittedAt,
+      snapshot:{...snapshot,scale,score:scoreAssessment(scale,answers,{age:12,region:"CN",role})}};
+  });
+  const parent=rows[1],sourceIds=rows.map(row=>row.id);
+  function configure(sources:string[]|null=sourceIds,returned=rows){
+    mockQuery.mockImplementation((async(sql:string)=>{
+      if(sql.includes("WITH candidate AS"))return [{id:"triad-job",assessment_id:parent.id,attempts:1,source_assessment_ids:sources}];
+      if(sql.includes("SELECT * FROM assessments WHERE id="))return [parent];
+      if(sql.includes("SELECT id,respondent_role,answers"))return returned;
+      return [];
+    }) as never);
+    mockTransaction.mockImplementation((async(fn:(c:unknown)=>Promise<unknown>)=>fn({query:async()=>({rows:[{id:"locked"}]})})) as never);
+  }
+  it("renders only the pinned round and publishes those three sources",async()=>{
+    configure();
+    const calls:{sql:string;values:unknown[]}[]=[];
+    mockTransaction.mockImplementation((async(fn:(c:unknown)=>Promise<unknown>)=>fn({query:async(sql:string,values:unknown[])=>{calls.push({sql,values});return {rows:[{id:"locked"}]};}})) as never);
+    await processOneJob();
+    expect(mockRender).toHaveBeenCalledTimes(2);
+    const lookup=mockQuery.mock.calls.find(([sql])=>String(sql).includes("SELECT id,respondent_role,answers"));
+    expect(lookup?.[1]).toEqual([sourceIds,"family","CN","round"]);
+    const publish=calls.find(call=>call.sql.includes("UPDATE assessments SET status='published'"));
+    expect(publish?.values).toEqual([sourceIds]);
+  });
+  it("fails an unbound legacy job without selecting historical answers or rendering",async()=>{
+    configure(null);await processOneJob();
+    expect(mockRender).not.toHaveBeenCalled();
+    const failure=mockQuery.mock.calls.find(([sql])=>String(sql).includes("UPDATE report_jobs SET state=$1"));
+    expect(failure?.[1]).toEqual(["failed","triad-job",expect.any(String),"TRIAD_SOURCES_UNBOUND"]);
+    expect(mockQuery.mock.calls.some(([sql])=>String(sql).includes("SELECT id,respondent_role,answers"))).toBe(false);
+  });
+  it("refuses incomplete pinned sources instead of filling a role from history",async()=>{
+    configure(sourceIds,rows.slice(0,2));await processOneJob();
+    expect(mockRender).not.toHaveBeenCalled();
+    expect(mockTransaction).not.toHaveBeenCalled();
+  });
+});
+
+describe("targeted queue execution",()=>{
+  const JOB_ID="11111111-2222-4333-8444-111111111111";
+  it("claims only the requested job in this deployment region",async()=>{
+    mockQuery.mockResolvedValue([]);
+    await expect(processReportJob(JOB_ID)).resolves.toEqual({status:"already_done"});
+    expect(mockQuery.mock.calls[0][1]).toEqual([expect.any(String),"CN",JOB_ID]);
+    expect(String(mockQuery.mock.calls[0][0])).toContain("j.id=$3");
+    expect(String(mockQuery.mock.calls[0][0])).toContain("a.region=$2");
+    expect(mockRender).not.toHaveBeenCalled();
+  });
+  it("rejects a malformed message before touching the database",async()=>{
+    await expect(processReportJob("not-a-job")).rejects.toThrow();
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+  it("acknowledges a duplicate delivery for a completed job",async()=>{
+    mockQuery.mockResolvedValueOnce([]).mockResolvedValueOnce([{state:"done"}]);
+    await expect(processReportJob(JOB_ID)).resolves.toEqual({status:"already_done"});
+    expect(mockRender).not.toHaveBeenCalled();
+  });
+  it("keeps an unexpired claim scheduled for redelivery instead of acknowledging it",async()=>{
+    const lease=new Date(Date.now()+120000).toISOString();
+    mockQuery.mockResolvedValueOnce([]).mockResolvedValueOnce([{state:"running",lease_until:lease}]);
+    await expect(processReportJob(JOB_ID)).resolves.toEqual({status:"retry_at",retryAt:lease});
+  });
+  it("does not run a fourth render after three crashed claims",async()=>{
+    mockQuery.mockResolvedValueOnce([{id:JOB_ID,assessment_id:ASSESSMENT_ID,attempts:3,attempt_limit_reached:true}])
+      .mockResolvedValueOnce([{assessment_id:ASSESSMENT_ID}]).mockResolvedValue([]);
+    await expect(processReportJob(JOB_ID)).resolves.toEqual({status:"terminal"});
+    expect(mockRender).not.toHaveBeenCalled();
+    expect(mockQuery.mock.calls[1][1]).toContain("REPORT_ATTEMPTS_EXHAUSTED");
+  });
+  it("stores both database PDFs only after family and claim locks in the publication transaction",async()=>{
+    vi.stubEnv("NOVA_REPORT_STORAGE","database");
+    mockQuery.mockResolvedValueOnce([{id:JOB_ID,assessment_id:ASSESSMENT_ID,attempts:1}])
+      .mockResolvedValueOnce([{id:ASSESSMENT_ID,family_id:"family",snapshot,submitted_at:snapshot.submittedAt}])
+      .mockResolvedValueOnce([]).mockResolvedValueOnce([]).mockResolvedValue([]);
+    const events:string[]=[];
+    const lockedClient={query:vi.fn(async(sql:string)=>{events.push(sql);return {rows:[{id:"locked"}]};})};
+    mockWrite.mockImplementation(async(_key,_pdf,client)=>{
+      expect(client).toBe(lockedClient);
+      expect(events.some(sql=>sql.includes("FROM families")&&sql.includes("FOR UPDATE"))).toBe(true);
+      expect(events.some(sql=>sql.includes("FROM report_jobs")&&sql.includes("FOR UPDATE"))).toBe(true);
+      events.push("pdf");
+    });
+    mockTransaction.mockImplementation((async(fn:(c:unknown)=>Promise<unknown>)=>fn(lockedClient)) as never);
+    await expect(processReportJob(JOB_ID)).resolves.toEqual({status:"published"});
+    expect(events.filter(value=>value==="pdf")).toHaveLength(2);
+    expect(events.findIndex(value=>value.includes("INSERT INTO reports"))).toBeGreaterThan(events.lastIndexOf("pdf"));
+    mockWrite.mockImplementation(async()=>undefined);
+  });
+  it("does not run filesystem cleanup or heartbeat polling for database storage",async()=>{
+    vi.stubEnv("NOVA_REPORT_STORAGE","database");
+    await processDeletionJobs();await cleanOrphanReports();
+    expect(mockQuery).not.toHaveBeenCalled();expect(mockList).not.toHaveBeenCalled();
   });
 });

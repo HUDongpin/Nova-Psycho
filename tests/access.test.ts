@@ -2,7 +2,7 @@ import { describe,it,expect,beforeEach,vi } from "vitest";
 
 vi.mock("../src/lib/db",()=>({query:vi.fn()}));
 import { query } from "../src/lib/db";
-import { consentFor,familyFor } from "../src/lib/access";
+import { canInviteFamilyMembers,canManageFamilyReports,consentFor,familyFor } from "../src/lib/access";
 import type { FamilyRow } from "../src/lib/access";
 import type { Actor,Role } from "../src/domain/types";
 
@@ -75,5 +75,41 @@ describe("consentFor",()=>{
   it("returns false when no consent row exists",async()=>{
     mockQuery.mockResolvedValueOnce([]);
     await expect(consentFor(FAMILY_ID)).resolves.toBe(false);
+  });
+});
+
+describe("family report management",()=>{
+  it("allows administrators and the assigned staff member in the same region",()=>{
+    expect(canManageFamilyReports(actor("admin"),familyRow)).toBe(true);
+    expect(canManageFamilyReports(actor("staff"),{...familyRow,assigned_to:USER_ID})).toBe(true);
+  });
+  it("does not turn safety visibility or other family membership into retry access",()=>{
+    for(const role of ["staff","parent","student","teacher"] as const){
+      expect(canManageFamilyReports(actor(role),familyRow)).toBe(false);
+    }
+    expect(canManageFamilyReports(actor("parent"),{...familyRow,assigned_to:USER_ID})).toBe(false);
+  });
+  it("refuses another region even for an administrator or matching assignee",()=>{
+    for(const role of ["admin","staff"] as const){
+      expect(canManageFamilyReports(actor(role),{...familyRow,region:"HK",assigned_to:USER_ID})).toBe(false);
+    }
+  });
+});
+
+describe("family member invitations",()=>{
+  it("allows an administrator or the current assigned staff in the same region",()=>{
+    expect(canInviteFamilyMembers(actor("admin"),familyRow)).toBe(true);
+    expect(canInviteFamilyMembers(actor("staff"),{...familyRow,assigned_to:USER_ID})).toBe(true);
+  });
+  it("does not let safety-visible staff or existing family members grant membership",()=>{
+    for(const role of ["staff","parent","student","teacher"] as const){
+      expect(canInviteFamilyMembers(actor(role),familyRow)).toBe(false);
+    }
+    expect(canInviteFamilyMembers(actor("parent"),{...familyRow,assigned_to:USER_ID})).toBe(false);
+  });
+  it("rejects other regions even when the actor is an administrator or the recorded assignee",()=>{
+    for(const role of ["admin","staff"] as const){
+      expect(canInviteFamilyMembers(actor(role),{...familyRow,region:"HK",assigned_to:USER_ID})).toBe(false);
+    }
   });
 });

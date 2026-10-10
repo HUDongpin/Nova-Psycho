@@ -31,10 +31,12 @@ export default function SurveyRunner({ record, draft, locale, onSubmitted, onRel
   const [advanceToken, setAdvanceToken] = useState(0);
   const advanceSeconds = String(CHOICE_AUTO_ADVANCE_MS / 1000);
   const submitRef = useRef<() => void>(() => undefined);
-  const locked = record.consentRequired || !acknowledged || snapshot.conflict || snapshot.submitting;
+  const sessionLocked = snapshot.loggingOut || snapshot.authenticationPaused;
+  const locked = record.consentRequired || !acknowledged || snapshot.conflict || snapshot.submitting || sessionLocked;
 
   const model = useMemo(() => {
     const survey = new Model(record.surveyJson);
+    survey.textUpdateMode = "onTyping";
     survey.locale = locale === "zh-HK" ? "zh-tw" : "zh-cn";
     survey.showTitle = false;
     survey.showCompleteButton = false;
@@ -103,6 +105,8 @@ export default function SurveyRunner({ record, draft, locale, onSubmitted, onRel
   }, [model, draft, locale, record.consentRequired]);
 
   async function submit() {
+    const current = draft.getSnapshot();
+    if (current.loggingOut || current.authenticationPaused) return;
     if (record.consentRequired) { setError(t("consentNeeded")); return; }
     if (!acknowledged) { setError(t("acknowledgeNeeded")); return; }
     if (snapshot.conflict) return;
@@ -112,6 +116,7 @@ export default function SurveyRunner({ record, draft, locale, onSubmitted, onRel
     draft.update({ ...model.data }, locale);
     try {
       await draft.submit(locale);
+      if (draft.getSnapshot().authenticationPaused) return;
       await onSubmitted();
     } catch (err) {
       if (!(err instanceof ApiError && err.code === "DRAFT_CONFLICT")) setError(errorMessage(err));
@@ -123,7 +128,7 @@ export default function SurveyRunner({ record, draft, locale, onSubmitted, onRel
   return <div className="survey-container">
     <div className="survey-assent-panel">
       <label className="checkbox-label">
-        <input type="checkbox" checked={acknowledged} onChange={event => { const value = event.target.checked; setAcknowledged(value); draft.setAcknowledged(value, locale); }} disabled={snapshot.submitting || snapshot.conflict || record.consentRequired} />
+        <input type="checkbox" checked={acknowledged} onChange={event => { const value = event.target.checked; setAcknowledged(value); draft.setAcknowledged(value, locale); }} disabled={snapshot.submitting || snapshot.conflict || sessionLocked || record.consentRequired} />
         <span>{t("acknowledgeLead")}<button type="button" className="assent-link" onClick={event => { event.preventDefault(); openPrivacy(); }}>{t("privacy")}</button>{t("acknowledgeTail")}{t("answerNotice")}</span>
       </label>
       {record.consentRequired && <div className="warning-note">{t("consentNeeded")}</div>}
@@ -133,14 +138,14 @@ export default function SurveyRunner({ record, draft, locale, onSubmitted, onRel
       <p>{t("draftConflictNote")}</p>
       <Field label={t("localDraftAnswers")}><textarea className="code-input" value={JSON.stringify(snapshot.answers, null, 2)} readOnly rows={5} onFocus={event => event.target.select()} /></Field>
       <div className="button-group">
-        <button type="button" className="button secondary" onClick={async () => { try { await navigator.clipboard.writeText(JSON.stringify(snapshot.answers, null, 2)); setCopied(true); } catch { setError(t("draftCopyFailed")); } }}><Copy />{t(copied ? "copied" : "copyDraftAnswers")}</button>
-        <button type="button" className="button primary" disabled={reloading} onClick={async () => { setReloading(true); try { await onReloadLatest(); } catch (err) { setError(errorMessage(err)); setReloading(false); } }}><ArrowClockwise className={reloading ? "spin" : ""} />{t("reloadLatestDraft")}</button>
+        <button type="button" className="button secondary" disabled={sessionLocked} onClick={async () => { const current = draft.getSnapshot(); if (current.authenticationPaused || current.loggingOut) return; try { await navigator.clipboard.writeText(JSON.stringify(current.answers, null, 2)); setCopied(true); } catch { setError(t("draftCopyFailed")); } }}><Copy />{t(copied ? "copied" : "copyDraftAnswers")}</button>
+        <button type="button" className="button primary" disabled={reloading || sessionLocked} onClick={async () => { setReloading(true); try { await onReloadLatest(); } catch (err) { setError(errorMessage(err)); setReloading(false); } }}><ArrowClockwise className={reloading ? "spin" : ""} />{t("reloadLatestDraft")}</button>
       </div>
     </section>}
     <div className="survey-save-status" aria-live="polite" hidden={record.consentRequired || !acknowledged || snapshot.conflict}>
       {snapshot.status === "saved" ? <CheckCircle weight="fill" /> : snapshot.status === "saving" || snapshot.submitting ? <CircleNotch className="spin" /> : <FloppyDisk />}
       <span>{t(snapshot.status === "saved" ? "savedDraft" : snapshot.status === "saving" || snapshot.submitting ? "saving" : snapshot.status === "failed" ? "saveFailed" : "unsaved")}</span>
-      {snapshot.status === "failed" && <button className="text-link" onClick={() => void draft.save(locale).catch(() => undefined)}>{t("saveDraft")}</button>}
+      {snapshot.status === "failed" && <button className="text-link" disabled={sessionLocked} onClick={() => void draft.save(locale).catch(() => undefined)}>{t("saveDraft")}</button>}
     </div>
     <p className="survey-nav-hint" aria-live="polite">{(advancePending ? t("autoAdvanceSoon") : t("autoAdvanceHint")).replaceAll("{seconds}", advanceSeconds)}</p>
     {advancePending && <div key={advanceToken} className="survey-advance-track" aria-hidden="true"><span style={{ animationDuration: `${CHOICE_AUTO_ADVANCE_MS}ms` }} /></div>}

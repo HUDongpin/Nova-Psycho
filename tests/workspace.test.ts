@@ -16,7 +16,7 @@ const SELF="99999999-8888-4777-8666-555555555555";
 const OTHER="77777777-6666-4555-8444-333333333333";
 const actor=(role:Role,over:Partial<Actor>={}):Actor=>({id:SELF,name:"Synthetic",role,region:"CN",...over});
 
-const familyRow={id:FAMILY_ID,region:"CN",family_name:"Synthetic family",child_name:"Synthetic child",birth_date:"2013-04-12",grade:"S2",guardian_label:"Mother",assigned_to:OTHER,created_at:new Date("2026-01-01T00:00:00Z")};
+const familyRow={id:FAMILY_ID,region:"CN",family_name:"Synthetic family",child_name:"Synthetic child",birth_date:"2013-04-12",grade:"S2",guardian_label:"Mother",assigned_to:OTHER,assigned_name:"Historical case worker",created_at:new Date("2026-01-01T00:00:00Z")};
 const assessmentRow={id:"a1",family_id:FAMILY_ID,respondent_id:SELF,respondent_role:"student",scale_version_id:"s1",status:"pending",created_at:new Date("2026-01-01T00:00:00Z"),submitted_at:null,child_name:"Synthetic child",respondent_name:"Synthetic",definition:demoScale,report_id:"r1"};
 
 function stub(){
@@ -89,6 +89,76 @@ describe("assessment scoping",()=>{
       return [];
     }) as never);
     expect((await workspaceFor(actor("student"),"zh-CN")).assessments[0].canRespond).toBe(false);
+  });
+});
+
+describe("retry capabilities",()=>{
+  function withFailed(over:Record<string,unknown>={}){
+    mockQuery.mockImplementation((async(sql:string)=>{
+      const text=String(sql);
+      if(text.includes("FROM families f WHERE"))return [familyRow];
+      if(text.includes("FROM assessments a JOIN families f"))return [{...assessmentRow,status:"failed",job_state:"failed",has_snapshot:true,has_answers:true,has_submission:true,is_triad:false,has_round_sources:false,has_consent:true,...over}];
+      return [];
+    }) as never);
+  }
+  it("gives retry only to the admin and assigned staff, not safety-visible staff or parents",async()=>{
+    withFailed();
+    expect((await workspaceFor(actor("admin"),"zh-CN")).assessments[0].canRetryReport).toBe(true);
+    expect((await workspaceFor(actor("staff",{id:OTHER}),"zh-CN")).assessments[0].canRetryReport).toBe(true);
+    expect((await workspaceFor(actor("staff"),"zh-CN")).assessments[0].canRetryReport).toBe(false);
+    expect((await workspaceFor(actor("parent"),"zh-CN")).assessments[0].canRetryReport).toBe(false);
+  });
+  it.each([
+    {job_state:null},{has_snapshot:false},{has_answers:false},{has_submission:false},{has_consent:false},
+    {is_triad:true,has_round_sources:false},{status:"queued",job_state:"ready"}
+  ])("does not offer a blocked or already queued retry %o",async over=>{
+    withFailed(over);
+    expect((await workspaceFor(actor("admin"),"zh-CN")).assessments[0].canRetryReport).toBe(false);
+  });
+  it("returns no retry internals to the client",async()=>{
+    withFailed();
+    const item=(await workspaceFor(actor("admin"),"zh-CN")).assessments[0];
+    for(const key of ["snapshot","answers","has_consent","has_snapshot","job_state"]){expect(item).not.toHaveProperty(key);}
+  });
+});
+
+describe("assignee display and options",()=>{
+  it("retains a historical assignee name separately from available candidates",async()=>{
+    expect((await workspaceFor(actor("staff"),"zh-CN")).families[0].assignedName).toBe("Historical case worker");
+    expect((await workspaceFor(actor("parent"),"zh-CN")).families[0].assignedName).toBeNull();
+    expect((await workspaceFor(actor("student"),"zh-CN")).families[0].assignedName).toBeNull();
+  });
+  it("queries only enabled regional staff as assignment options",async()=>{
+    await workspaceFor(actor("admin"),"zh-CN");
+    const candidate=mockQuery.mock.calls.find(([sql])=>String(sql).includes("SELECT id,name FROM users WHERE region=$1"));
+    expect(candidate?.[0]).toContain("role='staff' AND NOT disabled");
+    expect(candidate?.[1]).toEqual(["CN"]);
+  });
+});
+
+describe("family invitation capability",()=>{
+  it("allows only administrators and the assigned staff member to invite",async()=>{
+    expect((await workspaceFor(actor("admin"),"zh-CN")).families[0].canInviteMembers).toBe(true);
+    expect((await workspaceFor(actor("staff",{id:OTHER}),"zh-CN")).families[0].canInviteMembers).toBe(true);
+    for(const role of ["staff","parent","student","teacher"] as const){
+      expect((await workspaceFor(actor(role),"zh-CN")).families[0].canInviteMembers).toBe(false);
+    }
+  });
+  it("keeps the safety-visible family and observations when invitations are denied",async()=>{
+    const workspace=await workspaceFor(actor("staff"),"zh-CN");
+    expect(workspace.families).toHaveLength(1);
+    expect(workspace.families[0]).toMatchObject({id:FAMILY_ID,canInviteMembers:false});
+    expect(workspace.observations).toHaveLength(1);
+  });
+  it("shares the join code only with the parent, administrator and assigned staff",async()=>{
+    const original=mockQuery.getMockImplementation()!;
+    mockQuery.mockImplementation((async(sql:string,values:unknown[])=>String(sql).includes("FROM families f WHERE")?[{...familyRow,join_code:"TOPE-A2B3C4D5"}]:original(sql,values)) as never);
+    expect((await workspaceFor(actor("admin"),"zh-CN")).families[0].joinCode).toBe("TOPE-A2B3C4D5");
+    expect((await workspaceFor(actor("parent"),"zh-CN")).families[0].joinCode).toBe("TOPE-A2B3C4D5");
+    expect((await workspaceFor(actor("staff",{id:OTHER}),"zh-CN")).families[0].joinCode).toBe("TOPE-A2B3C4D5");
+    for(const role of ["staff","student","teacher"] as const){
+      expect((await workspaceFor(actor(role),"zh-CN")).families[0].joinCode).toBeNull();
+    }
   });
 });
 
@@ -188,79 +258,63 @@ describe("safety alerts on the workbench",()=>{
   });
 });
 
-describe("triad report on the parent assessment",()=>{
+describe("triad reports with fixed round sources",()=>{
   const triadDefinition={...demoScale,bundle:"growth-triad"};
   const at=(day:string)=>new Date(`2026-${day}T00:00:00Z`);
   function row(over:Record<string,unknown>){
-    return {...assessmentRow,definition:triadDefinition,status:"published",submitted_at:at("03-01"),report_id:null,respondent_id:OTHER,...over};
+    return {...assessmentRow,definition:triadDefinition,status:"published",submitted_at:at("03-01"),report_id:null,triad_round_id:"round-1",triad_job_id:null,respondent_id:OTHER,...over};
   }
   function load(rows:unknown[],role:Role="parent"){
     mockQuery.mockImplementation((async(sql:string)=>{
-      const text=String(sql);
-      if(text.includes("FROM families f WHERE"))return [familyRow];
-      if(text.includes("FROM assessments a JOIN families f"))return rows;
+      if(String(sql).includes("FROM families f WHERE"))return [familyRow];
+      if(String(sql).includes("FROM assessments a JOIN families f"))return rows;
       return [];
     }) as never);
     return workspaceFor(actor(role),"zh-CN");
   }
-  it("gives child and teacher rows the parent report and marks them complete",async()=>{
-    const workspace=await load([
-      row({id:"child",respondent_role:"student",status:"queued",submitted_at:at("03-02")}),
-      row({id:"parent-task",respondent_role:"parent",respondent_id:SELF,status:"published",submitted_at:at("03-01"),report_id:"r-parent"}),
-      row({id:"teacher",respondent_role:"teacher",status:"queued",submitted_at:at("03-03")})
-    ]);
-    const byId=Object.fromEntries(workspace.assessments.map(item=>[item.id,item]));
-    expect(byId["parent-task"]).toMatchObject({status:"published",reportId:"r-parent",phase:null});
-    expect(byId.child).toMatchObject({status:"published",reportId:"r-parent",phase:null});
-    expect(byId.teacher).toMatchObject({status:"published",reportId:"r-parent",phase:null});
-    expect(workspace.reports).toEqual([]);
+  it("shows the same stored report for all three published sources",async()=>{
+    const workspace=await load(["student","parent","teacher"].map(role=>row({id:role,respondent_role:role,report_id:"r1",triad_job_id:"job1"})));
+    for(const item of workspace.assessments)expect(item).toMatchObject({status:"published",reportId:"r1",phase:null});
+    const sql=sqls().find(value=>value.includes("FROM assessments a JOIN families f"));
+    expect(sql).toContain("a.id=ANY(j.source_assessment_ids)");
   });
-  it("keeps the generating state until the parent report exists",async()=>{
-    const workspace=await load([
-      row({id:"child",respondent_role:"student",status:"queued",submitted_at:at("03-02")}),
-      row({id:"parent-task",respondent_role:"parent",respondent_id:SELF,status:"queued",submitted_at:at("03-01"),report_id:null}),
-      row({id:"teacher",respondent_role:"teacher",status:"queued",submitted_at:at("03-03")})
-    ]);
-    for(const item of workspace.assessments)expect(item).toMatchObject({status:"queued",reportId:null,phase:"reporting"});
+  it("shows generating for a student's own source without exposing peers or report id",async()=>{
+    const workspace=await load([row({id:"child",respondent_id:SELF,respondent_role:"student",status:"queued",triad_job_id:"job1"})],"student");
+    expect(workspace.assessments).toHaveLength(1);
+    expect(workspace.assessments[0]).toMatchObject({status:"queued",reportId:null,phase:"reporting"});
   });
-  it("keeps a submitted row waiting while another role has not handed in",async()=>{
+  it("keeps a new round waiting even when all previous roles have published",async()=>{
     const workspace=await load([
-      row({id:"child",respondent_role:"student",status:"queued",submitted_at:at("03-02")}),
-      row({id:"parent-task",respondent_role:"parent",respondent_id:SELF,status:"queued",submitted_at:at("03-01"),report_id:null}),
-      row({id:"teacher",respondent_role:"teacher",status:"pending",submitted_at:null,report_id:null})
+      ...["student","parent","teacher"].map(role=>row({id:role,respondent_role:role,triad_job_id:"job1",report_id:"r1"})),
+      row({id:"p2",respondent_role:"parent",status:"queued",triad_round_id:"round-2",submitted_at:at("07-01")})
     ]);
-    const child=workspace.assessments.find(item=>item.id==="child");
-    expect(child).toMatchObject({status:"queued",reportId:null,phase:"waiting"});
+    expect(workspace.assessments.find(item=>item.id==="p2")).toMatchObject({status:"queued",phase:"waiting",reportId:null});
   });
-  it("does not lend the triad report to a student or to a different instrument",async()=>{
-    const rows=[
-      row({id:"child",respondent_role:"student",status:"queued",submitted_at:at("03-02")}),
-      row({id:"parent-task",respondent_role:"parent",respondent_id:SELF,status:"published",submitted_at:at("03-01"),report_id:"r-parent"}),
-      row({id:"teacher",respondent_role:"teacher",status:"published",submitted_at:at("03-03")}),
-      {...assessmentRow,id:"demo",status:"published",submitted_at:at("03-04"),report_id:null,respondent_role:"student"}
-    ];
-    const student=await load(rows,"student");
-    expect(student.assessments.map(item=>item.reportId)).toEqual([null,null,null,null]);
-    expect(student.assessments.find(item=>item.id==="child")?.status).toBe("queued");
-    const parent=await load(rows,"parent");
-    expect(parent.assessments.find(item=>item.id==="demo")).toMatchObject({reportId:null,status:"published"});
-  });
-  it("keeps an earlier trio on its own parent report after a later round",async()=>{
+  it("does not infer a legacy report from role order or submission time",async()=>{
     const workspace=await load([
-      row({id:"c1",respondent_role:"student",submitted_at:at("01-02")}),
-      row({id:"p1",respondent_role:"parent",respondent_id:SELF,submitted_at:at("01-01"),report_id:"r1"}),
-      row({id:"t1",respondent_role:"teacher",submitted_at:at("01-03")}),
-      row({id:"c2",respondent_role:"student",submitted_at:at("05-02")}),
-      row({id:"p2",respondent_role:"parent",respondent_id:SELF,submitted_at:at("05-01"),report_id:"r2"}),
-      row({id:"t2",respondent_role:"teacher",submitted_at:at("05-03")})
+      row({id:"p1",respondent_role:"parent",triad_round_id:null,report_id:"legacy-report"}),
+      row({id:"child",respondent_role:"student",triad_round_id:null,status:"queued",submitted_at:at("03-02")}),
+      row({id:"teacher",respondent_role:"teacher",triad_round_id:null,status:"queued",submitted_at:at("03-03")})
     ]);
-    const reportOf=(id:string)=>workspace.assessments.find(item=>item.id===id)?.reportId;
-    expect(reportOf("c1")).toBe("r1");
-    expect(reportOf("t1")).toBe("r1");
-    expect(reportOf("p1")).toBe("r1");
-    expect(reportOf("c2")).toBe("r2");
-    expect(reportOf("t2")).toBe("r2");
-    expect(reportOf("p2")).toBe("r2");
+    expect(workspace.assessments.find(item=>item.id==="p1")?.reportId).toBe("legacy-report");
+    for(const id of ["child","teacher"])expect(workspace.assessments.find(item=>item.id===id)).toMatchObject({status:"queued",phase:"waiting",reportId:null});
+  });
+  it("withholds shared report ids from students and teachers",async()=>{
+    for(const role of ["student","teacher"] as const){
+      const workspace=await load([row({id:role,respondent_role:role,report_id:"r1",triad_job_id:"job1"})],role);
+      expect(workspace.assessments[0]).toMatchObject({status:"published",reportId:null});
+    }
+  });
+  it("retains exact earlier and later report mappings regardless of row order",async()=>{
+    const workspace=await load([
+      row({id:"c2",respondent_role:"student",triad_round_id:"round-2",report_id:"r2"}),
+      row({id:"p1",respondent_role:"parent",report_id:"r1"}),
+      row({id:"t2",respondent_role:"teacher",triad_round_id:"round-2",report_id:"r2"}),
+      row({id:"c1",respondent_role:"student",report_id:"r1"}),
+      row({id:"p2",respondent_role:"parent",triad_round_id:"round-2",report_id:"r2"}),
+      row({id:"t1",respondent_role:"teacher",report_id:"r1"})
+    ]);
+    for(const item of workspace.assessments)expect(item.reportId).toBe(item.id.endsWith("1")?"r1":"r2");
   });
 });
 

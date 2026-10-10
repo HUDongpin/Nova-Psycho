@@ -82,7 +82,7 @@ describe("acknowledge safety alert", () => {
 });
 
 const clientFamily = (over: Partial<Family> = {}): ClientWorkspace["families"][number] => ({
-  id: FAMILY_ID, familyName: "合成家庭", childName: "小林", age: 12, birthDate: "2014-01-02", grade: "小学", region: "CN", guardianLabel: "母亲", assignedTo: null, createdAt: "2026-01-01T00:00:00.000Z", consent: true, members: [], ...over,
+  id: FAMILY_ID, familyName: "合成家庭", childName: "小林", age: 12, birthDate: "2014-01-02", grade: "小学", region: "CN", guardianLabel: "母亲", assignedTo: null, canInviteMembers: false, createdAt: "2026-01-01T00:00:00.000Z", consent: true, members: [], ...over,
 });
 const clientWorkspace = (role: Role, alerts: ClientWorkspace["alerts"]): ClientWorkspace => ({
   user: { id: ACTOR_ID, name: "合成人员", role, region: "CN" }, region: "CN", mode: "demo", families: [clientFamily()], assessments: [], reports: [], scales: [], goals: [], observations: [], staff: [], contentVersions: [], alerts, staffNotes: [], summary: {},

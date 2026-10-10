@@ -1,14 +1,14 @@
 import { describe,it,expect,beforeEach,afterEach,vi } from "vitest";
 
-// Keep hashToken and audit real (they are pure and DB-backed respectively); stub only
-// scrypt, which is deliberately slow and would dominate the suite.
+// Keep the hashToken implementation real but observe calls to ensure Clerk mode
+// rejects before any token work. Stub expensive scrypt for these service tests.
 vi.mock("../src/lib/auth",async importOriginal=>{
   const actual=await importOriginal<typeof import("../src/lib/auth")>();
-  return {...actual,hashPassword:vi.fn(async()=>"scrypt$stub")};
+  return {...actual,hashToken:vi.fn(actual.hashToken),hashPassword:vi.fn(async()=>"scrypt$stub")};
 });
 vi.mock("../src/lib/db",()=>({query:vi.fn(),transaction:vi.fn()}));
 
-import { hashToken } from "../src/lib/auth";
+import { hashPassword, hashToken } from "../src/lib/auth";
 import { query,transaction } from "../src/lib/db";
 import { acceptRecovery,createRecovery,recoveryInfo } from "../src/lib/recovery";
 import { HttpError } from "../src/lib/http";
@@ -32,16 +32,52 @@ async function defaultClientQuery(sql:string){
 const client={query:vi.fn(defaultClientQuery)};
 
 beforeEach(()=>{
+  vi.stubEnv("NOVA_AUTH_PROVIDER","local");
   vi.stubEnv("NOVA_REGION","CN");vi.stubEnv("NOVA_MODE","demo");
   vi.stubEnv("DATABASE_URL","postgresql://nova:pw@127.0.0.1:55431/nova_cn");
   vi.stubEnv("NOVA_PUBLIC_URL","http://127.0.0.1:3100");
   vi.stubEnv("NOVA_REPORT_DIR","work/test-private");
   vi.stubEnv("NOVA_REPORT_KEY","0".repeat(64));
   mockQuery.mockReset();mockTransaction.mockReset();client.query.mockReset();clientCalls.length=0;
+  vi.mocked(hashToken).mockClear();vi.mocked(hashPassword).mockClear();
   client.query.mockImplementation(defaultClientQuery);
   mockTransaction.mockImplementation((async(fn:(c:unknown)=>Promise<unknown>)=>fn(client)) as never);
 });
 afterEach(()=>vi.unstubAllEnvs());
+
+describe("recovery is restricted to the authentication provider",()=>{
+  function expectNoRecoveryWork(){
+    expect(mockQuery).not.toHaveBeenCalled();
+    expect(mockTransaction).not.toHaveBeenCalled();
+    expect(client.query).not.toHaveBeenCalled();
+    expect(hashToken).not.toHaveBeenCalled();
+    expect(hashPassword).not.toHaveBeenCalled();
+  }
+  it.each([
+    ["issuance",()=>createRecovery(admin,USER_ID)],
+    ["link lookup",()=>recoveryInfo("a".repeat(64))],
+    ["password update",()=>acceptRecovery({token:"a".repeat(64),password:"synthetic-long-password"})],
+  ] as const)("rejects Clerk %s before SQL or hashing",async(_name,operation)=>{
+    vi.stubEnv("NOVA_AUTH_PROVIDER","clerk");
+    await expect(operation()).rejects.toMatchObject({status:409,code:"CLERK_RECOVERY_REQUIRED",message:expect.stringContaining("忘记密码")});
+    expectNoRecoveryWork();
+  });
+  it("does not accept a previously issued local recovery link after switching to Clerk",async()=>{
+    const issued=await createRecovery(admin,USER_ID);
+    const token=issued.url.split("token=")[1];
+    vi.stubEnv("NOVA_AUTH_PROVIDER","clerk");
+    mockQuery.mockClear();mockTransaction.mockClear();client.query.mockClear();
+    vi.mocked(hashToken).mockClear();vi.mocked(hashPassword).mockClear();
+    await expect(acceptRecovery({token,password:"synthetic-long-password"})).rejects.toMatchObject({status:409,code:"CLERK_RECOVERY_REQUIRED"});
+    expectNoRecoveryWork();
+  });
+  it("checks the provider before validating a token or password",async()=>{
+    vi.stubEnv("NOVA_AUTH_PROVIDER","clerk");
+    await expect(recoveryInfo("invalid")).rejects.toMatchObject({code:"CLERK_RECOVERY_REQUIRED"});
+    await expect(acceptRecovery(null)).rejects.toMatchObject({code:"CLERK_RECOVERY_REQUIRED"});
+    expectNoRecoveryWork();
+  });
+});
 
 describe("issuing a recovery link",()=>{
   it("refuses anyone who is not an administrator",async()=>{

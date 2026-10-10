@@ -1,11 +1,16 @@
 import pg, { type PoolClient, type QueryResultRow } from "pg";
+import { attachDatabasePool } from "@vercel/functions";
 import { getConfig } from "./config";
 pg.types.setTypeParser(1082,value=>value);
 const globalDb=globalThis as unknown as {novaPool?:pg.Pool; novaDatabaseUrl?:string; novaRegionCheck?:Promise<void>;novaIdentity?:string};
 export function pool():pg.Pool{
   const config=getConfig();
   if(globalDb.novaDatabaseUrl&&globalDb.novaDatabaseUrl!==config.databaseUrl)throw new Error("A process cannot switch database regions");
-  if(!globalDb.novaPool){globalDb.novaDatabaseUrl=config.databaseUrl;globalDb.novaPool=new pg.Pool({connectionString:config.databaseUrl,max:10,connectionTimeoutMillis:5000,idleTimeoutMillis:20000,statement_timeout:15000,application_name:`nova-${config.region.toLowerCase()}`});}
+  if(!globalDb.novaPool){
+    globalDb.novaDatabaseUrl=config.databaseUrl;
+    globalDb.novaPool=new pg.Pool({connectionString:config.databaseUrl,max:10,connectionTimeoutMillis:5000,idleTimeoutMillis:process.env.VERCEL==="1"?5000:20000,statement_timeout:15000,application_name:`nova-${config.region.toLowerCase()}`});
+    if(process.env.VERCEL==="1")attachDatabasePool(globalDb.novaPool);
+  }
   return globalDb.novaPool;
 }
 export async function assertDatabaseRegion():Promise<void>{

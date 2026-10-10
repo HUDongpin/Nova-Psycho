@@ -1,6 +1,9 @@
 import { describe,it,expect,vi,afterEach } from "vitest";
-import { api,ApiError,apiUrl,eligibleScales,errorMessage,isAdult,isStaff,type Family,type Scale } from "../src/components/api";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { api,ApiError,apiUrl,eligibleScales,errorMessage,isAdult,isStaff,type Family,type Scale,type Workspace } from "../src/components/api";
 import { copy,dictionary,formatDate,roleName,statusName } from "../src/components/copy";
+import { FamilyView } from "../src/components/workspace-views";
 
 afterEach(()=>vi.unstubAllGlobals());
 
@@ -65,9 +68,26 @@ describe("role helpers",()=>{
   });
 });
 
+describe("family invitation controls",()=>{
+  function markup(canInviteMembers:boolean,locale:"zh-CN"|"zh-HK"){
+    const family={id:"f",familyName:"合成家庭",childName:"合成孩子",age:12,birthDate:"2014-01-01",grade:"小学",region:"CN" as const,guardianLabel:"家长",assignedTo:"other",createdAt:"2026-01-01T00:00:00Z",consent:true,members:[],canInviteMembers};
+    const workspace:Workspace={user:{id:"staff",name:"工作人员",role:"staff",region:"CN"},region:"CN",mode:"demo",families:[family],assessments:[],reports:[],scales:[],goals:[],observations:[],staff:[],contentVersions:[],alerts:[],staffNotes:[],summary:{}};
+    return renderToStaticMarkup(createElement(FamilyView,{family,workspace,locale,navigate:()=>undefined,openForm:()=>undefined,onRefresh:async()=>undefined,openPrivacy:()=>undefined}));
+  }
+  it.each(["zh-CN","zh-HK"] as const)("keeps %s follow-up controls but hides invitations without the server capability",locale=>{
+    const html=markup(false,locale);
+    expect(html).not.toContain(copy(locale)("invite"));
+    expect(html).toContain(copy(locale)("addObservation"));
+    expect(html).toContain("合成家庭");
+  });
+  it.each(["zh-CN","zh-HK"] as const)("shows %s invitations when the server grants the capability",locale=>{
+    expect(markup(true,locale)).toContain(copy(locale)("invite"));
+  });
+});
+
 describe("eligibleScales",()=>{
   const scale=(over:Partial<Scale>):Scale=>({id:"s",scaleId:"s",version:"1.0.0",title:"t",description:"d",demo:true,minAge:6,maxAge:18,roles:["student"],retakeDays:14,source:"x",rights:"y",status:"active",...over});
-  const family=(over:Partial<Family>={}):Family=>({id:"f",familyName:"F",childName:"C",age:12,birthDate:"2013-01-01",grade:"g",region:"CN",guardianLabel:"m",assignedTo:null,createdAt:"2026-01-01T00:00:00Z",consent:true,members:[{id:"u1",name:"S",role:"student"}],...over});
+  const family=(over:Partial<Family>={}):Family=>({id:"f",familyName:"F",childName:"C",age:12,birthDate:"2013-01-01",grade:"g",region:"CN",guardianLabel:"m",assignedTo:null,canInviteMembers:false,createdAt:"2026-01-01T00:00:00Z",consent:true,members:[{id:"u1",name:"S",role:"student"}],...over});
   const all=[scale({id:"ok"}),scale({id:"retired",status:"retired"}),scale({id:"too_old",minAge:15,maxAge:18}),scale({id:"teacher_only",roles:["teacher"]})];
 
   it("keeps only active instruments matching the respondent's role and the child's age",()=>{

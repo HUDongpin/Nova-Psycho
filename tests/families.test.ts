@@ -6,7 +6,7 @@ vi.mock("../src/lib/auth",async importOriginal=>{
   return {...actual,hashPassword:vi.fn(async()=>"scrypt$stub")};
 });
 import { query,transaction } from "../src/lib/db";
-import { acceptInvitation,createFamily,createInvitation,deleteFamily,invitationInfo,recordConsent } from "../src/lib/families";
+import { acceptInvitation,assignFamily,createFamily,createInvitation,deleteFamily,invitationInfo,recordConsent } from "../src/lib/families";
 import type { Actor,Role } from "../src/domain/types";
 
 const mockQuery=vi.mocked(query);
@@ -22,6 +22,9 @@ const client={
   // Declared with a params argument so mock.calls exposes the bound values.
   query:vi.fn(async(sql:string,_params?:unknown[]):Promise<{rows:unknown[]}>=>{
     clientCalls.push(String(sql));
+    if(String(sql).includes("SELECT id,region,assigned_to FROM families"))return {rows:[familyRow]};
+    if(String(sql).includes("SELECT id,region,birth_date,join_code FROM families"))return {rows:[{...familyRow,join_code:null}]};
+    if(String(sql).includes("SELECT id,name,role,region,disabled,demo FROM users"))return {rows:[{...actor("admin"),disabled:false,demo:false}]};
     if(String(sql).includes("SELECT id FROM families"))return {rows:[{id:FAMILY_ID}]};
     if(String(sql).includes("SELECT family_id FROM invitations"))return {rows:[{family_id:FAMILY_ID}]};
     if(String(sql).includes("FOR UPDATE OF i"))return {rows:[{family_id:FAMILY_ID,role:"parent"}]};
@@ -93,6 +96,44 @@ describe("creating a family",()=>{
   });
 });
 
+describe("assigning an existing family",()=>{
+  it("refuses every non-admin without opening a transaction",async()=>{
+    for(const role of ["staff","parent","student","teacher"] as const){
+      await expect(assignFamily(actor(role),FAMILY_ID,{assignedTo:USER_ID})).rejects.toMatchObject({code:"ROLE_DENIED"});
+    }
+    expect(mockTransaction).not.toHaveBeenCalled();
+  });
+  it("requires an exact UUID assignment payload",async()=>{
+    await expect(assignFamily(actor("admin"),"bad",{assignedTo:USER_ID})).rejects.toMatchObject({code:"NOT_FOUND"});
+    for(const input of [{},{assignedTo:null},{assignedTo:"bad"},{assignedTo:USER_ID,region:"HK"}]){
+      await expect(assignFamily(actor("admin"),FAMILY_ID,input)).rejects.toThrow();
+    }
+    expect(mockTransaction).not.toHaveBeenCalled();
+  });
+  it("locks the regional family and valid staff before updating and auditing",async()=>{
+    client.query.mockResolvedValueOnce({rows:[{id:FAMILY_ID}]}).mockResolvedValueOnce({rows:[{id:USER_ID}]});
+    await expect(assignFamily(actor("admin"),FAMILY_ID,{assignedTo:USER_ID})).resolves.toEqual({id:FAMILY_ID,assignedTo:USER_ID});
+    const calls=client.query.mock.calls;
+    expect(calls[0][0]).toContain("region=$2 FOR UPDATE");
+    expect(calls[0][1]).toEqual([FAMILY_ID,"CN"]);
+    expect(calls[1][0]).toContain("role='staff' AND NOT disabled FOR SHARE");
+    expect(calls[1][1]).toEqual([USER_ID,"CN"]);
+    expect(calls[2][0]).toContain("UPDATE families SET assigned_to");
+    expect(calls[3][0]).toContain("family.assigned");
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+  it("hides missing and foreign-region families before looking up the assignee",async()=>{
+    client.query.mockResolvedValueOnce({rows:[]});
+    await expect(assignFamily(actor("admin"),FAMILY_ID,{assignedTo:USER_ID})).rejects.toMatchObject({code:"NOT_FOUND"});
+    expect(client.query).toHaveBeenCalledTimes(1);
+  });
+  it("leaves assignment untouched when the candidate is disabled, foreign or not staff",async()=>{
+    client.query.mockResolvedValueOnce({rows:[{id:FAMILY_ID}]}).mockResolvedValueOnce({rows:[]});
+    await expect(assignFamily(actor("admin"),FAMILY_ID,{assignedTo:USER_ID})).rejects.toMatchObject({code:"INVALID_STAFF"});
+    expect(client.query).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe("recording guardian consent",()=>{
   const consent={accepted:true as const,guardianName:"Synthetic guardian"};
   it("refuses a student or teacher",async()=>{
@@ -133,6 +174,13 @@ describe("recording guardian consent",()=>{
 });
 
 describe("deleting a family",()=>{
+  it("uses transactional database cascading instead of leaving a filesystem deletion job",async()=>{
+    vi.stubEnv("NOVA_REPORT_STORAGE","database");
+    await deleteFamily(actor("admin"),FAMILY_ID,{confirmation:"Synthetic child"});
+    expect(clientCalls.some(sql=>sql.includes("DELETE FROM families"))).toBe(true);
+    expect(clientCalls.some(sql=>sql.includes("file_deletion_jobs")||sql.includes("SELECT pdf_keys"))).toBe(false);
+    expect(clientCalls.some(sql=>sql.includes("DELETE FROM sessions"))).toBe(false);
+  });
   it("refuses staff and students",async()=>{
     for(const role of ["staff","student","teacher"] as const){
       await expect(deleteFamily(actor(role),FAMILY_ID,{confirmation:"Synthetic child"})).rejects.toMatchObject({code:"ROLE_DENIED"});
@@ -147,13 +195,26 @@ describe("deleting a family",()=>{
     expect(clientCalls.findIndex(sql=>sql.includes("INSERT INTO file_deletion_jobs")))
       .toBeLessThan(clientCalls.findIndex(sql=>sql.includes("DELETE FROM families")));
   });
-  it("ends the sessions of the members it removes",async()=>{
+  it("preserves independent accounts and their sessions when a family is removed",async()=>{
     await deleteFamily(actor("admin"),FAMILY_ID,{confirmation:"Synthetic child"});
-    expect(clientCalls.some(sql=>sql.includes("DELETE FROM sessions"))).toBe(true);
+    expect(clientCalls.some(sql=>sql.includes("DELETE FROM sessions")||sql.includes("DELETE FROM users"))).toBe(false);
+  });
+  it("rechecks an account disabled after its initial family lookup",async()=>{
+    vi.stubEnv("NOVA_REPORT_STORAGE","database");
+    client.query.mockResolvedValueOnce({rows:[{id:FAMILY_ID}]}).mockResolvedValueOnce({rows:[{...actor("admin"),disabled:true,demo:false}]});
+    await expect(deleteFamily(actor("admin"),FAMILY_ID,{confirmation:"Synthetic child"})).rejects.toMatchObject({code:"ACCOUNT_REVOKED"});
+    expect(clientCalls.some(sql=>sql.includes("DELETE FROM families"))).toBe(false);
+  });
+  it("rechecks parent membership under the family lock",async()=>{
+    vi.stubEnv("NOVA_REPORT_STORAGE","database");
+    client.query.mockResolvedValueOnce({rows:[{id:FAMILY_ID}]}).mockResolvedValueOnce({rows:[{...actor("parent"),disabled:false,demo:false}]}).mockResolvedValueOnce({rows:[]});
+    await expect(deleteFamily(actor("parent"),FAMILY_ID,{confirmation:"Synthetic child"})).rejects.toMatchObject({code:"NOT_FOUND"});
+    expect(clientCalls.some(sql=>sql.includes("DELETE FROM families"))).toBe(false);
   });
 });
 
 describe("invitations",()=>{
+  const issuanceOutcome=(issuer:Actor,role:"parent"|"student"|"teacher")=>createInvitation(issuer,FAMILY_ID,{role}).then(()=>({allowed:true}),error=>({status:error.status,code:error.code}));
   it("refuses a parent or student issuing one",async()=>{
     for(const role of ["parent","student","teacher"] as const){
       await expect(createInvitation(actor(role),FAMILY_ID,{role:"parent"})).rejects.toMatchObject({code:"ROLE_DENIED"});
@@ -169,6 +230,36 @@ describe("invitations",()=>{
     const token=result.url.split("token=")[1];
     const stored=client.query.mock.calls.find(call=>String(call[0]).includes("INSERT INTO invitations"))?.[1] as unknown[];
     expect(String(stored)).not.toContain(token);
+  });
+  it.each(["parent","student","teacher"] as const)("refuses safety-visible staff granting a %s membership",async role=>{
+    client.query.mockResolvedValueOnce({rows:[{...familyRow,assigned_to:"77777777-6666-4555-8444-333333333333"}]});
+    await expect(issuanceOutcome(actor("staff"),role)).resolves.toMatchObject({status:404,code:"NOT_FOUND"});
+    expect(client.query.mock.calls.some(([sql])=>String(sql).includes("INSERT INTO invitations"))).toBe(false);
+    expect(mockQuery.mock.calls.some(([sql])=>String(sql).includes("invitation.created"))).toBe(false);
+  });
+  it.each(["parent","student","teacher"] as const)("allows the assigned staff member to invite a %s after locking the family",async role=>{
+    client.query.mockResolvedValueOnce({rows:[{...familyRow,assigned_to:USER_ID}]});
+    await expect(createInvitation(actor("staff"),FAMILY_ID,{role})).resolves.toMatchObject({url:expect.stringContaining("/invite#token=")});
+    expect(client.query.mock.calls[0][0]).toContain("region=$2 FOR UPDATE");
+    expect(client.query.mock.calls[0][1]).toEqual([FAMILY_ID,"CN"]);
+    const insert=client.query.mock.calls.find(([sql])=>String(sql).includes("INSERT INTO invitations"));
+    expect(insert?.[1]?.[2]).toBe(role);
+  });
+  it("rechecks the assignee after locking even when an earlier read showed the actor assigned",async()=>{
+    mockQuery.mockImplementation((async(sql:string)=>String(sql).includes("FROM families f WHERE f.id=$1")?[{...familyRow,assigned_to:USER_ID}]:[]) as never);
+    client.query.mockResolvedValueOnce({rows:[{...familyRow,assigned_to:"77777777-6666-4555-8444-333333333333"}]});
+    await expect(issuanceOutcome(actor("staff"),"parent")).resolves.toMatchObject({status:404,code:"NOT_FOUND"});
+    expect(client.query.mock.calls.some(([sql])=>String(sql).includes("INSERT INTO invitations"))).toBe(false);
+  });
+  it.each(["admin","staff"] as const)("denies a different-region family to %s without issuing a token",async role=>{
+    client.query.mockResolvedValueOnce({rows:[{...familyRow,region:"HK",assigned_to:USER_ID}]});
+    await expect(issuanceOutcome(actor(role),"parent")).resolves.toMatchObject({status:404,code:"NOT_FOUND"});
+    expect(client.query.mock.calls.some(([sql])=>String(sql).includes("INSERT INTO invitations"))).toBe(false);
+  });
+  it("does not grant invitations for an unassigned family to staff",async()=>{
+    client.query.mockResolvedValueOnce({rows:[familyRow]});
+    await expect(issuanceOutcome(actor("staff"),"parent")).resolves.toMatchObject({status:404,code:"NOT_FOUND"});
+    expect(client.query.mock.calls.some(([sql])=>String(sql).includes("INSERT INTO invitations"))).toBe(false);
   });
   it("rejects a token that is not 64 hex characters",async()=>{
     for(const bad of ["short","z".repeat(64),"a".repeat(63)]){

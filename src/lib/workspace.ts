@@ -1,71 +1,51 @@
 import type { Actor,Locale,ScaleDefinition,StoredAnswer } from "../domain/types";
 import { text } from "../domain/types";
 import { TRIAD_BUNDLE,staffOnlyText } from "../domain/triad-report";
+import { reportRetryBlocker } from "../domain/report-retry";
 import { formatJoinCode } from "./triad";
-import { ageAt,familyScope,iso,type FamilyRow } from "./access";
+import { ageAt,canInviteFamilyMembers,canManageFamilyReports,familyScope,iso,type FamilyRow } from "./access";
 import { getConfig } from "./config";
 import { query } from "./db";
 import { reportSummary } from "./reports";
 
-// The combined report row stays on the parent assessment. Child and teacher
-// rows borrow that id once their trio is complete, so the list can show 已完成
-// and 查看报告 without creating a second report.
-type TriadRow={id:string;family_id:string;respondent_role:string;submitted_at:Date|string|null;report_id:string|null;definition:unknown};
-function sharedTriadReports(rows:TriadRow[]){
-  const assigned=new Map<string,string>();
-  const grouped=new Map<string,typeof rows>();
-  for(const row of rows){
-    const definition=row.definition as ScaleDefinition;
-    if(definition.bundle!==TRIAD_BUNDLE||!row.submitted_at)continue;
-    const list=grouped.get(row.family_id)??[];
-    list.push(row);grouped.set(row.family_id,list);
-  }
-  for(const list of grouped.values()){
-    const waiting=new Map<string,typeof list>();
-    const ordered=[...list].sort((a,b)=>new Date(a.submitted_at??0).getTime()-new Date(b.submitted_at??0).getTime()||String(a.id).localeCompare(String(b.id)));
-    for(const row of ordered){
-      const queue=waiting.get(row.respondent_role)??[];
-      queue.push(row);waiting.set(row.respondent_role,queue);
-      const student=waiting.get("student")?.[0],parent=waiting.get("parent")?.[0],teacher=waiting.get("teacher")?.[0];
-      if(!student||!parent||!teacher||!parent.report_id)continue;
-      const reportId=String(parent.report_id);
-      assigned.set(student.id,reportId);assigned.set(parent.id,reportId);assigned.set(teacher.id,reportId);
-      for(const role of ["student","parent","teacher"])waiting.get(role)!.shift();
-    }
-  }
-  return assigned;
-}
 export async function workspaceFor(actor:Actor,locale:Locale){
   const scope=familyScope(actor),care=["admin","staff","parent"].includes(actor.role),team=["admin","staff"].includes(actor.role);
-  const families=await query<FamilyRow>(`SELECT f.* FROM families f WHERE ${scope.sql} ORDER BY f.created_at DESC`,scope.values);
+  const families=await query<FamilyRow&{assigned_name:string|null}>(`SELECT f.*,(SELECT u.name FROM users u WHERE u.id=f.assigned_to AND u.region=f.region) AS assigned_name FROM families f WHERE ${scope.sql} ORDER BY f.created_at DESC`,scope.values);
   const ids=families.map(f=>f.id);
+  const familyById=new Map(families.map(f=>[f.id,f]));
   const [members,consents,assessments,reports,goals,observations,scales,staff,content,alerts,triadAnswers]=await Promise.all([
     query("SELECT m.family_id,u.id,u.name,m.role FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.family_id=ANY($1::uuid[]) AND NOT u.disabled",[ids]),
     query("SELECT DISTINCT family_id FROM consents WHERE family_id=ANY($1::uuid[]) AND revoked_at IS NULL",[ids]),
-    query(`SELECT a.id,a.family_id,a.respondent_id,a.respondent_role,a.scale_version_id,a.status,a.created_at,a.submitted_at,f.child_name,u.name AS respondent_name,s.definition,r.id AS report_id FROM assessments a JOIN families f ON f.id=a.family_id JOIN users u ON u.id=a.respondent_id JOIN scales s ON s.id=a.scale_version_id LEFT JOIN reports r ON r.assessment_id=a.id WHERE a.family_id=ANY($1::uuid[]) AND a.region=$2 AND ($3::boolean OR a.respondent_id=$4) ORDER BY a.created_at DESC`,[ids,actor.region,care,actor.id]),
+    query(`SELECT a.id,a.family_id,a.respondent_id,a.respondent_role,a.scale_version_id,a.status,a.created_at,a.submitted_at,a.triad_round_id,j.id AS triad_job_id,f.child_name,u.name AS respondent_name,s.definition,r.id AS report_id,
+      j.state AS job_state,COALESCE(a.snapshot<>'null'::jsonb,false) AS has_snapshot,COALESCE(a.answers<>'null'::jsonb,false) AS has_answers,a.submitted_at IS NOT NULL AS has_submission,
+      COALESCE(a.snapshot->'scale'->>'bundle'=$5,false) AS is_triad,(a.triad_round_id IS NOT NULL AND j.source_assessment_ids IS NOT NULL) AS has_round_sources,
+      EXISTS(SELECT 1 FROM consents c WHERE c.family_id=a.family_id AND c.revoked_at IS NULL AND c.scopes @> '["assessment","parent_report","sensitive_data"]'::jsonb) AS has_consent
+      FROM assessments a JOIN families f ON f.id=a.family_id JOIN users u ON u.id=a.respondent_id JOIN scales s ON s.id=a.scale_version_id LEFT JOIN report_jobs j ON j.assessment_id=a.id OR a.id=ANY(j.source_assessment_ids) LEFT JOIN reports r ON r.assessment_id=COALESCE(j.assessment_id,a.id) WHERE a.family_id=ANY($1::uuid[]) AND a.region=$2 AND ($3::boolean OR a.respondent_id=$4) ORDER BY a.created_at DESC`,[ids,actor.region,care,actor.id,TRIAD_BUNDLE]),
     care?query("SELECT * FROM reports WHERE family_id=ANY($1::uuid[]) AND region=$2 ORDER BY created_at DESC",[ids,actor.region]):Promise.resolve([]),
     care?query("SELECT * FROM goals WHERE family_id=ANY($1::uuid[]) ORDER BY created_at DESC, id ASC",[ids]):Promise.resolve([]),
     team?query("SELECT o.*,u.name AS author_name FROM observations o LEFT JOIN users u ON u.id=o.created_by WHERE o.family_id=ANY($1::uuid[]) ORDER BY o.created_at DESC",[ids]):Promise.resolve([]),
     query("SELECT * FROM scales ORDER BY created_at DESC"),
-    team?query("SELECT id,name FROM users WHERE region=$1 AND role IN ('admin','staff') AND NOT disabled ORDER BY name",[actor.region]):Promise.resolve([]),
+    team?query("SELECT id,name FROM users WHERE region=$1 AND role='staff' AND NOT disabled ORDER BY name",[actor.region]):Promise.resolve([]),
     actor.role==="admin"?query("SELECT id,kind,version,created_at FROM content_versions ORDER BY created_at DESC"):Promise.resolve([]),
     team?query("SELECT a.id,a.family_id,f.child_name,a.created_at FROM staff_alerts a JOIN families f ON f.id=a.family_id WHERE a.region=$1 AND a.viewed_at IS NULL ORDER BY a.created_at DESC",[actor.region]):Promise.resolve([]),
     team?query("SELECT a.family_id,a.answers,s.definition FROM assessments a JOIN scales s ON s.id=a.scale_version_id WHERE a.family_id=ANY($1::uuid[]) AND a.region=$2 AND a.answers IS NOT NULL AND s.definition->>'bundle'=$3",[ids,actor.region,TRIAD_BUNDLE]):Promise.resolve([])
   ]);
-  const showCode=actor.role==="parent"||actor.role==="admin"||actor.role==="staff";
-  const scopedFamilies=families.map(f=>({id:f.id,familyName:f.family_name,childName:f.child_name,age:ageAt(f.birth_date),birthDate:f.birth_date,grade:f.grade,region:f.region,guardianLabel:care?f.guardian_label:"",assignedTo:team?f.assigned_to:null,joinCode:showCode&&f.join_code?formatJoinCode(f.join_code):null,createdAt:iso(f.created_at),consent:consents.some(c=>c.family_id===f.id),members:members.filter(m=>m.family_id===f.id&&(care||m.id===actor.id)).map(m=>({id:m.id,name:m.name,role:m.role}))}));
+  const scopedFamilies=families.map(f=>{
+    const canInviteMembers=canInviteFamilyMembers(actor,f);
+    const showCode=actor.role==="parent"||canInviteMembers;
+    return {id:f.id,familyName:f.family_name,childName:f.child_name,age:ageAt(f.birth_date),birthDate:f.birth_date,grade:f.grade,region:f.region,guardianLabel:care?f.guardian_label:"",assignedTo:team?f.assigned_to:null,assignedName:team?f.assigned_name??null:null,canInviteMembers,joinCode:showCode&&f.join_code?formatJoinCode(f.join_code):null,createdAt:iso(f.created_at),consent:consents.some(c=>c.family_id===f.id),members:members.filter(m=>m.family_id===f.id&&(care||m.id===actor.id)).map(m=>({id:m.id,name:m.name,role:m.role}))};
+  });
   const triadPhase=(row:typeof assessments[number],status:string)=>{
     const definition=row.definition as ScaleDefinition;
     if(definition.bundle!==TRIAD_BUNDLE||status!=="queued")return null;
-    const roles=new Set(assessments.filter(item=>item.family_id===row.family_id&&(item.definition as ScaleDefinition).bundle===TRIAD_BUNDLE&&item.submitted_at).map(item=>item.respondent_role));
-    return roles.has("student")&&roles.has("parent")&&roles.has("teacher")?"reporting":"waiting";
+    return row.triad_round_id&&row.triad_job_id?"reporting":"waiting";
   };
-  const sharedReports=care?sharedTriadReports(assessments as TriadRow[]):new Map<string,string>();
   const scopedAssessments=assessments.map(a=>{
     const ownReport=care&&a.report_id?String(a.report_id):null;
-    const sharedReport=!ownReport&&a.submitted_at&&(a.status==="published"||a.status==="queued")?sharedReports.get(a.id)??null:null;
-    const status=sharedReport&&a.status==="queued"?"published":a.status;
-    return {id:a.id,familyId:a.family_id,childName:a.child_name,respondentId:a.respondent_id,respondentName:a.respondent_name,respondentRole:a.respondent_role,scaleVersionId:a.scale_version_id,scaleTitle:text((a.definition as ScaleDefinition).title,locale),status,phase:triadPhase(a,status),createdAt:iso(a.created_at),submittedAt:iso(a.submitted_at),reportId:ownReport??(status==="published"?sharedReport:null),canRespond:a.respondent_id===actor.id&&a.status==="pending"};
+    const status=a.status;
+    const family=familyById.get(a.family_id);
+    const canRetryReport=!!family&&canManageFamilyReports(actor,family)&&status==="failed"&&reportRetryBlocker({status,jobState:a.job_state??null,hasSnapshot:a.has_snapshot===true,hasAnswers:a.has_answers===true,hasSubmission:a.has_submission===true,isTriad:a.is_triad===true,hasRoundSources:a.has_round_sources===true,hasConsent:a.has_consent===true})===null;
+    return {id:a.id,familyId:a.family_id,childName:a.child_name,respondentId:a.respondent_id,respondentName:a.respondent_name,respondentRole:a.respondent_role,scaleVersionId:a.scale_version_id,scaleTitle:text((a.definition as ScaleDefinition).title,locale),status,phase:triadPhase(a,status),createdAt:iso(a.created_at),submittedAt:iso(a.submitted_at),reportId:ownReport,canRespond:a.respondent_id===actor.id&&a.status==="pending",canRetryReport};
   });
   const scopedReports=reports.map(r=>reportSummary(r,locale));
   return {user:actor,region:actor.region,mode:getConfig().mode,families:scopedFamilies,assessments:scopedAssessments,reports:scopedReports,

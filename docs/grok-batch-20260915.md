@@ -1,6 +1,6 @@
 # Nova v1 completion batch — 2026-09-15
 
-The canonical project remains `/Volumes/Starship/Nova Psycho Helper`.
+The canonical project remains `/Volumes/Mars/Nova Psycho Helper`.
 
 ## Implemented
 

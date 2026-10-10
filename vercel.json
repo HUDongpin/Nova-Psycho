@@ -1,0 +1,28 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "regions": ["hkg1"],
+  "functions": {
+    "src/app/api/queues/report/route.ts": {
+      "maxDuration": 240,
+      "memory": 2048,
+      "experimentalTriggers": [
+        {
+          "type": "queue/v2beta",
+          "topic": "nova-report",
+          "maxConcurrency": 1,
+          "maxDeliveries": 8,
+          "retryAfterSeconds": 30
+        }
+      ]
+    },
+    "src/app/api/cron/report-recovery/route.ts": {
+      "maxDuration": 60
+    }
+  },
+  "crons": [
+    {
+      "path": "/api/cron/report-recovery",
+      "schedule": "0 0 * * *"
+    }
+  ]
+}
