@@ -107,7 +107,7 @@ async function registerTriad(base:string,locale:Locale):Promise<Triad>{
   for(const role of ["student","teacher"] as const){const joined=await request(visitor,`/api/triad/join?locale=${locale}`,"POST",{code:created.joinCode,role,name:`合成三方${role}`,username:`qa_triad_${region}_${role}_${nonce}`,password:randomBytes(18).toString("base64url")});assert.equal(joined.status,201);clients[role]=sessionClient(base,joined);}
   const w=await workspace(clients.parent,locale);assert.equal(w.families.find(f=>f.id===created.familyId)?.age,12);
   const tasks={} as Record<RespondentRole,Assessment>;
-  for(const role of roles){tasks[role]=familyTask(w,created.familyId,role,`${definitions[role].id}@1.0.0`);assert.equal(tasks[role].status,"pending");assert.equal(tasks[role].canRetryReport,false);assert.equal((await ok<SurveyRecord>(clients[role],`/api/assessments/${tasks[role].id}`)).demo,false);}
+  for(const role of roles){tasks[role]=familyTask(w,created.familyId,role,`${definitions[role].id}@${definitions[role].version}`);assert.equal(tasks[role].status,"pending");assert.equal(tasks[role].canRetryReport,false);assert.equal((await ok<SurveyRecord>(clients[role],`/api/assessments/${tasks[role].id}`)).demo,false);}
   return {familyId:created.familyId,clients,tasks};
 }
 
@@ -119,7 +119,7 @@ async function main(){
     const adminW=await workspace(admin),parentW=await workspace(parent),hkW=await workspace(hkAdmin,"zh-HK");
     for(const w of [adminW,hkW]){
       const demo=w.scales.find(scale=>scale.id===demoId);assert.ok(demo);assert.equal(demo.demo,true);assert.equal(demo.status,"active");assert.ok(demo.minAge<=7&&demo.maxAge>=7);assert.deepEqual([...demo.roles].sort(),["parent","student","teacher"]);
-      for(const definition of Object.values(definitions)){const scale=w.scales.find(s=>s.id===`${definition.id}@1.0.0`);assert.ok(scale);assert.equal(scale.demo,false);assert.equal(scale.status,"active");assert.deepEqual(scale.roles,definition.roles);assert.ok(scale.minAge<=12&&scale.maxAge>=12);}
+      for(const definition of Object.values(definitions)){const scale=w.scales.find(s=>s.id===`${definition.id}@${definition.version}`);assert.ok(scale);assert.equal(scale.demo,false);assert.equal(scale.status,"active");assert.deepEqual(scale.roles,definition.roles);assert.ok(scale.minAge<=12&&scale.maxAge>=12);}
       assert.ok(!w.scales.some(scale=>!scale.demo&&scale.status==="active"&&scale.minAge<=7&&scale.maxAge>=7),"Seven-year-old demo scenario must remain outside active official instrument ages");
     }
     return {cn,hk,admin,parent,student,teacher,staff,otherStaff,hkAdmin,adminW,parentW,hkW};
@@ -136,7 +136,7 @@ async function main(){
     assert.equal(parentW.families.length,1);assert.equal(parentW.observations.length,0);assert.equal(parentW.staff.length,0);assert.equal(parentW.staffNotes.length,0);
     const s=await workspace(student),t=await workspace(teacher),st=await workspace(staff);
     assert.equal(s.reports.length,0);assert.equal(t.reports.length,0);assert.equal(s.goals.length,0);assert.ok(s.assessments.every(a=>a.respondentId===s.user.id));assert.ok(t.assessments.every(a=>a.respondentId===t.user.id));
-    assert.ok(st.families.every(f=>f.assignedTo===st.user.id||st.alerts.some(alert=>alert.familyId===f.id)),"Staff may see assigned families or families covered by the safety workflow");
+    assert.ok(st.families.every(f=>f.assignedTo===st.user.id||(f.assignedTo===null&&st.alerts.some(alert=>alert.familyId===f.id))),"Staff may see a family they are assigned to, or an unassigned family with an unresolved safety alert");
     const ownStudentTask=adminW.assessments.find(a=>a.respondentRole==="student"&&a.familyId===ownFamily.id);assert.ok(ownStudentTask);
     await rejected(parent,`/api/assessments/${ownStudentTask.id}`,"GET",undefined,404,"NOT_FOUND");await rejected(student,"/api/families","POST",{},403,"ROLE_DENIED");
   });
@@ -244,8 +244,8 @@ async function main(){
 
   const triad=await check("independent three-party registration creates fixed role instruments",()=>registerTriad(cn,"zh-CN"));
   await check("official role/age gates reject inappropriate assignments and demo fallback",async()=>{
-    await rejected(admin,"/api/assessments","POST",{familyId:triad.familyId,respondentId:triad.tasks.student.respondentId,scaleVersionId:"growth-parent@1.0.0",locale:"zh-CN"},422,"INELIGIBLE");
-    await rejected(admin,"/api/assessments","POST",{familyId:demoFamily.id,respondentId:acceptedIds.student,scaleVersionId:"growth-child@1.0.0",locale:"zh-CN"},422,"INELIGIBLE");
+    await rejected(admin,"/api/assessments","POST",{familyId:triad.familyId,respondentId:triad.tasks.student.respondentId,scaleVersionId:`${definitions.parent.id}@${definitions.parent.version}`,locale:"zh-CN"},422,"INELIGIBLE");
+    await rejected(admin,"/api/assessments","POST",{familyId:demoFamily.id,respondentId:acceptedIds.student,scaleVersionId:`${definitions.student.id}@${definitions.student.version}`,locale:"zh-CN"},422,"INELIGIBLE");
     for(const role of roles)await rejected(admin,"/api/assessments","POST",{familyId:triad.familyId,respondentId:triad.tasks[role].respondentId,scaleVersionId:demoId,locale:"zh-CN"},409,"DEMO_NOT_ASSIGNABLE");
   });
   await check("admin assignment controls staff report-management scope",async()=>{

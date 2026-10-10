@@ -92,14 +92,14 @@ describe("P27/P36/P42 correct family, role, locale and consent binding", () => {
     expect(values("INSERT INTO memberships")).toEqual([result.familyId, result.userId]);
     expect(values("INSERT INTO consents").slice(1, 5)).toEqual([result.familyId, result.userId, parent.parentName, noticeVersion]);
     expect(JSON.parse(String(values("INSERT INTO consents")[5]))).toEqual(["assessment", "parent_report", "sensitive_data"]);
-    expect(values("INSERT INTO assessments").slice(1, 6)).toEqual([result.familyId, "HK", result.userId, "growth-parent@1.0.0", "zh-HK"]);
+    expect(values("INSERT INTO assessments").slice(1, 6)).toEqual([result.familyId, "HK", result.userId, "growth-parent@1.1.0", "zh-HK"]);
   });
   it.each(["student", "teacher"] as const)("assigns the correct %s instrument under a regional family lock", async role => {
     const result = await joinWithCode({ ...joining, role }, "zh-HK");
     const family = sql.mock.calls.find(([text]) => text.startsWith("SELECT id,birth_date"))!;
     expect(family[0]).toContain("region=$2 FOR UPDATE"); expect(family[1]).toEqual([joining.code, "HK"]);
     const task = sql.mock.calls.find(([text]) => text.startsWith("INSERT INTO assessments"))![1]!;
-    expect(task.slice(1, 7)).toEqual(["synthetic-family", "HK", result.userId, role, role === "student" ? "growth-child@1.0.0" : "growth-teacher@1.0.0", "zh-HK"]);
+    expect(task.slice(1, 7)).toEqual(["synthetic-family", "HK", result.userId, role, role === "student" ? "growth-child@1.1.0" : "growth-teacher@1.1.0", "zh-HK"]);
   });
   it("rejects reuse of an occupied role before creating another user or task", async () => {
     roleTaken = true;

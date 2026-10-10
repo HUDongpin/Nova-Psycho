@@ -8,14 +8,14 @@ import { ArrowClockwise, CheckCircle, CircleNotch, Copy, FloppyDisk, Warning } f
 import { ApiError, errorMessage, type Locale, type SurveyRecord } from "./api";
 import { AssessmentDraftSession } from "./draft-session";
 import { copy } from "./copy";
-import { bindChoiceAutoAdvance, CHOICE_AUTO_ADVANCE_MS, focusFirstUnanswered, questionProgressLabel } from "./survey-navigation";
+import { bindChoiceAutoAdvance, CHOICE_AUTO_ADVANCE_MS, focusFirstUnanswered, questionProgressLabel, questionSkipsAutoAdvance } from "./survey-navigation";
 import { ErrorNotice, Field } from "./ui";
 
 export default function SurveyRunner({ record, draft, locale, onSubmitted, onReloadLatest, openPrivacy }: {
   record: SurveyRecord;
   draft: AssessmentDraftSession;
   locale: Locale;
-  onSubmitted: () => Promise<void>;
+  onSubmitted: (result: { phase: "waiting" | "reporting" | null; safetyGuidance: boolean }) => Promise<void>;
   onReloadLatest: () => Promise<void>;
   openPrivacy: () => void;
 }) {
@@ -28,6 +28,7 @@ export default function SurveyRunner({ record, draft, locale, onSubmitted, onRel
   const [copied, setCopied] = useState(false);
   const [reloading, setReloading] = useState(false);
   const [advancePending, setAdvancePending] = useState(false);
+  const [advanceHeld, setAdvanceHeld] = useState(false);
   const [advanceToken, setAdvanceToken] = useState(0);
   const advanceSeconds = String(CHOICE_AUTO_ADVANCE_MS / 1000);
   const submitRef = useRef<() => void>(() => undefined);
@@ -84,13 +85,20 @@ export default function SurveyRunner({ record, draft, locale, onSubmitted, onRel
       setAdvancePending(false);
       return;
     }
-    return bindChoiceAutoAdvance(model, {
+    const syncHold = () => setAdvanceHeld(questionSkipsAutoAdvance(model.currentSingleQuestion ?? undefined));
+    syncHold();
+    model.onCurrentPageChanged.add(syncHold);
+    const stop = bindChoiceAutoAdvance(model, {
       onPending: () => {
         setAdvancePending(true);
         setAdvanceToken(value => value + 1);
       },
       onClear: () => setAdvancePending(false)
     });
+    return () => {
+      model.onCurrentPageChanged.remove(syncHold);
+      stop();
+    };
   }, [model, locked]);
   useEffect(() => {
     draft.setAcknowledged(false, locale);
@@ -115,9 +123,9 @@ export default function SurveyRunner({ record, draft, locale, onSubmitted, onRel
     model.mode = "display";
     draft.update({ ...model.data }, locale);
     try {
-      await draft.submit(locale);
+      const result = await draft.submit(locale);
       if (draft.getSnapshot().authenticationPaused) return;
-      await onSubmitted();
+      await onSubmitted({ phase: result.phase ?? null, safetyGuidance: result.safetyGuidance === true });
     } catch (err) {
       if (!(err instanceof ApiError && err.code === "DRAFT_CONFLICT")) setError(errorMessage(err));
     }
@@ -147,7 +155,7 @@ export default function SurveyRunner({ record, draft, locale, onSubmitted, onRel
       <span>{t(snapshot.status === "saved" ? "savedDraft" : snapshot.status === "saving" || snapshot.submitting ? "saving" : snapshot.status === "failed" ? "saveFailed" : "unsaved")}</span>
       {snapshot.status === "failed" && <button className="text-link" disabled={sessionLocked} onClick={() => void draft.save(locale).catch(() => undefined)}>{t("saveDraft")}</button>}
     </div>
-    <p className="survey-nav-hint" aria-live="polite">{(advancePending ? t("autoAdvanceSoon") : t("autoAdvanceHint")).replaceAll("{seconds}", advanceSeconds)}</p>
+    <p className="survey-nav-hint" aria-live="polite">{(advancePending ? t("autoAdvanceSoon") : advanceHeld ? t("safetyNoAutoAdvance") : t("autoAdvanceHint")).replaceAll("{seconds}", advanceSeconds)}</p>
     {advancePending && <div key={advanceToken} className="survey-advance-track" aria-hidden="true"><span style={{ animationDuration: `${CHOICE_AUTO_ADVANCE_MS}ms` }} /></div>}
     <fieldset className="survey-questions" disabled={locked}><Survey model={model} /></fieldset>
     {submitError && <div className="survey-submit-panel"><ErrorNotice locale={locale} message={submitError} /></div>}
