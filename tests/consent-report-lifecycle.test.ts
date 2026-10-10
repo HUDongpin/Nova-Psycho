@@ -22,9 +22,8 @@ const ASSESSMENT = "22222222-3333-4444-8555-666666666666";
 const JOB = "33333333-4444-4555-8666-777777777777";
 const actor: Actor = { id: "99999999-8888-4777-8666-555555555555", name: "Synthetic guardian", role: "parent", region: "CN" };
 function allowConsent(sql: string): { rows: unknown[] } | undefined {
-  if (sql.includes("SELECT id, region, assigned_to FROM families")) return { rows: [{ id: FAMILY, region: "CN", assigned_to: actor.id }] };
+  if (sql.includes("FROM families f WHERE f.id=$1") && sql.includes("FOR UPDATE")) return { rows: [{ id: FAMILY }] };
   if (sql.includes("role=$2 AND region=$3 AND NOT disabled FOR SHARE")) return { rows: [{ id: actor.id }] };
-  if (sql.includes("parent_member")) return { rows: [{ parent_member: 1 }] };
   return undefined;
 }
 

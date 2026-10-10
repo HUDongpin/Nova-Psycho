@@ -2,12 +2,12 @@ import { randomBytes,randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { PoolClient } from "pg";
 import type { Actor, Locale, RespondentRole, Role } from "../domain/types";
-import { ageAt, canInviteFamilyMembers, familyFor } from "./access";
+import { ageAt, canInviteFamilyMembers, familyFor, familyScope } from "./access";
 import { audit, hashPassword, hashToken } from "./auth";
 import { getConfig } from "./config";
 import { query, transaction } from "./db";
 import { HttpError, requireRole, validateId } from "./http";
-import { ACTIVE_CONSENT_ROWS_SQL, CONSENT_SCOPES, PARENT_REPORT_SCOPE, REQUIRED_WITHDRAW_SCOPES, hasGranted, insertConsentRecords, rejectBundledConsent, scopeList, type ConsentScope } from "./consent";
+import { ACTIVE_CONSENT_ROWS_SQL, CONSENT_SCOPES, PARENT_REPORT_SCOPE, REQUIRED_WITHDRAW_SCOPES, hasGranted, insertConsentRecords, rejectBundledConsent, scopeList, scopeNotRevokedSql, type ConsentScope } from "./consent";
 import { noticeVersion } from "./privacy";
 import type { VerifiedClerkIdentity } from "./clerk-auth";
 import { assertTriadRegistrationReady, enqueueReportsHeldForConsent, joinTriadFamilyInTransaction, lockRegistrationActor, requireRegistrationConsent, type RegistrationFamily } from "./triad";
@@ -35,11 +35,12 @@ export async function assignFamily(actor:Actor,id:string,input:unknown){
   });
 }
 // Family row first, then the actor, matching assignment. The check outside this
-// transaction can go stale while the caller waits; only the result under the lock is used.
+// transaction can go stale while the caller waits. The locked query uses
+// familyScope, so it follows access.ts rather than a second copy of that rule.
 async function assertConsentAuthority(client:PoolClient,actor:Actor,familyId:string):Promise<void>{
-  const families=await client.query<{id:string;region:"CN"|"HK";assigned_to:string|null}>("SELECT id, region, assigned_to FROM families WHERE id=$1 AND region=$2 FOR UPDATE",[familyId,actor.region]);
-  const family=families.rows[0];
-  if(!family)throw new HttpError(404,"未找到该家庭或没有访问权限。","NOT_FOUND");
+  const scope=familyScope(actor,2);
+  const families=await client.query(`SELECT f.id FROM families f WHERE f.id=$1 AND ${scope.sql} FOR UPDATE`,[familyId,...scope.values]);
+  if(!families.rows[0])throw new HttpError(404,"未找到该家庭或没有访问权限。","NOT_FOUND");
   const matched=await client.query("SELECT id FROM users WHERE id=$1 AND role=$2 AND region=$3 AND NOT disabled FOR SHARE",[actor.id,actor.role,actor.region]);
   if(!matched.rows[0]){
     const found=await client.query<{role:Role;region:"CN"|"HK";disabled:boolean}>("SELECT role, region, disabled FROM users WHERE id=$1 FOR SHARE",[actor.id]);
@@ -49,18 +50,9 @@ async function assertConsentAuthority(client:PoolClient,actor:Actor,familyId:str
     if(current.role!==actor.role)throw new HttpError(409,"账号角色已变更，请重新登录。","ROLE_CONFLICT");
     throw new HttpError(403,"账号已停用，请联系服务人员。","ACCOUNT_REVOKED");
   }
-  if(actor.role==="admin")return;
-  if(actor.role==="staff"){
-    if(family.assigned_to===actor.id)return;
-    const alerts=await client.query("SELECT 1 FROM staff_alerts WHERE family_id=$1 AND region=$2 LIMIT 1",[family.id,actor.region]);
-    if(alerts.rows[0])return;
-    throw new HttpError(404,"未找到该家庭或没有访问权限。","NOT_FOUND");
-  }
-  const membership=await client.query("SELECT 1 AS parent_member FROM memberships WHERE family_id=$1 AND user_id=$2 AND role='parent'",[family.id,actor.id]);
-  if(!membership.rows[0])throw new HttpError(404,"未找到该家庭或没有访问权限。","NOT_FOUND");
 }
 async function withdrawConsentScope(client:PoolClient,actor:Actor,familyId:string,scope:ConsentScope):Promise<void>{
-  const carriers=await client.query<{id:string;scopes:unknown}>("SELECT c.id, c.scopes FROM consents c WHERE c.family_id=$1 AND c.revoked_at IS NULL AND c.scopes @> $2::jsonb AND NOT EXISTS (SELECT 1 FROM consent_scope_revocations r WHERE r.consent_id=c.id AND r.scope=$3)",[familyId,JSON.stringify([scope]),scope]);
+  const carriers=await client.query<{id:string;scopes:unknown}>(`SELECT c.id, c.scopes FROM consents c WHERE c.family_id=$1 AND c.revoked_at IS NULL AND c.scopes @> $2::jsonb AND ${scopeNotRevokedSql("c","$3")}`,[familyId,JSON.stringify([scope]),scope]);
   for(const row of carriers.rows){
     const listed=scopeList(row.scopes);
     const prior=await client.query<{scope:string}>("SELECT scope FROM consent_scope_revocations WHERE consent_id=$1",[row.id]);

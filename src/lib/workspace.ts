@@ -4,7 +4,7 @@ import { TRIAD_BUNDLE,staffOnlyText } from "../domain/triad-report";
 import { reportRetryBlocker } from "../domain/report-retry";
 import { formatJoinCode } from "./triad";
 import { ageAt,canInviteFamilyMembers,canManageFamilyReports,familyScope,iso,type FamilyRow } from "./access";
-import { consentScopeGrantedSql, grantedScopes } from "./consent";
+import { consentScopeGrantedSql, effectiveScopesSelect, grantedScopes } from "./consent";
 import { getConfig } from "./config";
 import { query } from "./db";
 import { reportSummary } from "./reports";
@@ -16,11 +16,7 @@ export async function workspaceFor(actor:Actor,locale:Locale){
   const familyById=new Map(families.map(f=>[f.id,f]));
   const [members,consents,assessments,reports,goals,observations,scales,staff,content,alerts,triadAnswers]=await Promise.all([
     query("SELECT m.family_id,u.id,u.name,m.role FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.family_id=ANY($1::uuid[]) AND NOT u.disabled",[ids]),
-    query<{family_id:string;scopes:unknown}>(`SELECT c.family_id, (
-      SELECT COALESCE(jsonb_agg(to_jsonb(scope_name)), '[]'::jsonb)
-      FROM jsonb_array_elements_text(c.scopes) AS scope_name
-      WHERE NOT EXISTS (SELECT 1 FROM consent_scope_revocations r WHERE r.consent_id=c.id AND r.scope=scope_name)
-    ) AS scopes FROM consents c WHERE c.family_id=ANY($1::uuid[]) AND c.revoked_at IS NULL`,[ids]),
+    query<{family_id:string;scopes:unknown}>(`SELECT c.family_id, ${effectiveScopesSelect("c")} AS scopes FROM consents c WHERE c.family_id=ANY($1::uuid[]) AND c.revoked_at IS NULL`,[ids]),
     query(`SELECT a.id,a.family_id,a.respondent_id,a.respondent_role,a.scale_version_id,a.status,a.created_at,a.submitted_at,a.triad_round_id,j.id AS triad_job_id,f.child_name,u.name AS respondent_name,s.definition,r.id AS report_id,
       j.state AS job_state,COALESCE(a.snapshot<>'null'::jsonb,false) AS has_snapshot,COALESCE(a.answers<>'null'::jsonb,false) AS has_answers,a.submitted_at IS NOT NULL AS has_submission,
       COALESCE(a.snapshot->'scale'->>'bundle'=$5,false) AS is_triad,(a.triad_round_id IS NOT NULL AND j.source_assessment_ids IS NOT NULL) AS has_round_sources,

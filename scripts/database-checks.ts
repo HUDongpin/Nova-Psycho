@@ -6,6 +6,7 @@ import {createFamily,recordConsent,deleteFamily,createInvitation,acceptInvitatio
 import {query,transaction,closeDatabase} from "../src/lib/db";
 import {getConfig} from "../src/lib/config";
 import type {Actor,ReportPayload} from "../src/domain/types";
+import {consentScopeGrantedSql} from "../src/lib/consent";
 import {reportDetail,reportFor} from "../src/lib/reports";
 import {readPrivatePdf} from "../src/lib/storage";
 import {processDeletionJobs,cleanOrphanReports} from "../src/lib/worker";
@@ -36,7 +37,7 @@ try{
     const rows=await query<{scopes:string[]}>("SELECT scopes FROM consents WHERE family_id=$1 AND revoked_at IS NULL",[id]);
     assert.equal(rows.length,1);
     assert.deepEqual(rows[0].scopes,["assessment","parent_report","sensitive_data"]);
-    const granted=await query<{ok:boolean}>("SELECT (bool_or(scopes @> '[\"assessment\"]') AND bool_or(scopes @> '[\"parent_report\"]') AND bool_or(scopes @> '[\"sensitive_data\"]')) AS ok FROM consents WHERE family_id=$1 AND revoked_at IS NULL",[id]);
+    const granted=await query<{ok:boolean}>(`SELECT (${consentScopeGrantedSql("$1","assessment")} AND ${consentScopeGrantedSql("$1","parent_report")} AND ${consentScopeGrantedSql("$1","sensitive_data")}) AS ok`,[id]);
     assert.equal(granted[0].ok,true);
   });
   await check("concurrent invitation admission and deletion leave no orphan account",async()=>{

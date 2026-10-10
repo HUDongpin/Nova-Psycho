@@ -4,7 +4,7 @@ import { selectNarrative } from "../domain/narrative";
 import { composeTriad,TRIAD_BUNDLE,triadRolesReady } from "../domain/triad-report";
 import { compareResults } from "../domain/scoring";
 import { reportHtml } from "../domain/report-html";
-import { ACTIVE_CONSENT_ROWS_SQL, PARENT_REPORT_SCOPE, consentScopeGrantedSql, hasGranted } from "./consent";
+import { ACTIVE_CONSENT_ROWS_SQL, PARENT_REPORT_SCOPE, consentScopePredicate, consentScopeGrantedSql, hasGranted } from "./consent";
 import { getConfig } from "./config";
 import { query,transaction } from "./db";
 import { renderPdf } from "./pdf";
@@ -90,7 +90,7 @@ async function runReportJob(jobId?:string):Promise<ReportJobResult>{
       publishIds=siblings.map(row=>row.id);
     }else{
       // Consent may be withdrawn after submission. Never contact AI without current permission too.
-      const consent=await query("SELECT id FROM consents c WHERE c.family_id=$1 AND c.revoked_at IS NULL AND c.scopes @> '[\"ai_processing\"]'::jsonb AND NOT EXISTS (SELECT 1 FROM consent_scope_revocations r WHERE r.consent_id=c.id AND r.scope='ai_processing') LIMIT 1",[assessment.family_id]);
+      const consent=await query(`SELECT id FROM consents c WHERE c.family_id=$1 AND ${consentScopePredicate("c","ai_processing")} LIMIT 1`,[assessment.family_id]);
       const selection=await selectNarrative({...snapshot,aiConsented:snapshot.aiConsented&&consent.length>0},getConfig().ai);
       const previous=await query("SELECT snapshot,submitted_at FROM assessments WHERE family_id=$1 AND respondent_id=$2 AND scale_version_id=$3 AND submitted_at<$4 AND snapshot IS NOT NULL ORDER BY submitted_at DESC LIMIT 1",[assessment.family_id,assessment.respondent_id,assessment.scale_version_id,assessment.submitted_at]);
       const prior=previous[0];

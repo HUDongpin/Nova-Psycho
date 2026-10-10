@@ -3,14 +3,14 @@ import { assertThrowawayDatabase, assertThrowawayTarget, classifyThrowawayDataba
 
 afterEach(() => vi.unstubAllEnvs());
 
-const loopback = "postgresql://127.0.0.1:55432/nova_consent_race";
+const loopback = "postgresql://127.0.0.1:55432/nova_alert_race";
 
 describe("throwaway database target", () => {
   it.each([
-    "postgresql://127.0.0.1:55432/nova_consent_race",
-    "postgresql://localhost/nova_consent_race",
-    "postgresql://[::1]:55432/nova_consent_race",
-    "postgres://nova@127.0.0.1/nova_consent_race"
+    "postgresql://127.0.0.1:55432/nova_alert_race",
+    "postgresql://localhost/nova_alert_race",
+    "postgresql://[::1]:55432/nova_alert_race",
+    "postgres://nova@127.0.0.1/nova_alert_race"
   ])("allows %s when the process is demo and AI is off", url => {
     expect(() => assertThrowawayTarget({ mode: "demo", databaseUrl: url, aiEnabled: false })).not.toThrow();
   });
@@ -18,8 +18,21 @@ describe("throwaway database target", () => {
     expect(() => assertThrowawayTarget({ mode: "demo", databaseUrl: "postgresql://db.internal:5432/nova", aiEnabled: false })).toThrow(TestDatabaseRefused);
     expect(() => assertThrowawayTarget({ mode: "demo", databaseUrl: "postgresql://db.internal:5432/nova", aiEnabled: false })).toThrow(/loopback/);
   });
-  it("refuses a database URL with no host", () => {
-    expect(() => assertThrowawayTarget({ mode: "demo", databaseUrl: "postgresql:///nova", aiEnabled: false })).toThrow(/loopback/);
+  it("allows a local unix socket, which is the host pg would dial", () => {
+    expect(() => assertThrowawayTarget({ mode: "demo", databaseUrl: "postgresql://%2Ftmp/nova_alert_race", aiEnabled: false })).not.toThrow();
+  });
+  it("refuses a loopback URL whose host query parameter retargets the connection", () => {
+    const url = "postgresql://127.0.0.1:55461/synthetic?host=example.invalid";
+    expect(() => assertThrowawayTarget({ mode: "demo", databaseUrl: url, aiEnabled: false })).toThrow(TestDatabaseRefused);
+    expect(() => assertThrowawayTarget({ mode: "demo", databaseUrl: url, aiEnabled: false })).toThrow(/retarget/);
+  });
+  it.each([
+    "postgresql://127.0.0.1:55432/synthetic?hostaddr=8.8.8.8",
+    "postgresql://127.0.0.1:55432/synthetic?hostaddr=::1",
+    "postgresql://127.0.0.1:55432/synthetic?service=prod",
+    "postgresql://127.0.0.1:55432/synthetic?port=55461"
+  ])("refuses a retargeting parameter in %s", url => {
+    expect(() => assertThrowawayTarget({ mode: "demo", databaseUrl: url, aiEnabled: false })).toThrow(/retarget/);
   });
   it("refuses service mode", () => {
     expect(() => assertThrowawayTarget({ mode: "service", databaseUrl: loopback, aiEnabled: false })).toThrow(/NOVA_MODE is not demo/);
@@ -55,7 +68,7 @@ describe("assertThrowawayDatabase", () => {
     vi.stubEnv("NOVA_MODE", "demo");
     vi.stubEnv("DATABASE_URL", loopback);
     vi.stubEnv("NOVA_PUBLIC_URL", "http://127.0.0.1:3199");
-    vi.stubEnv("NOVA_REPORT_DIR", "/tmp/nova-consent-race-reports");
+    vi.stubEnv("NOVA_REPORT_DIR", "/tmp/nova-alert-race-reports");
     vi.stubEnv("NOVA_REPORT_KEY", "0".repeat(64));
     vi.stubEnv("NOVA_AI_ENABLED", "false");
     for (const [key, value] of Object.entries(over)) vi.stubEnv(key, value);

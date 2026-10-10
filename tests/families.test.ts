@@ -6,6 +6,7 @@ vi.mock("../src/lib/auth",async importOriginal=>{
   return {...actual,hashPassword:vi.fn(async()=>"scrypt$stub")};
 });
 import { query,transaction } from "../src/lib/db";
+import { familyScope } from "../src/lib/access";
 import { acceptInvitation,assignFamily,createFamily,createInvitation,deleteFamily,invitationInfo,recordConsent } from "../src/lib/families";
 import type { Actor,Role } from "../src/domain/types";
 
@@ -20,7 +21,7 @@ const familyRow={id:FAMILY_ID,region:"CN",family_name:"Synthetic family",child_n
 const clientCalls:string[]=[];
 async function answerClient(sql:string,_params?:unknown[]):Promise<{rows:unknown[]}>{
   clientCalls.push(String(sql));
-  if(String(sql).includes("SELECT id, region, assigned_to FROM families"))return {rows:[{...familyRow,assigned_to:USER_ID}]};
+  if(String(sql).includes("FROM families f WHERE f.id=$1")&&String(sql).includes("FOR UPDATE"))return {rows:[{id:FAMILY_ID}]};
   if(String(sql).includes("role=$2 AND region=$3 AND NOT disabled FOR SHARE"))return {rows:[{id:_params?.[0]??USER_ID}]};
   if(String(sql).includes("parent_member"))return {rows:[{parent_member:1}]};
   if(String(sql).includes("SELECT id,region,assigned_to FROM families"))return {rows:[familyRow]};
@@ -210,42 +211,57 @@ describe("recording guardian consent",()=>{
     const revocation=client.query.mock.calls.find(call=>String(call[0]).includes("INSERT INTO consent_scope_revocations"));
     expect(String(revocation?.[0])).toContain("consent_id,family_id,scope,actor_id");
     expect(revocation?.[1]).toEqual([expect.any(String),consentId,FAMILY_ID,"parent_report",USER_ID]);
-    const familyLock=clientCalls.findIndex(sql=>sql.includes("SELECT id, region, assigned_to FROM families")&&sql.includes("FOR UPDATE"));
+    const familyLock=clientCalls.findIndex(sql=>sql.includes("FROM families f WHERE f.id=$1")&&sql.includes("FOR UPDATE"));
     const userLock=clientCalls.findIndex(sql=>sql.includes("NOT disabled FOR SHARE"));
     const write=clientCalls.findIndex(sql=>sql.includes("INSERT INTO consent_scope_revocations"));
     expect(familyLock).toBeGreaterThanOrEqual(0);
     expect(userLock).toBeGreaterThan(familyLock);
     expect(write).toBeGreaterThan(userLock);
   });
-  it("refuses a staff member who lost the assignment before the locked write",async()=>{
+  it("locks with familyScope's SQL and values, then re-checks the actor before writing",async()=>{
+    const scope=familyScope(actor("staff"),2);
+    await recordConsent(actor("staff"),FAMILY_ID,grant("assessment",{reference:"SYNTHETIC-REF"}));
+    const lock=client.query.mock.calls.find(call=>String(call[0]).includes("FROM families f WHERE f.id=$1")&&String(call[0]).includes("FOR UPDATE"));
+    expect(String(lock?.[0])).toBe(`SELECT f.id FROM families f WHERE f.id=$1 AND ${scope.sql} FOR UPDATE`);
+    expect(lock?.[1]).toEqual([FAMILY_ID,...scope.values]);
+    const familyLock=clientCalls.findIndex(sql=>sql.includes("FROM families f WHERE f.id=$1")&&sql.includes("FOR UPDATE"));
+    const userLock=clientCalls.findIndex(sql=>sql.includes("NOT disabled FOR SHARE"));
+    const write=clientCalls.findIndex(sql=>sql.includes("INSERT INTO consents"));
+    expect(familyLock).toBeGreaterThanOrEqual(0);
+    expect(userLock).toBeGreaterThan(familyLock);
+    expect(write).toBeGreaterThan(userLock);
+  });
+  it("rejects the old staff member when the locked familyScope check no longer matches",async()=>{
+    // A safety alert does not get a second allow path here. An empty familyScope
+    // result after the family lock is a refusal. This branch's helper still
+    // matches any staff_alerts row, including after reassignment. PR #11 narrows
+    // familyScope to an unresolved alert only while the family is unassigned, and
+    // this same query then refuses the old staff member.
+    const scope=familyScope(actor("staff"),2);
     client.query.mockImplementation(async(sql:string,params?:unknown[])=>{
       clientCalls.push(String(sql));
-      if(String(sql).includes("SELECT id, region, assigned_to FROM families"))return {rows:[{id:FAMILY_ID,region:"CN",assigned_to:"77777777-6666-4555-8444-333333333333"}]};
-      if(String(sql).includes("FROM staff_alerts"))return {rows:[]};
+      if(String(sql).includes("FROM families f WHERE f.id=$1")&&String(sql).includes("FOR UPDATE"))return {rows:[]};
       return answerClient(sql,params);
     });
     await expect(recordConsent(actor("staff"),FAMILY_ID,{action:"withdraw",scope:"parent_report",guardianName:"Synthetic guardian",reference:"SYNTHETIC-REF"})).rejects.toMatchObject({status:404,code:"NOT_FOUND"});
+    const lock=client.query.mock.calls.find(call=>String(call[0]).includes("FOR UPDATE"));
+    expect(String(lock?.[0])).toBe(`SELECT f.id FROM families f WHERE f.id=$1 AND ${scope.sql} FOR UPDATE`);
+    expect(lock?.[1]).toEqual([FAMILY_ID,...scope.values]);
+    expect(clientCalls.filter(sql=>sql.includes("staff_alerts"))).toEqual([String(lock?.[0])]);
     expect(clientCalls.some(sql=>sql.includes("INSERT INTO consents")||sql.includes("UPDATE consents")||sql.includes("INSERT INTO consent_scope_revocations"))).toBe(false);
-    const familyLock=clientCalls.findIndex(sql=>sql.includes("FROM families")&&sql.includes("FOR UPDATE"));
-    const userLock=clientCalls.findIndex(sql=>sql.includes("FOR SHARE"));
-    expect(familyLock).toBeGreaterThanOrEqual(0);
-    expect(userLock).toBeGreaterThan(familyLock);
   });
-  it("still lets the current assignee, a parent, an administrator, or alert-fallback staff record consent",async()=>{
-    await expect(recordConsent(actor("staff"),FAMILY_ID,grant("assessment",{reference:"SYNTHETIC-REF"}))).resolves.toEqual({ok:true});
+  it("still lets a parent and an administrator record consent when familyScope matches",async()=>{
     await expect(recordConsent(actor("parent"),FAMILY_ID,grant("sensitive_data"))).resolves.toEqual({ok:true});
     await expect(recordConsent(actor("admin"),FAMILY_ID,grant("parent_report",{reference:"SYNTHETIC-REF"}))).resolves.toEqual({ok:true});
-    client.query.mockImplementation(async(sql:string,params?:unknown[])=>{
-      if(String(sql).includes("SELECT id, region, assigned_to FROM families"))return {rows:[{id:FAMILY_ID,region:"CN",assigned_to:"77777777-6666-4555-8444-333333333333"}]};
-      if(String(sql).includes("FROM staff_alerts"))return {rows:[{ok:1}]};
-      return answerClient(sql,params);
-    });
-    await expect(recordConsent(actor("staff"),FAMILY_ID,grant("ai_processing",{reference:"SYNTHETIC-REF"}))).resolves.toEqual({ok:true});
+    for(const role of ["parent","admin"] as const){
+      const scope=familyScope(actor(role),2);
+      expect(clientCalls.some(sql=>sql===`SELECT f.id FROM families f WHERE f.id=$1 AND ${scope.sql} FOR UPDATE`)).toBe(true);
+    }
   });
   it("rechecks a disabled or role-changed account under the family lock and does not write",async()=>{
     client.query.mockImplementation(async(sql:string)=>{
       clientCalls.push(String(sql));
-      if(String(sql).includes("SELECT id, region, assigned_to FROM families"))return {rows:[{id:FAMILY_ID,region:"CN",assigned_to:USER_ID}]};
+      if(String(sql).includes("FROM families f WHERE f.id=$1")&&String(sql).includes("FOR UPDATE"))return {rows:[{id:FAMILY_ID}]};
       if(String(sql).includes("NOT disabled FOR SHARE"))return {rows:[]};
       if(String(sql).includes("SELECT role, region, disabled FROM users"))return {rows:[{role:"staff",region:"CN",disabled:true}]};
       return {rows:[]};
@@ -255,7 +271,7 @@ describe("recording guardian consent",()=>{
     clientCalls.length=0;
     client.query.mockImplementation(async(sql:string)=>{
       clientCalls.push(String(sql));
-      if(String(sql).includes("SELECT id, region, assigned_to FROM families"))return {rows:[{id:FAMILY_ID,region:"CN",assigned_to:USER_ID}]};
+      if(String(sql).includes("FROM families f WHERE f.id=$1")&&String(sql).includes("FOR UPDATE"))return {rows:[{id:FAMILY_ID}]};
       if(String(sql).includes("NOT disabled FOR SHARE"))return {rows:[]};
       if(String(sql).includes("SELECT role, region, disabled FROM users"))return {rows:[{role:"parent",region:"CN",disabled:false}]};
       return {rows:[]};

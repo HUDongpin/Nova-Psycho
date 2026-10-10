@@ -5,6 +5,7 @@ import { assignFamily, recordConsent } from "../src/lib/families";
 import { closeDatabase, pool } from "../src/lib/db";
 import { HttpError } from "../src/lib/http";
 import { getConfig } from "../src/lib/config";
+import { familyScope } from "../src/lib/access";
 import { ACTIVE_CONSENT_ROWS_SQL, hasGranted } from "../src/lib/consent";
 import { noticeVersion } from "../src/lib/privacy";
 import type { Actor } from "../src/domain/types";
@@ -26,15 +27,12 @@ const admin: Actor = { id: randomUUID(), name: "Synthetic admin", role: "admin",
 const parent: Actor = { id: randomUUID(), name: "Synthetic parent", role: "parent", region };
 
 function assertConsentRaceTarget(): void {
-  const config = getConfig();
   let url: URL;
-  try { url = new URL(config.databaseUrl); }
+  try { url = new URL(getConfig().databaseUrl); }
   catch { throw new TestDatabaseRefused("DATABASE_URL is not a URL"); }
-  if (url.hostname !== "127.0.0.1" || url.port !== "55432") {
-    throw new TestDatabaseRefused("Consent race refuses any database except 127.0.0.1:55432");
+  if (url.hostname !== "127.0.0.1" || url.port !== "55432" || url.pathname !== "/nova_consent_race") {
+    throw new TestDatabaseRefused("Consent race refuses any database except 127.0.0.1:55432/nova_consent_race");
   }
-  if (url.pathname !== "/nova_consent_race") throw new TestDatabaseRefused("Consent race refuses any database except nova_consent_race");
-  if (config.mode !== "demo" || config.ai.enabled) throw new TestDatabaseRefused("Consent race requires demo mode and AI off");
 }
 
 async function waitForFamilyLock(match: RegExp): Promise<void> {
@@ -84,7 +82,7 @@ async function raceReassignment(): Promise<void> {
       () => { consentSettled = true; return { refused: false as const }; },
       (error: unknown) => { consentSettled = true; return { refused: true as const, error }; }
     );
-    await waitForFamilyLock(/SELECT id, region, assigned_to FROM families/);
+    await waitForFamilyLock(/FROM families f WHERE f\.id=\$1/);
     assert.equal(consentSettled, false, "the in-flight withdrawal finished before the family lock was released");
     await holder.query("COMMIT");
     open = false;
@@ -112,6 +110,60 @@ async function raceReassignment(): Promise<void> {
     });
     const restored = await pool().query(ACTIVE_CONSENT_ROWS_SQL, [familyId]);
     assert.equal(hasGranted(restored.rows, ["parent_report"]), true);
+  } finally {
+    if (open) await holder.query("ROLLBACK");
+    holder.release();
+  }
+}
+
+async function reassignmentWithAlertFollowsFamilyScope(): Promise<void> {
+  // The in-lock check is familyScope, not a second alert rule. This branch's
+  // helper still matches any staff_alerts row after the family is assigned to
+  // someone else, so the old staff member stays allowed. PR #11 narrows that
+  // helper to an unresolved alert only while assigned_to is null; the same
+  // query then refuses the old staff member.
+  const familyId = randomUUID();
+  const consentId = randomUUID();
+  await pool().query(
+    "INSERT INTO families(id,region,family_name,child_name,birth_date,grade,guardian_label,assigned_to) VALUES($1,'CN','Synthetic alert family','Synthetic child','2014-01-02','S2','Synthetic guardian',$2)",
+    [familyId, oldStaff.id]
+  );
+  await pool().query("INSERT INTO staff_alerts(id,family_id,region) VALUES($1,$2,'CN')", [randomUUID(), familyId]);
+  await pool().query(
+    "INSERT INTO consents(id,family_id,actor_id,guardian_name,method,reference,notice_version,scopes) VALUES($1,$2,$3,'Synthetic guardian','offline_signed','SYNTHETIC-ALERT',$4,$5)",
+    [consentId, familyId, admin.id, noticeVersion, JSON.stringify(["parent_report"])]
+  );
+  const holder = await pool().connect();
+  let open = false;
+  try {
+    await holder.query("BEGIN");
+    open = true;
+    await holder.query("SELECT id FROM families WHERE id=$1 FOR UPDATE", [familyId]);
+    const assignment = assignFamily(admin, familyId, { assignedTo: newStaff.id });
+    await waitForFamilyLock(/SELECT id FROM families WHERE id=\$1 AND region=\$2 FOR UPDATE/);
+    let consentSettled = false;
+    const consent = recordConsent(oldStaff, familyId, {
+      action: "withdraw", scope: "parent_report", guardianName: "Synthetic guardian", reference: "SYNTHETIC-ALERT-STALE"
+    }).then(
+      () => { consentSettled = true; return { refused: false as const }; },
+      (error: unknown) => { consentSettled = true; return { refused: true as const, error }; }
+    );
+    await waitForFamilyLock(/FROM families f WHERE f\.id=\$1/);
+    assert.equal(consentSettled, false, "the alert withdrawal finished before the family lock was released");
+    await holder.query("COMMIT");
+    open = false;
+    await assignment;
+    const stale = await consent;
+    const scope = familyScope(oldStaff, 2);
+    const visible = await pool().query(`SELECT f.id FROM families f WHERE f.id=$1 AND ${scope.sql}`, [familyId, ...scope.values]);
+    const inScope = (visible.rowCount ?? 0) > 0;
+    assert.equal(stale.refused, !inScope, "the locked consent check must follow familyScope after reassignment");
+    const saved = await pool().query<{ revoked_at: Date | null }>("SELECT revoked_at FROM consents WHERE id=$1", [consentId]);
+    assert.equal(saved.rows[0].revoked_at === null, !inScope);
+    if (!inScope && stale.refused) {
+      assert.ok(stale.error instanceof HttpError);
+      assert.equal(stale.error.status, 404);
+    }
   } finally {
     if (open) await holder.query("ROLLBACK");
     holder.release();
@@ -171,6 +223,7 @@ async function main() {
     await pool().query("INSERT INTO users(id,region,name,role,demo) VALUES($1,$2,$3,$4,false)", [person.id, region, person.name, person.role]);
   }
   await raceReassignment();
+  await reassignmentWithAlertFollowsFamilyScope();
   await legacyCarryForward();
   console.log(JSON.stringify({
     synthetic: true,
