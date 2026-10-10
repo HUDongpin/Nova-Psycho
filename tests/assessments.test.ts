@@ -10,6 +10,7 @@ import { query,transaction } from "../src/lib/db";
 import { currentContent,getScale,lockContent } from "../src/lib/content";
 import { assessmentDetail,createAssessment,retryReport,saveDraft,submitAssessment } from "../src/lib/assessments";
 import { demoAdvice,demoScale,demoTemplate } from "../src/domain/demo";
+import { childScale,parentScale,teacherScale } from "../src/domain/triad-scales";
 import { parseScale } from "../src/domain/validation";
 import { TRIAD_BUNDLE } from "../src/domain/triad-report";
 import type { Actor,Role } from "../src/domain/types";
@@ -113,6 +114,23 @@ describe("creating an assessment",()=>{
       return extra(text)??[];
     }) as never);
   };
+  it("assigns nova-family-demo for ages 8-17 when the triad scales are only demo-labelled",async()=>{
+    mockQuery.mockImplementation((async(sql:string,values?:unknown[])=>{
+      const text=String(sql);
+      if(text.includes("FROM families f WHERE f.id=$1"))return [{id:FAMILY_ID,region:"CN",family_name:"Synthetic",child_name:"Synthetic child",birth_date:"2013-04-12",grade:"S2",guardian_label:"Mother",assigned_to:null,created_at:new Date()}];
+      if(text.includes("SELECT m.role FROM memberships"))return [{role:"student"}];
+      if(text.includes("FROM scales WHERE status='active'")){
+        expect(text).toContain("definition->>'demo'");
+        const [region,role,age]=values as ["CN"|"HK","student",number];
+        return [childScale,parentScale,teacherScale].filter(item=>!item.demo&&item.regions.includes(region)&&item.roles.includes(role)&&item.minAge<=age&&item.maxAge>=age).map(item=>({id:`${item.id}@${item.version}`}));
+      }
+      return [];
+    }) as never);
+    const created=await createAssessment(actor("admin"),createInput);
+    expect(created.id).toEqual(expect.any(String));
+    expect(clientCalls.some(sql=>sql.includes("INSERT INTO assessments"))).toBe(true);
+    expect(childScale.demo&&parentScale.demo&&teacherScale.demo).toBe(true);
+  });
   it("still assigns the demo instrument when no official questionnaire is available",async()=>{
     const created=await createAssessment(actor("admin"),createInput);
     expect(created.id).toEqual(expect.any(String));

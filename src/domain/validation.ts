@@ -28,6 +28,7 @@ export const scaleSchema=z.object({
   if(s.minAge>s.maxAge||s.norm.minAge>s.norm.maxAge)fail("Age interval is invalid");
   if(s.norm.minAge>s.minAge||s.norm.maxAge<s.maxAge)fail("Norm age interval must cover the instrument");
   if(s.regions.some(r=>!s.norm.regions.includes(r)))fail("Norm region must cover the instrument");
+  if(!s.demo&&!s.norm.validated)fail("Unvalidated instruments must be labelled demo");
   if(new Set(s.items.map(i=>i.id)).size!==s.items.length)fail("Item IDs must be unique");
   if(new Set(s.dimensions.map(d=>d.key)).size!==s.dimensions.length)fail("Dimension IDs must be unique");
   for(const i of s.items){

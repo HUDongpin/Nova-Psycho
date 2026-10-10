@@ -49,3 +49,4 @@ export function getConfig():Config{
   const siblingUrl=mode==="demo"&&sibling&&["localhost","127.0.0.1"].includes(new URL(sibling).hostname)?sibling:null;
   return {region,mode,databaseUrl,publicUrl:url.origin,reportDir:resolved,reportKey:Buffer.from(key,"hex"),reportStorage,workerMode,queueRegion,dataRegion,siblingUrl,ai};
 }
+export function isDemoMode():boolean{return getConfig().mode==="demo";}

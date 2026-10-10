@@ -65,7 +65,9 @@ function setup(definition: typeof opened) {
 
 describe("assessments opened on growth-child@1.0.0", () => {
   it("keeps the ed66f27 child safety contract", () => {
-    parseScale(opened);
+    expect(opened.demo).toBe(false);
+    expect(opened.norm.validated).toBe(false);
+    expect(() => parseScale(opened)).toThrow(/Unvalidated instruments must be labelled demo/);
     expect(opened.version).toBe("1.0.0");
     expect(opened.id).toBe("growth-child");
     const ids = opened.items.map(item => item.id);
@@ -113,22 +115,30 @@ describe("assessments opened on growth-child@1.0.0", () => {
 });
 
 describe("new triad assessments use the published definition", () => {
-  it("inserts 1.1.0 and does not rewrite a stored definition", async () => {
-    expect(`${childScale.id}@${childScale.version}`).toBe("growth-child@1.1.0");
-    expect(`${parentScale.id}@${parentScale.version}`).toBe("growth-parent@1.1.0");
-    expect(`${teacherScale.id}@${teacherScale.version}`).toBe("growth-teacher@1.1.0");
+  it("inserts 1.2.0 and does not rewrite a stored definition", async () => {
+    expect(`${childScale.id}@${childScale.version}`).toBe("growth-child@1.2.0");
+    expect(`${parentScale.id}@${parentScale.version}`).toBe("growth-parent@1.2.0");
+    expect(`${teacherScale.id}@${teacherScale.version}`).toBe("growth-teacher@1.2.0");
+    expect(childScale.demo).toBe(true);
+    expect(childScale.norm.validated).toBe(false);
     expect(childScale.items.find(item => item.id === "c15")?.showIf?.anyOf).toEqual([1, 2, 3, 4, 5, 7, 8]);
     vi.mocked(query).mockResolvedValue([]);
     await ensureTriadInstruments();
     const sql = vi.mocked(query).mock.calls.map(([text]) => String(text));
     expect(sql.some(text => text.includes("DO UPDATE SET definition"))).toBe(false);
     const inserts = vi.mocked(query).mock.calls.filter(([text]) => String(text).includes("INSERT INTO scales"));
-    expect(inserts.map(([, values]) => values?.[0])).toEqual(["growth-child@1.1.0", "growth-parent@1.1.0", "growth-teacher@1.1.0"]);
+    expect(inserts.map(([, values]) => values?.[0])).toEqual(["growth-child@1.2.0", "growth-parent@1.2.0", "growth-teacher@1.2.0"]);
     expect(inserts.every(([text]) => String(text).includes("ON CONFLICT(id) DO NOTHING"))).toBe(true);
     const stored = JSON.parse(String(inserts[0][1]?.[3]));
-    expect(stored.version).toBe("1.1.0");
+    expect(stored.version).toBe("1.2.0");
+    expect(stored.demo).toBe(true);
+    expect(stored.norm.validated).toBe(false);
     expect(stored.items.find((item: { id: string }) => item.id === "c15").showIf.anyOf).toEqual([1, 2, 3, 4, 5, 7, 8]);
     const retired = vi.mocked(query).mock.calls.filter(([text]) => String(text).includes("UPDATE scales SET status='retired'"));
-    expect(retired.map(([, values]) => values?.[0])).toEqual(["growth-child@1.0.0", "growth-parent@1.0.0", "growth-teacher@1.0.0"]);
+    expect(retired.map(([, values]) => values?.[0])).toEqual([
+      "growth-child@1.0.0", "growth-child@1.1.0",
+      "growth-parent@1.0.0", "growth-parent@1.1.0",
+      "growth-teacher@1.0.0", "growth-teacher@1.1.0"
+    ]);
   });
 });
