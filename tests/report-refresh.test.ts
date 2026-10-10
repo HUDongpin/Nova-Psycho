@@ -8,6 +8,7 @@ describe("report refresh eligibility", () => {
   });
 
   it("checks actual triad generation and ordinary queued reports", () => {
+    expect(hasGeneratingReports([{ status: "queued", phase: "consent" }])).toBe(false);
     expect(hasGeneratingReports([{ status: "queued", phase: "reporting" }])).toBe(true);
     expect(hasGeneratingReports([{ status: "queued", phase: null }])).toBe(true);
     expect(hasGeneratingReports([{ status: "queued" }])).toBe(true);

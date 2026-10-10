@@ -20,7 +20,7 @@ describe("private queue consumer",()=>{
     await consumeReportMessage(message);
     expect(processReportJob).not.toHaveBeenCalled();
   });
-  it.each(["published","already_done","terminal"] as const)("acknowledges %s jobs",async status=>{
+  it.each(["published","already_done","terminal","paused"] as const)("acknowledges %s jobs",async status=>{
     vi.mocked(processReportJob).mockResolvedValue({status});
     await expect(consumeReportMessage({jobId:JOB_ID,region:"HK"})).resolves.toBeUndefined();
     expect(processReportJob).toHaveBeenCalledWith(JOB_ID);expect(closePdfBrowser).toHaveBeenCalledTimes(1);

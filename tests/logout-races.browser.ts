@@ -18,7 +18,7 @@ const staff=await context(),session=await call(staff,'/api/session');assert.equa
 await call(staff,'/api/auth/demo',{accountId:session.demoAccounts.find((a:{role:string})=>a.role==='admin').id});
 async function fixture(){
  const f=await call(staff,'/api/families',{familyName:'合成退出竞态家庭',childName:'合成孩子',birthDate:`${new Date().getUTCFullYear()-7}-01-01`,grade:'小学二年级',guardianLabel:'合成家长'});
- await call(staff,`/api/families/${f.id}/consent`,{assessment:true,sensitiveData:true,parentReport:true,guardianName:'合成家长',reference:'local-synthetic-fixture'});
+ for(const scope of ["assessment","sensitive_data","parent_report"])await call(staff,`/api/families/${f.id}/consent`,{action:'grant',scope,guardianName:'合成家长',reference:'local-synthetic-fixture'});
  const invitation=await call(staff,`/api/families/${f.id}/invites`,{role:'parent'}),c=await context();
  const token=new URLSearchParams(new URL(invitation.url).hash.slice(1)).get('token'),username='logout-'+randomUUID(),password=randomUUID()+'aA9';
  await call(c,'/api/invite',{token,name:'合成竞态家长',username,password});const user=(await call(c,'/api/session')).user;

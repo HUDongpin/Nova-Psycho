@@ -33,16 +33,15 @@ describe("onboarding locale and policy", () => {
     expect(html).toContain(locale === "zh-HK" ? "敏感資料" : "敏感资料");
     expect(html).toContain(locale === "zh-HK" ? "綜合報告" : "综合报告");
   });
-  it("records renewal consents as separate checkboxes instead of one bundled grant", () => {
-    const family: Family = { id: "f", familyName: "Synthetic family", childName: "Synthetic child", age: 12, birthDate: "2014-01-01", grade: "小学", region: "CN", guardianLabel: "Synthetic guardian", assignedTo: null, canInviteMembers: false, createdAt: "2026-01-01T00:00:00Z", consent: false, members: [] };
+  it("starts from the active purposes and withdraws a required scope only through an explicit action", () => {
+    const family: Family = { id: "f", familyName: "Synthetic family", childName: "Synthetic child", age: 12, birthDate: "2014-01-01", grade: "小学", region: "CN", guardianLabel: "Synthetic guardian", assignedTo: null, canInviteMembers: false, createdAt: "2026-01-01T00:00:00Z", consent: true, consents: { assessment: true, sensitiveData: true, parentReport: false, aiProcessing: false }, members: [] };
     const html = renderToStaticMarkup(createElement(ConsentForm, { family, staff: false, locale: "zh-CN", onClose() {}, onDone: async () => {}, openPrivacy() {} }));
-    expect(html).toContain("我同意参与这次测评");
-    expect(html).toContain("敏感资料");
-    expect(html).toContain("综合报告");
-    expect(html).toContain("每一项单独保存");
-    expect(html).not.toContain("同意为此家庭开展测评及生成报告");
-    expect(html).toContain('type="checkbox"');
-    expect(html.match(/type="checkbox"/g)).toHaveLength(4);
+    expect(html).toContain("已记录的同意保持勾选");
+    expect(html).toContain("撤回测评同意");
+    expect(html).toContain("撤回敏感资料同意");
+    expect(html).not.toContain("撤回家长报告同意");
+    const checked = html.match(/type="checkbox"[^>]*checked=""/g) ?? [];
+    expect(checked.length).toBeGreaterThanOrEqual(2);
     expect(html).toContain("disabled=\"\"");
   });
   it.each(["CN", "HK", "SG"] as const)("has no reported simplified words in the traditional %s policy", region => {

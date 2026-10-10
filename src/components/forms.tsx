@@ -2,7 +2,8 @@
 import { useState } from "react";
 import { Check, Copy, LinkSimple, LockKey, ShieldCheck, Warning } from "@phosphor-icons/react";
 import { OBSERVATION_MAX_LENGTH } from "../domain/care-limits";
-import { api, apiUrl, eligibleScales, type Family, type Locale, type RecoveryTarget, type Role, type Scale, type Workspace } from "./api";
+import { api, apiUrl, eligibleScales, type ConsentChoices, type Family, type Locale, type RecoveryTarget, type Role, type Scale, type Workspace } from "./api";
+import { activeConsentChoices, grantsFromConsentForm, type ConsentScopeName } from "./consent-choices";
 import { copy, formatDate, roleName } from "./copy";
 import { Badge, ErrorNotice, Field, FormActions, Modal, useMutation } from "./ui";
 interface FormProps { locale: Locale; onClose: () => void; onDone: () => Promise<void> }
@@ -26,14 +27,26 @@ export function FamilyAssignmentForm({ family, workspace, locale, onClose, onDon
     </form>
   </Modal>;
 }
+const consentFields = [
+  ["assessment", "consentAssessment", "consentWithdrawAssessment", true],
+  ["sensitiveData", "consentSensitiveData", "consentWithdrawSensitive", true],
+  ["parentReport", "consentParentReport", "consentWithdrawParentReport", false],
+  ["aiProcessing", "aiConsent", "consentWithdrawAi", false],
+] as const;
+const scopeName: Record<keyof ConsentChoices, ConsentScopeName> = { assessment: "assessment", sensitiveData: "sensitive_data", parentReport: "parent_report", aiProcessing: "ai_processing" };
 export function ConsentForm({ family, staff, locale, onClose, onDone, openPrivacy }: FormProps & { family: Family; staff: boolean; openPrivacy: () => void }) {
-  const t = copy(locale); const m = useMutation();
-  const [assessment, setAssessment] = useState(false);
-  const [sensitiveData, setSensitiveData] = useState(false);
-  const [parentReport, setParentReport] = useState(false);
-  const [aiProcessing, setAiProcessing] = useState(false);
-  const purposeChosen = assessment || sensitiveData || parentReport;
-  return <Modal title={t("consentTitle")} locale={locale} onClose={onClose}><form onSubmit={event => { event.preventDefault(); const data = new FormData(event.currentTarget); void m.run(async () => { await api(`/api/families/${encodeURIComponent(family.id)}/consent`, locale, { method: "POST", body: { assessment, sensitiveData, parentReport, aiProcessing, guardianName: data.get("guardianName"), ...(staff ? { reference: data.get("reference") } : {}) } }); await onDone(); }); }}><div className="info-strip"><ShieldCheck size={22}/><span>{t(staff ? "offlineConsent" : "directConsent")}</span></div><p className="body-copy">{t(staff ? "offlineNote" : "consentNote")}</p><p className="body-copy">{t("consentReplaceNote")}</p><button type="button" className="text-link" onClick={openPrivacy}>{t("privacy")}</button><Field label={t("guardian")}><input name="guardianName" defaultValue={family.guardianLabel} required maxLength={80} /></Field>{staff && <Field label={t("offlineRef")}><input name="reference" required minLength={3} maxLength={200} /></Field>}<label className="checkbox-label"><input type="checkbox" checked={assessment} onChange={event => setAssessment(event.target.checked)} /><span>{t("consentAssessment")}</span></label><label className="checkbox-label"><input type="checkbox" checked={sensitiveData} onChange={event => setSensitiveData(event.target.checked)} /><span>{t("consentSensitiveData")}</span></label><label className="checkbox-label"><input type="checkbox" checked={parentReport} onChange={event => setParentReport(event.target.checked)} /><span>{t("consentParentReport")}<small className="checkbox-hint">{t("consentParentReportNote")}</small></span></label><label className="checkbox-label"><input type="checkbox" checked={aiProcessing} onChange={event => setAiProcessing(event.target.checked)} /><span>{t("aiConsent")}<small className="checkbox-hint">{t("aiConsentNote")}</small></span></label>{m.error && <ErrorNotice locale={locale} message={m.error} />}<FormActions locale={locale} busy={m.busy} onClose={onClose} label="submit" disabled={!purposeChosen} /></form></Modal>;
+  const t = copy(locale); const m = useMutation(); const current = activeConsentChoices(family);
+  const [next, setNext] = useState(current);
+  const [withdrawing, setWithdrawing] = useState<keyof ConsentChoices | null>(null);
+  const [confirmWithdraw, setConfirmWithdraw] = useState(false);
+  const grants = grantsFromConsentForm(current, next);
+  async function withdraw(key: keyof ConsentChoices, guardianName: FormDataEntryValue | null, reference: FormDataEntryValue | null) {
+    const required = consentFields.find(item => item[0] === key)?.[3];
+    if (required && !confirmWithdraw) return;
+    await api(`/api/families/${encodeURIComponent(family.id)}/consent`, locale, { method: "POST", body: { action: "withdraw", scope: scopeName[key], guardianName, confirmWithdraw: required ? true : undefined, ...(staff ? { reference } : {}) } });
+    await onDone();
+  }
+  return <Modal title={t("consentTitle")} locale={locale} onClose={onClose}><form onSubmit={event => { event.preventDefault(); const data = new FormData(event.currentTarget); void m.run(async () => { const guardianName = data.get("guardianName"); const reference = data.get("reference"); if (withdrawing) { await withdraw(withdrawing, guardianName, reference); return; } for (const scope of grants) await api(`/api/families/${encodeURIComponent(family.id)}/consent`, locale, { method: "POST", body: { action: "grant", scope, guardianName, ...(staff ? { reference } : {}) } }); await onDone(); }); }}><div className="info-strip"><ShieldCheck size={22}/><span>{t(staff ? "offlineConsent" : "directConsent")}</span></div><p className="body-copy">{t(staff ? "offlineNote" : "consentNote")}</p><p className="body-copy">{t("consentKeepNote")}</p><button type="button" className="text-link" onClick={openPrivacy}>{t("privacy")}</button><Field label={t("guardian")}><input name="guardianName" defaultValue={family.guardianLabel} required maxLength={80} /></Field>{staff && <Field label={t("offlineRef")}><input name="reference" required minLength={3} maxLength={200} /></Field>}{consentFields.map(([key, label, withdrawLabel, required]) => <div key={key}><label className="checkbox-label"><input type="checkbox" checked={next[key]} disabled={current[key] || m.busy} onChange={event => setNext(value => ({ ...value, [key]: current[key] || event.target.checked }))} /><span>{t(label)}{key === "parentReport" && <small className="checkbox-hint">{t("consentParentReportNote")}</small>}{key === "aiProcessing" && <small className="checkbox-hint">{t("aiConsentNote")}</small>}</span></label>{current[key] && <button type="button" className="button ghost" onClick={() => { setWithdrawing(key); setConfirmWithdraw(false); }}>{t(withdrawLabel)}</button>}{withdrawing === key && <div className="warning-note" role="alert"><p>{t(required ? "consentWithdrawRequiredNote" : key === "parentReport" ? "consentWithdrawParentReportNote" : "aiConsentNote")}</p>{required && <label className="checkbox-label"><input type="checkbox" checked={confirmWithdraw} onChange={event => setConfirmWithdraw(event.target.checked)} /><span>{t("consentConfirmWithdraw")}</span></label>}</div>}</div>)}{m.error && <ErrorNotice locale={locale} message={m.error} />}<FormActions locale={locale} busy={m.busy} onClose={onClose} label="submit" disabled={withdrawing ? consentFields.find(item => item[0] === withdrawing)?.[3] === true && !confirmWithdraw : grants.length === 0} /></form></Modal>;
 }
 export function InvitationForm({ family, locale, onClose, onDone }: FormProps & { family: Family }) {
   const t = copy(locale); const m = useMutation(); const [role, setRole] = useState<Role>("parent"); const [invitation, setInvitation] = useState<{ url: string; expiresAt: string; role: Role } | null>(null); const [copied, setCopied] = useState(false);

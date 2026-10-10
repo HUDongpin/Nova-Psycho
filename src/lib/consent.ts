@@ -1,10 +1,14 @@
 import { randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
+import { HttpError } from "./http";
 
 // The privacy notice records these as separate acts. A legacy row may still
 // list more than one of them; readers treat every listed purpose as granted.
 export const PARTICIPATION_SCOPES = ["assessment", "sensitive_data"] as const;
 export const PARENT_REPORT_SCOPE = "parent_report";
+export const CONSENT_SCOPES = ["assessment", "parent_report", "sensitive_data", "ai_processing"] as const;
+export type ConsentScope = typeof CONSENT_SCOPES[number];
+export const REQUIRED_WITHDRAW_SCOPES = ["assessment", "sensitive_data"] as const;
 export const ACTIVE_CONSENT_ROWS_SQL = "SELECT scopes FROM consents WHERE family_id=$1 AND revoked_at IS NULL";
 
 export function scopeList(value: unknown): string[] {
@@ -24,6 +28,12 @@ export function grantedScopes(rows: { scopes?: unknown }[]): Set<string> {
 export function hasGranted(rows: { scopes?: unknown }[], required: readonly string[]): boolean {
   const granted = grantedScopes(rows);
   return required.every(scope => granted.has(scope));
+}
+
+export function rejectBundledConsent(input: unknown): void {
+  if (input && typeof input === "object" && "accepted" in input) {
+    throw new HttpError(422, "请分别提交测评、敏感资料和家长报告的同意选择，不能用一次同意代表三项。", "CONSENT_SCOPE_REQUIRED", "accepted");
+  }
 }
 
 export function recordedScopes(choices: { assessment?: boolean; sensitiveData?: boolean; parentReport?: boolean; aiProcessing?: boolean }): string[] {

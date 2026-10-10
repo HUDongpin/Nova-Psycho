@@ -31,6 +31,7 @@ let currentFamily: { id: string; birth_date: string; join_code: string | null; r
 let members: Member[];
 let tasks: Task[];
 let createdFamily: { id: string; join_code: string; child_name: string; birth_date: string; grade: string; guardian_label: string } | null;
+let storedConsents: { family_id: string; scopes: string[] }[];
 let invite: { family_id: string; role: Role; used_at: string | null; accepted_by: string | null; expires_at: Date };
 
 const sql = vi.fn(async (text: string, values: unknown[] = []): Promise<{ rows: Record<string, unknown>[] }> => {
@@ -42,7 +43,15 @@ const sql = vi.fn(async (text: string, values: unknown[] = []): Promise<{ rows: 
   }
   if (text.includes("FROM families WHERE join_code=$1")) return { rows: values[0] === CODE ? [currentFamily] : [] };
   if (text.includes("FROM families WHERE id=$1")) return { rows: values[0] === currentFamily.id ? [currentFamily] : [] };
-  if (text.includes("FROM consents WHERE family_id=$1")) return { rows: consent ? (consentRows ?? [{ scopes: ["assessment"] }, { scopes: ["sensitive_data"] }, { scopes: ["parent_report"] }]) : [] };
+  if (text.startsWith("INSERT INTO consents")) {
+    storedConsents.push({ family_id: String(values[1]), scopes: JSON.parse(String(values[7])) });
+    return { rows: [] };
+  }
+  if (text.includes("FROM consents WHERE family_id=$1")) {
+    const stored = storedConsents.filter(row => row.family_id === String(values[0]));
+    if (stored.length) return { rows: stored.map(row => ({ scopes: row.scopes })) };
+    return { rows: consent ? (consentRows ?? [{ scopes: ["assessment"] }, { scopes: ["sensitive_data"] }, { scopes: ["parent_report"] }]) : [] };
+  }
   if (text.includes("FROM memberships WHERE family_id=$1")) return { rows: members.filter(row => row.family_id === values[0]) };
   if (text.startsWith("INSERT INTO memberships")) {
     members.push({ family_id: String(values[0]), user_id: String(values[1]), role: (values[2] ?? "parent") as Role });
@@ -69,7 +78,7 @@ beforeEach(() => {
   consent = scaleActive = true;
   consentRows = null;
   currentFamily = { id: FAMILY, birth_date: "2014-01-01", join_code: CODE, region: "CN" };
-  members = []; tasks = []; createdFamily = null;
+  members = []; tasks = []; createdFamily = null; storedConsents = [];
   invite = { family_id: FAMILY, role: "teacher", used_at: null, accepted_by: null, expires_at: new Date(Date.now() + 3600000) };
   vi.mocked(transaction).mockImplementation((async (fn: (client: unknown) => Promise<unknown>) => fn({ query: sql })) as never);
   vi.mocked(createClerkUserInTransaction).mockImplementation(async (_client, _principal, name, role) => {
@@ -155,6 +164,16 @@ describe("existing parent creates a family", () => {
     user.role = "parent";
     await triad.createParentFamily(actor("parent"), { ...parentInput, parentReport: false, requestId: "ffffffff-ffff-4fff-8fff-ffffffffffff" }, "zh-CN");
     expect(sql.mock.calls.filter(([text]) => text.startsWith("INSERT INTO consents")).map(([, params]) => JSON.parse(String(params![7])))).toEqual([["assessment"], ["sensitive_data"]]);
+  });
+  it("rejects a replay whose parent-report choice differs from the stored consent", async () => {
+    user.role = "parent";
+    await triad.createParentFamily(actor("parent"), parentInput, "zh-CN");
+    await expect(triad.createParentFamily(actor("parent"), { ...parentInput, parentReport: false }, "zh-CN")).rejects.toMatchObject({ status: 409, code: "CONSENT_CHOICE_CONFLICT" });
+    expect(sql.mock.calls.filter(([text]) => text.startsWith("INSERT INTO families"))).toHaveLength(1);
+    storedConsents = [];
+    createdFamily = null;
+    await triad.createParentFamily(actor("parent"), { ...parentInput, parentReport: false, requestId: "ffffffff-ffff-4fff-8fff-ffffffffffff" }, "zh-CN");
+    await expect(triad.createParentFamily(actor("parent"), { ...parentInput, parentReport: true, requestId: "ffffffff-ffff-4fff-8fff-ffffffffffff" }, "zh-CN")).rejects.toMatchObject({ code: "CONSENT_CHOICE_CONFLICT" });
   });
   it("does not silently reuse a request ID after the child details are edited", async () => {
     user.role = "parent";

@@ -82,6 +82,11 @@ describe("P25/P26 account validation", () => {
 });
 
 describe("P27/P36/P42 correct family, role, locale and consent binding", () => {
+  it("rejects a bare accepted flag before writing", async () => {
+    await expect(startParentCase({ accepted: true }, "zh-HK")).rejects.toMatchObject({ status: 422, code: "CONSENT_SCOPE_REQUIRED", field: "accepted" });
+    await expect(startParentCase({ ...parent, accepted: true }, "zh-HK")).rejects.toMatchObject({ code: "CONSENT_SCOPE_REQUIRED" });
+    expect(transaction).not.toHaveBeenCalled();
+  });
   it.each(["assessment", "sensitiveData"] as const)("requires explicit %s consent", async field => {
     await expect(startParentCase({ ...parent, [field]: false }, "zh-HK")).rejects.toHaveProperty("name", "ZodError");
     await expect(startParentCase({ ...parent, [field]: undefined }, "zh-HK")).rejects.toHaveProperty("name", "ZodError");

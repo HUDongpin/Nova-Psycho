@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { grantsFromConsentForm } from "../src/components/consent-choices";
 import { grantedScopes, hasGranted, recordedScopes, scopeList } from "../src/lib/consent";
 
 describe("consent scope records", () => {
@@ -26,6 +27,13 @@ describe("consent scope records", () => {
     expect(scopeList("[\"assessment\"]")).toEqual(["assessment"]);
     expect(scopeList("not-json")).toEqual([]);
     expect(grantedScopes([{ scopes: { assessment: true } }, { scopes: [""] }, {}])).toEqual(new Set());
+  });
+
+  it("adds only newly checked purposes and never withdraws an unchanged one", () => {
+    const current = { assessment: true, sensitiveData: true, parentReport: false, aiProcessing: false };
+    expect(grantsFromConsentForm(current, { ...current, parentReport: true })).toEqual(["parent_report"]);
+    expect(grantsFromConsentForm(current, { ...current, assessment: false, sensitiveData: false })).toEqual([]);
+    expect(grantsFromConsentForm(current, current)).toEqual([]);
   });
 
   it("records only the purposes that were explicitly granted", () => {

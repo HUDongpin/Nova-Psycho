@@ -93,10 +93,22 @@ CREATE UNIQUE INDEX IF NOT EXISTS one_triad_role_per_round ON assessments(triad_
 CREATE UNIQUE INDEX IF NOT EXISTS one_pending_assessment ON assessments(family_id,respondent_id,scale_version_id) WHERE status='pending';
 CREATE INDEX IF NOT EXISTS assessments_family ON assessments(family_id,submitted_at);
 CREATE TABLE IF NOT EXISTS report_jobs(
- id uuid PRIMARY KEY,assessment_id uuid UNIQUE NOT NULL REFERENCES assessments(id) ON DELETE CASCADE,state text NOT NULL DEFAULT 'ready' CHECK(state IN ('ready','running','done','failed')),
+ id uuid PRIMARY KEY,assessment_id uuid UNIQUE NOT NULL REFERENCES assessments(id) ON DELETE CASCADE,state text NOT NULL DEFAULT 'ready' CHECK(state IN ('ready','running','done','failed','paused')),
  attempts integer NOT NULL DEFAULT 0,available_at timestamptz NOT NULL DEFAULT now(),lease_until timestamptz,claim_token uuid,last_error_code text,created_at timestamptz NOT NULL DEFAULT now()
 );
 ALTER TABLE report_jobs ADD COLUMN IF NOT EXISTS source_assessment_ids uuid[] CHECK(cardinality(source_assessment_ids)=3);
+-- Existing databases keep the original check until this replaces it. paused means
+-- the worker stopped before publication because parent-report consent was missing.
+DO $$ DECLARE name text; def text;
+BEGIN
+  SELECT conname, pg_get_constraintdef(oid) INTO name, def FROM pg_constraint
+  WHERE conrelid='public.report_jobs'::regclass AND contype='c' AND pg_get_constraintdef(oid) LIKE '%ready%' AND pg_get_constraintdef(oid) NOT LIKE '%paused%'
+  LIMIT 1;
+  IF name IS NOT NULL THEN
+    EXECUTE format('ALTER TABLE report_jobs DROP CONSTRAINT %I', name);
+    ALTER TABLE report_jobs ADD CONSTRAINT report_jobs_state_check CHECK(state IN ('ready','running','done','failed','paused'));
+  END IF;
+END $$;
 CREATE TABLE IF NOT EXISTS reports(
  id uuid PRIMARY KEY,assessment_id uuid UNIQUE NOT NULL REFERENCES assessments(id) ON DELETE CASCADE,family_id uuid NOT NULL REFERENCES families(id) ON DELETE CASCADE,
  region text NOT NULL,payload jsonb NOT NULL,pdf_keys jsonb NOT NULL,created_at timestamptz NOT NULL DEFAULT now()

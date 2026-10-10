@@ -4,6 +4,7 @@ import { selectNarrative } from "../domain/narrative";
 import { composeTriad,TRIAD_BUNDLE,triadRolesReady } from "../domain/triad-report";
 import { compareResults } from "../domain/scoring";
 import { reportHtml } from "../domain/report-html";
+import { ACTIVE_CONSENT_ROWS_SQL, PARENT_REPORT_SCOPE, hasGranted } from "./consent";
 import { getConfig } from "./config";
 import { query,transaction } from "./db";
 import { renderPdf } from "./pdf";
@@ -12,6 +13,7 @@ import { validateId } from "./http";
 export type ReportJobResult=
   |{status:"published"}
   |{status:"already_done"}
+  |{status:"paused"}
   |{status:"retry_at";retryAt:string}
   |{status:"terminal"};
 export async function processDeletionJobs():Promise<void>{
@@ -50,7 +52,7 @@ async function unclaimedJobResult(jobId:string|undefined):Promise<ReportJobResul
   const rows=await query(`SELECT j.state,j.available_at,j.lease_until FROM report_jobs j
     JOIN assessments a ON a.id=j.assessment_id WHERE j.id=$1 AND a.region=$2`,[jobId,getConfig().region]);
   const job=rows[0];
-  if(!job||job.state==="done")return {status:"already_done"};
+  if(!job||job.state==="done"||job.state==="paused")return job?.state==="paused"?{status:"paused"}:{status:"already_done"};
   if(job.state==="failed")return {status:"terminal"};
   const due=new Date(job.state==="running"?job.lease_until:job.available_at).getTime();
   return {status:"retry_at",retryAt:new Date(Math.max(Date.now()+1000,Number.isFinite(due)?due:Date.now()+10000)).toISOString()};
@@ -101,11 +103,16 @@ async function runReportJob(jobId?:string):Promise<ReportJobResult>{
       if(getConfig().reportStorage==="database")pdfs[locale]=pdf;
       else await writePrivatePdf(key,pdf);
     }
-    await transaction(async client=>{
+    const outcome=await transaction(async client=>{
       const familyLock=await client.query("SELECT id FROM families WHERE id=$1 AND region=$2 FOR UPDATE",[assessment.family_id,getConfig().region]);
       if(!familyLock.rows[0])throw new Error("Family deleted");
       const claim=await client.query("SELECT id FROM report_jobs WHERE id=$1 AND claim_token=$2 AND state='running' AND lease_until>now() FOR UPDATE",[job.id,token]);
       if(!claim.rows[0])throw new Error("Report claim expired or family deleted");
+      const consent=await client.query<{scopes:unknown}>(ACTIVE_CONSENT_ROWS_SQL,[assessment.family_id]);
+      if(!hasGranted(consent.rows,[PARENT_REPORT_SCOPE])){
+        await client.query("UPDATE report_jobs SET state='paused', lease_until=NULL, claim_token=NULL, last_error_code='PARENT_REPORT_CONSENT_REQUIRED', attempts=GREATEST(attempts-1,0) WHERE id=$1 AND claim_token=$2 AND state='running'",[job.id,token]);
+        return "paused" as const;
+      }
       if(getConfig().reportStorage==="database")for(const locale of ["zh-CN","zh-HK"] as const){
         await writePrivatePdf(keys[locale]!,pdfs[locale]!,client);
       }
@@ -113,7 +120,12 @@ async function runReportJob(jobId?:string):Promise<ReportJobResult>{
       await client.query("UPDATE assessments SET status='published' WHERE id=ANY($1::uuid[])",[publishIds]);
       await client.query("UPDATE report_jobs SET state='done',lease_until=NULL,last_error_code=NULL WHERE id=$1 AND claim_token=$2",[job.id,token]);
       await client.query("INSERT INTO audit_events(region,action,entity_id) VALUES($1,'report.auto_published',$2)",[getConfig().region,assessment.id]);
+      return "published" as const;
     });
+    if(outcome==="paused"){
+      if(getConfig().reportStorage==="filesystem")for(const key of Object.values(keys))await removePrivatePdf(key).catch(()=>{});
+      return {status:"paused"};
+    }
     return {status:"published"};
   }catch{
     if(getConfig().reportStorage==="filesystem")for(const key of Object.values(keys))await removePrivatePdf(key).catch(()=>{});

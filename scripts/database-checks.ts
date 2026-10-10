@@ -18,18 +18,15 @@ async function check(name:string,fn:()=>Promise<void>){await fn();results.push({
 const createdFamilies=new Set<string>();
 async function newFamily(){const f=await createFamily(admin,{familyName:"并发测试家庭",childName:"并发合成孩子",birthDate:"2014-04-10",grade:"六年级",guardianLabel:"母亲"});createdFamilies.add(f.id);return f.id;}
 try{
-  await check("consent renewals serialize and keep one active row per purpose",async()=>{
+  await check("separate consent grants stay one row per purpose",async()=>{
     const id=await newFamily();
-    const grant=(allow:boolean)=>recordConsent(admin,id,{assessment:true,sensitiveData:true,parentReport:true,guardianName:"合成监护人",reference:"SYNTHETIC-REGRESSION",aiProcessing:allow});
-    await grant(true);
-    await Promise.all([grant(true),grant(false),grant(true),grant(false)]);
+    const grant=(scope:string)=>recordConsent(admin,id,{action:"grant",scope,guardianName:"合成监护人",reference:"SYNTHETIC-REGRESSION"});
+    await Promise.all([grant("assessment"),grant("assessment"),grant("sensitive_data"),grant("parent_report")]);
     const during=await query<{scopes:string[]}>("SELECT scopes FROM consents WHERE family_id=$1 AND revoked_at IS NULL",[id]);
-    const duringScopes=during.map(row=>row.scopes[0]);
-    assert.deepEqual(duringScopes.filter(scope=>scope!=="ai_processing").sort(),["assessment","parent_report","sensitive_data"]);
-    assert.ok(during.length===3||during.length===4);
-    await grant(false);
-    const current=await query<{scopes:string[]}>("SELECT scopes FROM consents WHERE family_id=$1 AND revoked_at IS NULL ORDER BY scopes->>0",[id]);
-    assert.deepEqual(current.map(row=>row.scopes),[["assessment"],["parent_report"],["sensitive_data"]]);
+    assert.deepEqual(during.map(row=>row.scopes[0]).sort(),["assessment","parent_report","sensitive_data"]);
+    await recordConsent(admin,id,{action:"withdraw",scope:"parent_report",guardianName:"合成监护人",reference:"SYNTHETIC-REGRESSION"});
+    const current=await query<{scope:string}>("SELECT scopes->>0 AS scope FROM consents WHERE family_id=$1 AND revoked_at IS NULL ORDER BY 1",[id]);
+    assert.deepEqual(current.map(row=>row.scope),["assessment","sensitive_data"]);
     await assert.rejects(()=>query("INSERT INTO consents(id,family_id,guardian_name,method,notice_version,scopes) VALUES($1,$2,'synthetic','synthetic','test',$3)",[randomUUID(),id,JSON.stringify(["assessment"])]),(e:unknown)=>(e as {code?:string}).code==="23505");
     await assert.rejects(()=>query("INSERT INTO consents(id,family_id,guardian_name,method,notice_version,scopes) VALUES($1,$2,'synthetic','synthetic','test','[]')",[randomUUID(),id]),(e:unknown)=>(e as {code?:string}).code==="23514");
   });

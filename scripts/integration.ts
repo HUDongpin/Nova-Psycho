@@ -141,7 +141,7 @@ async function main(){
     await rejected(parent,`/api/assessments/${ownStudentTask.id}`,"GET",undefined,404,"NOT_FOUND");await rejected(student,"/api/families","POST",{},403,"ROLE_DENIED");
   });
   await check("cross-family data access and untrusted origins are rejected",async()=>{
-    await rejected(parent,`/api/families/${other.id}/consent`,"POST",{assessment:true,sensitiveData:true,parentReport:true,guardianName:"合成家长"},404,"NOT_FOUND");
+    await rejected(parent,`/api/families/${other.id}/consent`,"POST",{action:"grant",scope:"assessment",guardianName:"合成家长"},404,"NOT_FOUND");
     await rejected(parent,"/api/goals","POST",{familyId:other.id,title:"不应写入",detail:""},404,"NOT_FOUND");
     await rejected(parent,"/api/goals","POST",{familyId:ownFamily.id,title:"不应写入",detail:""},403,"ORIGIN_DENIED",{Origin:"https://untrusted.invalid"});
   });
@@ -169,7 +169,7 @@ async function main(){
         const studentInvite=await ok<{url:string}>(admin,`/api/families/${demoFamily.id}/invites`,"POST",{role:"student"});
         const studentToken=new URLSearchParams(new URL(studentInvite.url).hash.slice(1)).get("token");assert.ok(studentToken);
         await rejected(visitor,"/api/invite","POST",{token:studentToken,name:"尚未授权的合成学生",username:`qa_unconsented_${nonce}`,password:randomBytes(18).toString("base64url")},409,"GUARDIAN_CONSENT_REQUIRED");
-        await ok(client,`/api/families/${demoFamily.id}/consent`,"POST",{assessment:true,sensitiveData:true,parentReport:true,guardianName:"合成家长",aiProcessing:false});
+        for(const scope of ["assessment","sensitive_data","parent_report"])await ok(client,`/api/families/${demoFamily.id}/consent`,"POST",{action:"grant",scope,guardianName:"合成家长"});
       }
     }
   });
