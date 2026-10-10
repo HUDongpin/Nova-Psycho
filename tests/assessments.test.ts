@@ -10,6 +10,8 @@ import { query,transaction } from "../src/lib/db";
 import { currentContent,getScale,lockContent } from "../src/lib/content";
 import { assessmentDetail,createAssessment,retryReport,saveDraft,submitAssessment } from "../src/lib/assessments";
 import { demoAdvice,demoScale,demoTemplate } from "../src/domain/demo";
+import { childScale,parentScale,teacherScale } from "../src/domain/triad-scales";
+import { childScale as oldChild } from "./fixtures/triad-scales-ed66f27";
 import { parseScale } from "../src/domain/validation";
 import { TRIAD_BUNDLE } from "../src/domain/triad-report";
 import type { Actor,Role } from "../src/domain/types";
@@ -81,9 +83,17 @@ describe("creating an assessment",()=>{
     mockGetScale.mockResolvedValueOnce({id:SCALE_ID,definition:scale,status:"retired"} as never);
     await expect(createAssessment(actor("admin"),createInput)).rejects.toMatchObject({code:"SCALE_RETIRED"});
   });
-  it("refuses a demo instrument in service mode",async()=>{
+  it("refuses an unvalidated instrument in service mode",async()=>{
     vi.stubEnv("NOVA_MODE","service");vi.stubEnv("NOVA_PUBLIC_URL","https://nova.example.invalid");
-    await expect(createAssessment(actor("admin"),createInput)).rejects.toMatchObject({code:"DEMO_INSTRUMENT"});
+    await expect(createAssessment(actor("admin"),createInput)).rejects.toMatchObject({status:409,code:"UNVALIDATED_INSTRUMENT"});
+    expect(mockTransaction).not.toHaveBeenCalled();
+  });
+  it("refuses a validated demo instrument in service mode",async()=>{
+    const validated=structuredClone(scale);validated.norm={...validated.norm,validated:true};
+    mockGetScale.mockResolvedValueOnce({id:SCALE_ID,definition:validated,status:"active"} as never);
+    vi.stubEnv("NOVA_MODE","service");vi.stubEnv("NOVA_PUBLIC_URL","https://nova.example.invalid");
+    await expect(createAssessment(actor("admin"),createInput)).rejects.toMatchObject({status:409,code:"DEMO_INSTRUMENT"});
+    expect(mockTransaction).not.toHaveBeenCalled();
   });
   it("refuses a respondent who is not a member of the family",async()=>{
     // The family must resolve, otherwise the failure would come from the family lookup
@@ -113,18 +123,54 @@ describe("creating an assessment",()=>{
       return extra(text)??[];
     }) as never);
   };
+  it("assigns nova-family-demo for ages 8-17 when the triad scales are only demo-labelled",async()=>{
+    mockQuery.mockImplementation((async(sql:string,values?:unknown[])=>{
+      const text=String(sql);
+      if(text.includes("FROM families f WHERE f.id=$1"))return [{id:FAMILY_ID,region:"CN",family_name:"Synthetic",child_name:"Synthetic child",birth_date:"2013-04-12",grade:"S2",guardian_label:"Mother",assigned_to:null,created_at:new Date()}];
+      if(text.includes("SELECT m.role FROM memberships"))return [{role:"student"}];
+      if(text.includes("FROM scales WHERE status='active'")){
+        expect(text).toContain("norm'->>'validated'");
+        const [region,role,age]=values as ["CN"|"HK","student",number];
+        return [childScale,parentScale,teacherScale,oldChild].filter(item=>!item.demo&&item.norm.validated&&item.regions.includes(region)&&item.roles.includes(role)&&item.minAge<=age&&item.maxAge>=age).map(item=>({id:`${item.id}@${item.version}`}));
+      }
+      return [];
+    }) as never);
+    const created=await createAssessment(actor("admin"),createInput);
+    expect(created.id).toEqual(expect.any(String));
+    expect(clientCalls.some(sql=>sql.includes("INSERT INTO assessments"))).toBe(true);
+    expect(childScale.demo&&parentScale.demo&&teacherScale.demo).toBe(true);
+  });
   it("still assigns the demo instrument when no official questionnaire is available",async()=>{
     const created=await createAssessment(actor("admin"),createInput);
     expect(created.id).toEqual(expect.any(String));
     expect(clientCalls.some(sql=>sql.includes("INSERT INTO assessments"))).toBe(true);
   });
-  it("refuses a demo instrument when this member already holds an official questionnaire",async()=>{
-    withFamily(sql=>sql.includes("s.definition->>'demo'")?[{id:"official-task"}]:undefined);
+  it("does not treat a held unvalidated questionnaire as an official instrument",async()=>{
+    withFamily(sql=>{
+      if(!sql.includes("JOIN scales")||!sql.includes("definition->>'demo'"))return undefined;
+      const blocks=!oldChild.demo&&(sql.includes("validated")?oldChild.norm.validated:true);
+      return blocks?[{id:"legacy-task"}]:[];
+    });
+    const created=await createAssessment(actor("staff"),createInput);
+    expect(created.id).toEqual(expect.any(String));
+    expect(oldChild.demo).toBe(false);
+    expect(oldChild.norm.validated).toBe(false);
+  });
+  it("refuses a demo instrument when this member already holds a validated official questionnaire",async()=>{
+    withFamily(sql=>{
+      if(!sql.includes("JOIN scales")||!sql.includes("definition->>'demo'"))return undefined;
+      expect(sql).toContain("validated");
+      return [{id:"official-task"}];
+    });
     await expect(createAssessment(actor("staff"),createInput)).rejects.toMatchObject({status:409,code:"DEMO_NOT_ASSIGNABLE"});
     expect(mockTransaction).not.toHaveBeenCalled();
   });
-  it("refuses a demo instrument when an official questionnaire already fits this member",async()=>{
-    withFamily(sql=>sql.includes("FROM scales WHERE status='active'")?[{id:"growth-parent@1.0.0"}]:undefined);
+  it("refuses a demo instrument when a validated official questionnaire already fits this member",async()=>{
+    withFamily(sql=>{
+      if(!sql.includes("FROM scales WHERE status='active'"))return undefined;
+      expect(sql).toContain("norm'->>'validated'");
+      return [{id:"official@1.0.0"}];
+    });
     await expect(createAssessment(actor("admin"),createInput)).rejects.toMatchObject({status:409,code:"DEMO_NOT_ASSIGNABLE"});
     expect(mockTransaction).not.toHaveBeenCalled();
   });
@@ -222,10 +268,22 @@ describe("submitting",()=>{
     client.query.mockImplementationOnce(async()=>({rows:[{id:ASSESSMENT_ID,status:"published",draft_revision:0,family_id:FAMILY_ID,respondent_id:USER_ID,report_id:"r1"}]}));
     await expect(submitAssessment(actor("student"),ASSESSMENT_ID,submission)).resolves.toMatchObject({status:"published",reportId:"r1"});
   });
-  it("refuses a demo submission in service mode",async()=>{
+  it("refuses an unvalidated submission in service mode",async()=>{
     vi.stubEnv("NOVA_MODE","service");vi.stubEnv("NOVA_PUBLIC_URL","https://nova.example.invalid");
     withOwn();
-    await expect(submitAssessment(actor("student"),ASSESSMENT_ID,submission)).rejects.toMatchObject({code:"DEMO_INSTRUMENT"});
+    await expect(submitAssessment(actor("student"),ASSESSMENT_ID,submission)).rejects.toMatchObject({status:409,code:"UNVALIDATED_INSTRUMENT"});
+    expect(mockTransaction).not.toHaveBeenCalled();
+  });
+  it("refuses a validated demo submission in service mode",async()=>{
+    const validated=structuredClone(scale);validated.norm={...validated.norm,validated:true};
+    vi.stubEnv("NOVA_MODE","service");vi.stubEnv("NOVA_PUBLIC_URL","https://nova.example.invalid");
+    mockQuery.mockImplementation((async(sql:string)=>{
+      const text=String(sql);
+      if(text.includes("FROM assessments a JOIN scales s"))return [{id:ASSESSMENT_ID,status:"pending",definition:validated,draft_answers:{},draft_revision:0,family_id:FAMILY_ID,child_name:"Synthetic child",birth_date:"2013-04-12",respondent_role:"student",region:"CN"}];
+      return [];
+    }) as never);
+    await expect(submitAssessment(actor("student"),ASSESSMENT_ID,submission)).rejects.toMatchObject({status:409,code:"DEMO_INSTRUMENT"});
+    expect(mockTransaction).not.toHaveBeenCalled();
   });
 });
 
