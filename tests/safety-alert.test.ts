@@ -54,15 +54,17 @@ function stage(options: { role?: Role; assignedTo?: string | null; resolvedAt?: 
 
 function expectLockedRecheckBeforeWrite() {
   const order = sqls();
-  const alertLock = order.findIndex(sql => sql.includes("FROM staff_alerts") && sql.includes("FOR UPDATE"));
+  const unlocked = order.findIndex(sql => sql.includes("FROM staff_alerts") && !sql.includes("FOR UPDATE"));
   const familyLock = order.findIndex(sql => sql.includes("FROM families") && sql.includes("FOR UPDATE"));
   const userLock = order.findIndex(sql => sql.includes("FROM users") && sql.includes("FOR SHARE"));
+  const alertLock = order.findIndex(sql => sql.includes("FROM staff_alerts") && sql.includes("FOR UPDATE"));
   const update = order.findIndex(sql => sql.startsWith("UPDATE"));
-  expect(alertLock).toBeGreaterThanOrEqual(0);
-  expect(familyLock).toBeGreaterThan(alertLock);
+  expect(unlocked).toBeGreaterThanOrEqual(0);
+  expect(familyLock).toBeGreaterThan(unlocked);
   expect(order[familyLock]).toContain("region=$2 FOR UPDATE");
   expect(userLock).toBeGreaterThan(familyLock);
-  expect(update).toBeGreaterThan(userLock);
+  expect(alertLock).toBeGreaterThan(userLock);
+  expect(update).toBeGreaterThan(alertLock);
   expect(mockTransaction).toHaveBeenCalledTimes(1);
 }
 
@@ -115,6 +117,24 @@ describe("acknowledge safety alert", () => {
     await expect(acknowledgeSafetyAlert(actor("admin"), ALERT_ID)).resolves.toEqual({ ok: true });
     expect(sqls().some(sql => sql.startsWith("UPDATE"))).toBe(false);
     expect(sqls().some(sql => sql.includes("INSERT INTO audit_events"))).toBe(false);
+  });
+  it("refuses when the locked alert no longer belongs to that family", async () => {
+    let locked = false;
+    mockQuery.mockImplementation((async (sql: string) => {
+      const text = String(sql);
+      if (text.includes("FROM staff_alerts") && text.includes("FOR UPDATE")) return [{ id: ALERT_ID, family_id: OTHER_ID, resolved_at: null, viewed_at: null }];
+      if (text.includes("FROM staff_alerts")) return [{ family_id: FAMILY_ID }];
+      if (text.includes("FROM families WHERE id=$1")) { locked = true; return [{ id: FAMILY_ID, region: "CN", assigned_to: ACTOR_ID }]; }
+      if (text.includes("FROM users WHERE id=$1")) return [{ id: ACTOR_ID, role: "staff", region: "CN", disabled: false }];
+      if (text.startsWith("UPDATE staff_alerts")) return [{ id: ALERT_ID }];
+      return [];
+    }) as never);
+    await expect(acknowledgeSafetyAlert(actor("staff"), ALERT_ID)).rejects.toMatchObject({ status: 404, code: "NOT_FOUND" });
+    expect(locked).toBe(true);
+    const familyLock = sqls().findIndex(sql => sql.includes("FROM families") && sql.includes("FOR UPDATE"));
+    const alertLock = sqls().findIndex(sql => sql.includes("FROM staff_alerts") && sql.includes("FOR UPDATE"));
+    expect(alertLock).toBeGreaterThan(familyLock);
+    expect(sqls().some(sql => sql.startsWith("UPDATE"))).toBe(false);
   });
   it("refuses a disabled account after locking the actor row", async () => {
     stage({ disabled: true });

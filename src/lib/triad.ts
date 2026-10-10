@@ -277,18 +277,16 @@ function mayHandleSafetyAlert(role: Role, assignedTo: string | null, actorId: st
   return assignedTo === null && resolvedAt === null;
 }
 
-// One transaction. The alert lock is taken first so a waiter does not pin the family
-// row (assignment can still commit). Authorization is decided only after the family
-// lock — the same id+region FOR UPDATE as assignment — and the actor row, which is
-// locked after the family so the order matches assignment's family-then-user locks.
+// Family, then the actor, then the alert. deleteFamily locks the family and the actor
+// before DELETE cascades into staff_alerts; locking the alert first deadlocks with that.
+// The unlocked read only discovers family_id. Authority is decided after the family lock.
 async function settleSafetyAlert(actor: Actor, alertId: string, action: "viewed" | "resolved") {
   requireRole(actor.role, ["admin", "staff"]);
   validateId(alertId);
   return transaction(async client => {
-    const alerts = await client.query<{ id: string; family_id: string; resolved_at: Date | string | null; viewed_at: Date | string | null }>("SELECT id,family_id,resolved_at,viewed_at FROM staff_alerts WHERE id=$1 AND region=$2 FOR UPDATE", [alertId, actor.region]);
-    const alert = alerts.rows[0];
-    if (!alert) throw new HttpError(404, "未找到这条安全提示。", "NOT_FOUND");
-    const families = await client.query<{ id: string; region: "CN" | "HK"; assigned_to: string | null }>("SELECT id,region,assigned_to FROM families WHERE id=$1 AND region=$2 FOR UPDATE", [alert.family_id, actor.region]);
+    const located = await client.query<{ family_id: string }>("SELECT family_id FROM staff_alerts WHERE id=$1 AND region=$2", [alertId, actor.region]);
+    if (!located.rows[0]) throw new HttpError(404, "未找到这条安全提示。", "NOT_FOUND");
+    const families = await client.query<{ id: string; region: "CN" | "HK"; assigned_to: string | null }>("SELECT id,region,assigned_to FROM families WHERE id=$1 AND region=$2 FOR UPDATE", [located.rows[0].family_id, actor.region]);
     const family = families.rows[0];
     if (!family) throw new HttpError(404, "未找到该家庭或没有访问权限。", "NOT_FOUND");
     const users = await client.query<{ id: string; role: Role; region: "CN" | "HK"; disabled: boolean }>("SELECT id,role,region,disabled FROM users WHERE id=$1 FOR SHARE", [actor.id]);
@@ -296,6 +294,9 @@ async function settleSafetyAlert(actor: Actor, alertId: string, action: "viewed"
     if (!current || current.disabled) throw new HttpError(403, "账号已停用，请联系服务人员。", "ACCOUNT_REVOKED");
     if (current.region !== actor.region || current.region !== family.region) throw new HttpError(403, "请使用账号所属地区的入口。", "REGION_MISMATCH");
     if (current.role !== actor.role) throw new HttpError(409, "账号角色已变更，请重新登录。", "ROLE_CONFLICT");
+    const alerts = await client.query<{ id: string; family_id: string; resolved_at: Date | string | null; viewed_at: Date | string | null }>("SELECT id,family_id,resolved_at,viewed_at FROM staff_alerts WHERE id=$1 AND region=$2 FOR UPDATE", [alertId, current.region]);
+    const alert = alerts.rows[0];
+    if (!alert || alert.family_id !== family.id) throw new HttpError(404, "未找到这条安全提示。", "NOT_FOUND");
     if (!mayHandleSafetyAlert(current.role, family.assigned_to, current.id, alert.resolved_at)) throw new HttpError(403, "您没有执行此操作的权限。", "ROLE_DENIED");
     if (action === "resolved") {
       if (alert.resolved_at) return { ok: true };
