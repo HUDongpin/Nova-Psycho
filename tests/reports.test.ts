@@ -65,6 +65,16 @@ describe("who may read a report",()=>{
     expect(String(lookup?.[0])).toContain("sa.resolved_at IS NULL");
     expect(String(lookup?.[0])).not.toContain("viewed_at");
   });
+  it("does not hand a staff member the report when the family is outside their detail scope",async()=>{
+    mockQuery.mockImplementation((async(sql:string)=>{
+      if(String(sql).includes("FROM reports WHERE id=$1"))return [row];
+      return [];
+    }) as never);
+    await expect(reportFor(actor("staff"),REPORT_ID)).rejects.toMatchObject({status:404,code:"NOT_FOUND"});
+    const lookup=mockQuery.mock.calls.find(([sql])=>String(sql).includes("FROM families f WHERE f.id=$1"));
+    expect(String(lookup?.[0])).toContain("f.assigned_to=$3");
+    expect(String(lookup?.[0])).toContain("sa.resolved_at IS NULL");
+  });
   it("still applies family scoping, so a parent cannot read another family's report",async()=>{
     mockQuery.mockImplementation((async(sql:string)=>{
       if(String(sql).includes("FROM reports WHERE id=$1"))return [row];

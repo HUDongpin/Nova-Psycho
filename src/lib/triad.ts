@@ -6,7 +6,7 @@ import { triadScales } from "../domain/triad-scales";
 import { TRIAD_BUNDLE, triadRolesReady } from "../domain/triad-report";
 import { pair } from "../domain/zh-pair";
 import { parseAdvice, parseScale, parseTemplate } from "../domain/validation";
-import { ageAt, canManageFamilyReports, familyFor } from "./access";
+import { ageAt, familyFor } from "./access";
 import { audit, hashPassword, limitLogin } from "./auth";
 import { getConfig } from "./config";
 import { query, transaction } from "./db";
@@ -285,8 +285,8 @@ export async function resolveSafetyAlert(actor: Actor, alertId: string) {
   validateId(alertId);
   const rows = await query<{ id: string; family_id: string; resolved_at: Date | string | null }>("SELECT id,family_id,resolved_at FROM staff_alerts WHERE id=$1 AND region=$2", [alertId, actor.region]);
   if (!rows[0]) throw new HttpError(404, "未找到这条安全提示。", "NOT_FOUND");
-  const family = await familyFor(actor, rows[0].family_id);
-  if (!canManageFamilyReports(actor, family)) throw new HttpError(403, "您没有执行此操作的权限。", "ROLE_DENIED");
+  // Same gate as the family record: admin, assignee, or regional staff only while the family is unassigned and this alert is still open.
+  await familyFor(actor, rows[0].family_id);
   if (rows[0].resolved_at) return { ok: true };
   const updated = await query("UPDATE staff_alerts SET resolved_at=now(),resolved_by=$1 WHERE id=$2 AND region=$3 AND resolved_at IS NULL RETURNING id", [actor.id, alertId, actor.region]);
   if (updated[0]) await audit(actor, "safety.resolved", alertId);
