@@ -66,7 +66,7 @@ Neon and queue connection details stay out of AI payloads and ordinary logs. Kee
 
 ## Queue execution and recovery
 
-Submitting the final required questionnaire creates a durable SQL job. The API awaits a queue publish containing only `{jobId, region}`. The consumer claims that specific regional job, renders both PDFs, and publishes under the existing family lock and claim token. Duplicate or stale deliveries cannot publish twice or claim a different job. A report has at most three render attempts, including attempts interrupted by a crash.
+Completing the required submissions with effective parent-report consent creates a durable SQL job. A completed submission without that consent stays held, and granting consent queues or resumes the same report once. The API awaits a queue publish containing only `{jobId, region}`. The consumer claims that specific regional job, renders both PDFs, and publishes under the existing family lock and claim token. Duplicate or stale deliveries cannot publish twice or claim a different job. A report has at most three render attempts, including attempts interrupted by a crash.
 
 If publishing to the queue fails after the assessment commits, the accepted submission remains saved. One bounded `after()` retry follows; the SQL job remains available for recovery. The daily cron dispatches at most 25 due or expired jobs, with a bounded execution window. A rare dispatch gap with no later activity can wait until that daily sweep. `after()` is not a durable queue replacement and shares the route's time limit. See [Next.js `after`](https://nextjs.org/docs/app/api-reference/functions/after) and [Vercel Queue delivery semantics](https://vercel.com/docs/queues/concepts).
 

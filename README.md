@@ -1,4 +1,4 @@
-# Nova Psycho Helper
+# TopE 心理助手 (Nova Psycho Helper)
 
 [![CI](https://github.com/HUDongpin/Nova-Psycho/actions/workflows/ci.yml/badge.svg)](https://github.com/HUDongpin/Nova-Psycho/actions/workflows/ci.yml)
 
@@ -10,20 +10,24 @@ On 2026-10-03 (Asia/Hong_Kong), the user designated the Mars copy as the working
 
 ## What works today
 
-- Operations staff create family records, assign case workers, record guardian consent, and issue student / parent / teacher access invitations.
-- An administrator can issue a single-use recovery link so an existing account can set a new password; completing it ends every session that account had open.
+- Parents and teachers can create an account before joining a family. A parent creates a family and receives a join code; the student and teacher join that family with their own identities. The local username/password and configured Clerk email-identity paths are separate.
+- Operations staff can also create family records, assign case workers, record purpose-specific guardian consent, and issue student / parent / teacher access invitations.
+- The growth-triad workflow assigns one fixed role-specific instrument to each participant and combines one submitted parent, student and teacher assessment from the same round into one parent report. A later eligible round creates a separate report.
+- Assessment participation, sensitive-data processing, parent-report delivery and optional AI processing have separate consent records. Participation requires the first two; a family can complete its questionnaires while withholding the parent report. Report generation, publication and access wait for parent-report consent.
+- Triad safety signals create a staff alert when that respondent submits, without waiting for the other two. Viewing an alert does not resolve it. Regional staff can see the minimal unresolved-alert list; family details and handling rights follow assignment or the unassigned-family safety fallback. Report retry authority remains admin or assigned staff.
+- With local authentication, an administrator can issue a single-use recovery link so an existing account can set a new password; completing it ends every session that account had open.
 - Administrators can read a report-queue status endpoint covering job counts, oldest wait, expired leases, and whether the report worker is actually alive.
 - Respondents confirm the information notice, then answer through SurveyJS; drafts save automatically and version checks stop a stale page from overwriting newer answers.
 - The server performs reverse scoring, subscale sums and means, missing-data handling, age / region / role eligibility checks and rule triggering.
 - A separate report process generates and publishes simplified- and traditional-Chinese HTML and PDF automatically, with no per-report human review step.
 - Parents can only read reports for families they are authorised for; students and teachers can only reach assessments assigned to them, and cannot read parent reports.
-- Retests by the same respondent on the same instrument version can be compared by raw-score change; student, parent and teacher observations are kept separate.
+- Individual-instrument retests by the same respondent on the same instrument version can be compared by raw-score change; student, parent and teacher observations are kept separate.
 - Care goals, completion status, private case-worker observations, instrument versions, the advice library and report templates are all managed.
 - Administrators, or the assigned case worker, can retry failed reports while preserving the original answers and scores; administrators can reactivate a retired instrument whose advice dependencies are still valid.
-- Newly generated retest reports show the previous assessment date, the raw-score change, and what a higher score means for that dimension.
+- Newly generated individual-instrument retest reports show the previous assessment date, the raw-score change, and what a higher score means for that dimension.
 - Mainland China and Hong Kong use separate databases, sessions and report directories; switching language does not switch data region.
 
-**This is currently a demonstration environment.** The bundled instrument is a Nova-original 9-item fictional workflow example; the accompanying families, historical answers and reports are all synthetic data, with no clinical norms. It exists to validate the software and cannot assess a real child's mental health. No user-supplied professional instrument, real family record or real Bailian inference key has been connected yet.
+**The bundled content is demonstration content.** It includes the fictional 9-item `nova-family-demo` instrument and the parent / child / teacher `growth-triad` instruments. The supplied accounts, families and historical answers are synthetic. The triad instruments have no clinical norms and are labelled demo; they cannot establish a diagnosis or validate a real child's mental health. Traditional Chinese is a reading conversion, not a separately validated translation. Service mode rejects demo or unvalidated instruments at assignment, draft, submit and worker stages, including old unvalidated snapshots. A configured service deployment is not proof that professional content has been supplied.
 
 ## Running locally
 
@@ -55,11 +59,22 @@ All listeners bind to loopback. The first run generates independent random datab
 
 In demo mode the entry page offers five one-click synthetic accounts, and those seeded users have no password. The buttons are the administrator (Nova 管理员 · 演示 / Nova 管理員 · 示範), the 林 family's staff member (陈老师 · 演示 / 陳老師 · 示範), the 林 parent, the 林 student (林小禾), and that family's teacher (许老师 · 演示 / 許老師 · 示範). A suggested walkthrough: sign in as the administrator to view families and assignments → sign in as 林小禾 to complete a pending assessment → sign in as the 林 parent to view the new report and download the PDF. Sign in as 陈老师 / 陳老師 to open that family's case workspace, including safety alerts. Service mode does not show these buttons, and `POST /api/auth/demo` is refused. The two sites share neither logins nor data.
 
+## Three-party flow
+
+1. Create a parent account, then create a family with a birth date and separate consent choices. `assessment` and `sensitiveData` are required; `parentReport` is an explicit independent choice.
+2. Share the family join code with the student and teacher. Each signs in or creates the supported role profile and receives that role's questionnaire. Rejoining returns the existing membership/task rather than adding another copy.
+3. Complete the questionnaires. Draft revisions prevent stale overwrites. Eligibility and the child's 12+ items use the birth-date age on the deployment region's local date. A stated-age mismatch is a staff review flag; it is not itself a safety signal.
+4. A submission is `waiting` while other triad roles are missing, `consent` when report generation or access lacks parent-report permission, including after withdrawal, and `reporting` when an authorised report job exists. Students and teachers see a neutral submitted message for a report-consent hold.
+5. With all three submissions and parent-report consent, the worker publishes one combined template report automatically. It includes approved safety messages and aggregate observations, but excludes the child's raw free text, situation choices, priorities and staff contact information. Student and teacher accounts cannot fetch parent reports.
+6. Withdrawing parent-report consent blocks report JSON, HTML and PDF access and prevents a held job from publishing. Re-granting resumes the same report without duplicating it. Original grants and later withdrawal evidence remain separate.
+
 ## Scoring and automatic report conventions
 
-Scoring is authoritative on the server; client-supplied totals are not accepted. Every submission freezes the instrument, scores, age, advice library, template and consent scope. Submitted answers and published reports are protected by database triggers. The simplified- and traditional-Chinese HTML and PDF are frozen together at publication and are not rewritten by later template changes.
+Scoring is authoritative on the server; client-supplied totals are not accepted. Every submission freezes the instrument, scores (including age), advice library, template and the AI-consent boolean. Purpose-specific grant and withdrawal evidence is recorded separately in the consent ledger. Submitted answers and published reports are protected by database triggers. The simplified- and traditional-Chinese HTML and PDF are frozen together at publication and are not rewritten by later template changes.
 
-The AI interface can be enabled for a region-restricted Bailian workspace. In the current version the model **orders the professional advice applicable to this assessment's scores**; it may only return advice IDs that already exist, and cannot add diagnoses, scores, free text or unsupported interventions. Without AI consent, without configured credentials, on model failure, or when a risk signal is present, the rule template is used automatically. Missing information is shown explicitly, and risk notices take precedence over ordinary advice.
+Combined triad reports use the deterministic template path. For the single-instrument report path, the optional model can only order eligible, approved advice IDs; it cannot invent scores, diagnoses or new advice. The payload excludes names, contact information, raw answers and free text. Without AI consent or credentials, on model failure, or when risk is present, the template path is used. Missing information is shown explicitly and risk notices take precedence.
+
+Configuration supports a matching regional Bailian workspace and the explicitly allowed DeepSeek Flash endpoint. `NOVA_AI_DEPLOYMENT_SCOPE` is a configuration assertion; it does not establish the physical processing location of a nonregional endpoint. `NOVA_REGION` selects the application's CN/HK data boundary; `NOVA_DATA_REGION` records the configured hosting location. Operators must match those choices to the deployment's actual data arrangements before using real data. Local checks keep AI disabled and use synthetic data.
 
 Report PDFs are stored server-side encrypted with AES-256-GCM. Role, family and region permissions are checked before decryption and delivery. A PDF the user downloads is an ordinary readable file with no file password; revoking access cannot recall copies a parent has already downloaded.
 
@@ -67,11 +82,12 @@ Report PDFs are stored server-side encrypted with AES-256-GCM. Role, family and 
 
 An administrator first creates the initial advice library and report template under "Report content", then imports full instrument definitions under "Instrument library". Downloading the example JSON shows the format; see `docs/scale-intake.md` for detail.
 
-Scale JSON still carries `rights` and `norm.validated` fields for operator notes, but the importer does not block on those flags. Age/region/role gates and a complete scoring specification remain required structurally. The current engine supports discrete numeric options, reverse items, sum / mean aggregation, explicit missing-data rules, and raw-score threshold interpretation; it does not support arbitrary code or SQL scoring expressions. Instruments needing additional standard-score conversion or complex algorithms require new deterministic rules and standard worked examples first — they must not be approximated with a similar rule. Clinical and licensing responsibility for imported instruments stays with the operator.
+The importer rejects `demo: false` with `norm.validated: false`. Service mode also refuses demo or unvalidated instruments, including legacy stored definitions and queued snapshots. The `rights` flags and reference are required metadata, but the importer does not enforce the digital/commercial booleans as licensing checks. Setting a validation flag is an operator attestation, not evidence that the software has verified clinical validity. Age/region/role gates and a complete scoring specification remain required structurally. The current engine supports discrete numeric options, reverse items, sum / mean aggregation, explicit missing-data rules, and raw-score threshold interpretation; it does not support arbitrary code or SQL scoring expressions. Instruments needing additional standard-score conversion or complex algorithms require new deterministic rules and standard worked examples first — they must not be approximated with a similar rule. Clinical and licensing responsibility for imported instruments stays with the operator.
 
 ## Verification and deployment
 
 ```sh
+npm run lint
 npm test
 npm run typecheck
 NOVA_DIST_DIR=.next-verify npm run build
@@ -81,6 +97,8 @@ node scripts/run-region.mjs CN content-regressions
 node scripts/run-region.mjs CN retry-regressions
 node scripts/run-region.mjs CN recovery-checks
 ```
+
+The ESLint CLI checks application code, maintained scripts and tests. Core JavaScript, TypeScript and React Hooks correctness rules can fail CI; narrowly documented warnings remain visible for existing imperative UI and browser-harness patterns. Generated output and private `work/` files are excluded.
 
 Integration tests run only against explicitly classified demo environments. Concurrency and lifecycle checks use synthetic families, or an isolated test database that is created and then dropped; they do not delete a user's existing families. Evidence is written to `work/qa/`.
 
