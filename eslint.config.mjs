@@ -1,45 +1,106 @@
 import { defineConfig, globalIgnores } from "eslint/config";
-import nextVitals from "eslint-config-next/core-web-vitals";
-import nextTs from "eslint-config-next/typescript";
+import js from "@eslint/js";
+import tseslint from "typescript-eslint";
+import reactHooks from "eslint-plugin-react-hooks";
+import globals from "globals";
 
-const eslintConfig = defineConfig([
-  ...nextVitals,
-  ...nextTs,
-  {
-    rules: {
-      // Leading-underscore parameters mark stub signatures kept for their shape (test doubles).
-      "@typescript-eslint/no-unused-vars": ["warn", { argsIgnorePattern: "^_", varsIgnorePattern: "^_", caughtErrorsIgnorePattern: "^_" }],
-      // These three are React Compiler diagnostics from eslint-plugin-react-hooks 7. This app does not
-      // enable the React Compiler, and the flagged code is the established "latest value in a ref",
-      // reset-before-fetch and imperative SurveyJS model patterns. They stay visible as warnings so
-      // they can be reviewed case by case, but they do not fail the gate.
-      "react-hooks/refs": "warn",
-      "react-hooks/set-state-in-effect": "warn",
-      "react-hooks/immutability": "warn",
-    },
-  },
-  {
-    // These links deliberately leave the client app with a full document load: into the Clerk
-    // sign-in/sign-up pages, and back to "/" after an invitation or recovery completes, so the
-    // session and identity provider state are re-read from the server.
-    files: ["src/app/invite/page.tsx", "src/app/recover/page.tsx", "src/components/login.tsx"],
-    rules: { "@next/next/no-html-link-for-pages": "off" },
-  },
-  {
-    // Local-only Playwright evidence harnesses that read untyped JSON responses; not part of Vitest.
-    files: ["tests/**/*.browser.ts"],
-    rules: { "@typescript-eslint/no-explicit-any": "warn" },
-  },
+// Next 16 removed `next lint`. eslint-config-next is not used here because its
+// @next/eslint-plugin-next -> fast-glob -> micromatch -> braces chain carries an
+// unpatched high advisory (GHSA-vfj7-8cjw-p6xm). This gate is ESLint's own
+// recommended correctness rules, typescript-eslint's recommended rules, and the
+// React hooks plugin's recommended rules.
+export default defineConfig([
   globalIgnores([
-    // Default ignores of eslint-config-next.
     ".next/**",
+    ".next-*/**",
     "out/**",
     "build/**",
     "next-env.d.ts",
-    // Regional and CI build output, and private runtime data.
-    ".next-*/**",
     "work/**",
   ]),
-]);
+  {
+    files: ["**/*.{js,mjs,cjs,ts,mts,cts,tsx}"],
+    extends: [js.configs.recommended, tseslint.configs.recommended],
+    languageOptions: {
+      ecmaVersion: "latest",
+      sourceType: "module",
+      globals: { ...globals.browser, ...globals.node },
+      parserOptions: { ecmaFeatures: { jsx: true } },
+    },
+  },
+  {
+    files: ["**/*.{ts,tsx}"],
+    extends: [reactHooks.configs.flat.recommended],
+    rules: {
+      // typescript-eslint's eslint-recommended layer switches these core correctness
+      // rules off for TS files because the compiler can report them. This project's
+      // tsconfig does not make all of them errors (unreachable code is only a hint by
+      // default), so turn them back on. no-undef, no-redeclare and no-dupe-class-members
+      // stay off: they misreport type-only names, declaration merging and overloads.
+      "constructor-super": "error",
+      "getter-return": "error",
+      "no-const-assign": "error",
+      "no-dupe-args": "error",
+      "no-dupe-keys": "error",
+      "no-func-assign": "error",
+      "no-import-assign": "error",
+      "no-new-native-nonconstructor": "error",
+      "no-obj-calls": "error",
+      "no-setter-return": "error",
+      "no-this-before-super": "error",
+      "no-unreachable": "error",
+      "no-unsafe-negation": "error",
+      "no-with": "error",
+    },
+  },
 
-export default eslintConfig;
+  // Narrow, explained exceptions for code that already exists. Each lists the exact
+  // files the rule currently reports in, so new code keeps the default severity.
+  {
+    // React Compiler diagnostic. These components keep the latest locale, draft,
+    // submit callback or acknowledgement in a ref read by async handlers and event
+    // listeners ("latest value" ref pattern). The app does not enable the React Compiler.
+    files: [
+      "src/components/documents.tsx",
+      "src/components/login.tsx",
+      "src/components/nova-app.tsx",
+      "src/components/survey-runner.tsx",
+    ],
+    rules: { "react-hooks/refs": "warn" },
+  },
+  {
+    // React Compiler diagnostic. These effects clear error/loading state before
+    // starting an abortable fetch or draft load, or mirror external store state.
+    files: [
+      "src/app/invite/page.tsx",
+      "src/app/recover/page.tsx",
+      "src/components/documents.tsx",
+      "src/components/nova-app.tsx",
+      "src/components/survey-runner.tsx",
+      "src/components/ui.tsx",
+      "src/components/workspace-views.tsx",
+    ],
+    rules: { "react-hooks/set-state-in-effect": "warn" },
+  },
+  {
+    // React Compiler diagnostic. The SurveyJS Model is an imperative object whose
+    // mode and navigation fields are meant to be set directly.
+    files: ["src/components/survey-runner.tsx"],
+    rules: { "react-hooks/immutability": "warn" },
+  },
+  {
+    // Local-only Playwright evidence harnesses (not part of Vitest) that read
+    // untyped JSON API responses.
+    files: [
+      "tests/session-draft-recovery.browser.ts",
+      "tests/waiting-refresh-lifecycle.browser.ts",
+      "tests/waiting-refresh.browser.ts",
+    ],
+    rules: { "@typescript-eslint/no-explicit-any": "warn" },
+  },
+  {
+    // Test doubles keep the real signature; leading-underscore parameters are unused on purpose.
+    files: ["tests/**/*.ts"],
+    rules: { "@typescript-eslint/no-unused-vars": ["error", { argsIgnorePattern: "^_" }] },
+  },
+]);
