@@ -56,6 +56,19 @@ describe("assessment rows after a triad report exists", () => {
     expect(markup).toContain("已完成提交");
     expect(markup).not.toContain("查看报告");
   });
+
+  it("keeps a missing parent-report consent neutral for the child and the teacher", () => {
+    for (const respondentRole of ["student", "teacher"] as const) {
+      const markup = html([row({ respondentRole, respondentName: respondentRole === "student" ? "孩子" : "老师", status: "queued", phase: "consent", reportId: null })], false);
+      expect(markup).toContain("已完成提交");
+      expect(markup).toContain("无需再次填写");
+      expect(markup).not.toContain("等待家长报告同意");
+      expect(markup).not.toContain("尚未取得向家长提供综合报告的同意");
+      expect(markup).not.toContain("等待另外两方");
+      expect(markup).not.toContain("报告正在生成");
+      expect(markup).not.toContain("报告生成中");
+    }
+  });
 });
 
 describe("report retry capability", () => {
