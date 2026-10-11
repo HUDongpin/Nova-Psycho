@@ -2,7 +2,7 @@ import { describe,it,expect,beforeEach,afterEach,vi } from "vitest";
 
 vi.mock("../src/lib/db",()=>({query:vi.fn(),transaction:vi.fn()}));
 vi.mock("../src/lib/pdf",()=>({renderPdf:vi.fn(async()=>Buffer.from("%PDF-1.4 stub")),closePdfBrowser:vi.fn()}));
-vi.mock("../src/lib/storage",()=>({writePrivatePdf:vi.fn(async()=>undefined),removePrivatePdf:vi.fn(async()=>undefined),listPrivatePdfKeys:vi.fn(async()=>[])}));
+vi.mock("../src/lib/storage",()=>({writePrivatePdf:vi.fn(async()=>undefined),removePrivatePdf:vi.fn(async()=>"done"),listPrivatePdfKeys:vi.fn(async()=>[])}));
 vi.mock("../src/domain/narrative",()=>({selectNarrative:vi.fn(async()=>({selectedAdviceIds:["listen"],generationMode:"template",fallbackReason:"ai_disabled",aiModel:null}))}));
 import { query,transaction } from "../src/lib/db";
 import { renderPdf } from "../src/lib/pdf";
@@ -44,7 +44,8 @@ function config(){
 
 beforeEach(()=>{
   config();
-  mockQuery.mockReset();mockTransaction.mockReset();mockWrite.mockClear();mockRemove.mockClear();mockList.mockReset();mockRender.mockClear();
+  mockQuery.mockReset();mockTransaction.mockReset();mockWrite.mockClear();mockRemove.mockReset();mockList.mockReset();mockRender.mockClear();
+  mockRemove.mockResolvedValue("done");
   clientCalls.length=0;
   mockTransaction.mockImplementation((async(fn:(c:unknown)=>Promise<unknown>)=>fn(client)) as never);
   mockList.mockResolvedValue([]);
@@ -80,6 +81,29 @@ describe("deletion queue",()=>{
     await processDeletionJobs();
     expect(mockRemove).not.toHaveBeenCalled();
   });
+  it("preserves the busy job and stops the batch, then clears it only after a later successful removal",async()=>{
+    const jobs=[{file_key:"a.zh-CN.pdf.enc"},{file_key:"b.zh-CN.pdf.enc"}];
+    mockQuery.mockResolvedValueOnce(jobs).mockResolvedValue([]);
+    mockRemove.mockResolvedValueOnce("busy");
+    await expect(processDeletionJobs()).resolves.toBe("busy");
+    expect(mockRemove).toHaveBeenCalledTimes(1);
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+
+    mockQuery.mockResolvedValueOnce(jobs);
+    await expect(processDeletionJobs()).resolves.toBe("done");
+    expect(mockQuery.mock.calls.filter(([sql])=>String(sql).startsWith("DELETE FROM file_deletion_jobs"))).toEqual([
+      ["DELETE FROM file_deletion_jobs WHERE file_key=$1",[jobs[0].file_key]],
+      ["DELETE FROM file_deletion_jobs WHERE file_key=$1",[jobs[1].file_key]]
+    ]);
+  });
+  it("does not clear a queued task or continue the batch after a real removal failure",async()=>{
+    mockQuery.mockResolvedValueOnce([{file_key:"a.zh-CN.pdf.enc"},{file_key:"b.zh-CN.pdf.enc"}]);
+    const failure=new Error("synthetic filesystem failure");
+    mockRemove.mockRejectedValueOnce(failure);
+    await expect(processDeletionJobs()).rejects.toBe(failure);
+    expect(mockRemove).toHaveBeenCalledTimes(1);
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("orphan report cleanup",()=>{
@@ -101,6 +125,26 @@ describe("orphan report cleanup",()=>{
     mockQuery.mockResolvedValueOnce([{status:"published",pdf_keys:{"zh-CN":key}}]);
     await cleanOrphanReports();
     expect(mockRemove).not.toHaveBeenCalled();
+  });
+  it("stops at a busy orphan and retries the retained files on the next cleanup",async()=>{
+    const keys=[`${ASSESSMENT_ID}.${TOKEN}.zh-CN.pdf.enc`,`${ASSESSMENT_ID}.${TOKEN}.zh-HK.pdf.enc`];
+    mockList.mockResolvedValue(keys);
+    mockQuery.mockResolvedValue([]);
+    mockRemove.mockResolvedValueOnce("busy");
+    await expect(cleanOrphanReports()).resolves.toBe("busy");
+    expect(mockRemove).toHaveBeenCalledTimes(1);
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+    await expect(cleanOrphanReports()).resolves.toBe("done");
+    expect(mockRemove.mock.calls).toEqual([[keys[0]],[keys[0]],[keys[1]]]);
+  });
+  it("propagates a failed orphan removal and stops the batch",async()=>{
+    mockList.mockResolvedValue([`${ASSESSMENT_ID}.${TOKEN}.zh-CN.pdf.enc`,`${ASSESSMENT_ID}.${TOKEN}.zh-HK.pdf.enc`]);
+    mockQuery.mockResolvedValue([]);
+    const failure=new Error("synthetic database failure");
+    mockRemove.mockRejectedValueOnce(failure);
+    await expect(cleanOrphanReports()).rejects.toBe(failure);
+    expect(mockRemove).toHaveBeenCalledTimes(1);
+    expect(mockQuery).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -5,7 +5,7 @@ vi.mock("../src/lib/db", () => ({ query: vi.fn(), transaction: vi.fn() }));
 vi.mock("../src/lib/auth", () => ({ audit: vi.fn() }));
 vi.mock("../src/lib/report-dispatch", () => ({ dispatchAssessmentReport: vi.fn(async () => undefined) }));
 vi.mock("../src/lib/pdf", () => ({ renderPdf: vi.fn(async () => Buffer.from("%PDF")), closePdfBrowser: vi.fn() }));
-vi.mock("../src/lib/storage", () => ({ writePrivatePdf: vi.fn(async () => undefined), removePrivatePdf: vi.fn(async () => undefined), listPrivatePdfKeys: vi.fn(async () => []) }));
+vi.mock("../src/lib/storage", () => ({ writePrivatePdf: vi.fn(async () => undefined), removePrivatePdf: vi.fn(async () => "done"), listPrivatePdfKeys: vi.fn(async () => []) }));
 vi.mock("../src/domain/narrative", () => ({ selectNarrative: vi.fn(async () => ({ selectedAdviceIds: [], generationMode: "template", fallbackReason: "ai_disabled", aiModel: null })) }));
 
 import { transaction, query } from "../src/lib/db";

@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import type { PoolClient } from "pg";
 import { getConfig } from "./config";
 import { query,transaction } from "./db";
-import { acquireSharedReportRetentionLock,assertPrivatePdfKey,PRIVATE_PDF_KEY_PATTERN,privatePdfPath } from "./report-retention";
+import { tryAcquireSharedReportRetentionLock,assertPrivatePdfKey,PRIVATE_PDF_KEY_PATTERN,privatePdfPath } from "./report-retention";
 export const MAX_PRIVATE_PDF_BYTES=4*1024*1024;
 function location(key:string):string{
   return privatePdfPath(getConfig().reportDir,key);
@@ -36,16 +36,17 @@ export async function readPrivatePdf(key:string):Promise<Buffer>{
   if(!file||file.length<37||(config.reportStorage==="database"&&file.length>MAX_PRIVATE_PDF_BYTES+33)||file.subarray(0,5).toString()!=="NOVA1")throw new Error("Invalid encrypted report");
   const decipher=createDecipheriv("aes-256-gcm",getConfig().reportKey,file.subarray(5,17));decipher.setAuthTag(file.subarray(17,33));return Buffer.concat([decipher.update(file.subarray(33)),decipher.final()]);
 }
-export async function removePrivatePdf(key:string):Promise<void>{
+export async function removePrivatePdf(key:string):Promise<"done"|"busy">{
   assertPrivatePdfKey(key);
   if(getConfig().reportStorage==="database"){
     await query("DELETE FROM report_files WHERE file_key=$1 AND region=$2",[key,getConfig().region]);
-    return;
+    return "done";
   }
   const dest=location(key);
-  await transaction(async client=>{
-    await acquireSharedReportRetentionLock(client);
+  return transaction(async client=>{
+    if(!await tryAcquireSharedReportRetentionLock(client))return "busy";
     await fs.rm(dest,{force:true});
+    return "done";
   });
 }
 export async function listPrivatePdfKeys():Promise<string[]>{
