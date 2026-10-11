@@ -22,7 +22,7 @@ for(const [region,port,webPort] of [['CN',55431,3100],['HK',55432,3101]]) {
     ].join('\n')+'\n',{mode:0o600});
   }
   let exists=false;
-  try { execFileSync('docker',['container','inspect',name],{stdio:'ignore'});exists=true; } catch {}
+  try { execFileSync('docker',['container','inspect',name],{stdio:'ignore'});exists=true; } catch { /* no such container yet; it is created below */ }
   if(exists) execFileSync('docker',['start',name],{stdio:'ignore'});
   else execFileSync('docker',['run','-d','--name',name,'--label','app=nova-psycho-helper','--env-file',dbEnvPath,'-p',`127.0.0.1:${port}:5432`,'-v',`nova_psycho_${region.toLowerCase()}_data:/var/lib/postgresql/data`,'--health-cmd',`pg_isready -U nova -d ${dbName}`,'--health-interval','2s','--health-retries','15','postgres:16-alpine'],{stdio:'ignore'});
   console.log(`${region}: private local environment ready; database ${port}, web ${webPort}.`);
