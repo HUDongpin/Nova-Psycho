@@ -123,7 +123,7 @@ async function dispatch(request:Request,context:Context):Promise<Response>{retur
     if(path[2]==="document")return new Response(report.html_documents[locale],{headers:{"Content-Type":"text/html; charset=utf-8","Cache-Control":"no-store","Content-Security-Policy":"default-src 'none'; style-src 'unsafe-inline'; img-src data:; frame-ancestors 'self'"}});
     if(path[2]==="pdf"){
       const pdf=await readPrivatePdf(report.pdf_keys[locale]);await audit(actor,"report.downloaded",report.id);
-      return new Response(new Uint8Array(pdf),{headers:{"Content-Type":"application/pdf","Cache-Control":"no-store","Content-Disposition":`attachment; filename="Nova-${report.id.slice(0,8)}-${locale}.pdf"`}});
+      return new Response(new Uint8Array(pdf),{headers:{"Content-Type":"application/pdf","Cache-Control":"no-store","Content-Disposition":`attachment; filename="TopE-${report.id.slice(0,8)}-${locale}.pdf"`}});
     }
   }
   if(method==="POST"&&route==="goals")return json(await addGoal(actor,await body(request)),201);
