@@ -99,6 +99,19 @@ export default defineConfig([
     rules: { "@typescript-eslint/no-explicit-any": "warn" },
   },
   {
+    // ESLint 10 recommended rule. These rethrows deliberately replace the caught error:
+    // report-queue keeps job failure details out of the queue platform's error, and the
+    // backup helpers already copy the underlying message into a clearer operator message.
+    files: ["scripts/backup-lib.ts", "src/lib/report-queue.ts"],
+    rules: { "preserve-caught-error": "warn" },
+  },
+  {
+    // ESLint 10 recommended rule. probeClass keeps "not_run" as a readable default
+    // before the try block that always overwrites it.
+    files: ["scripts/ai-conformance.ts"],
+    rules: { "no-useless-assignment": "warn" },
+  },
+  {
     // Test doubles keep the real signature; leading-underscore parameters are unused on purpose.
     files: ["tests/**/*.ts"],
     rules: { "@typescript-eslint/no-unused-vars": ["error", { argsIgnorePattern: "^_" }] },
