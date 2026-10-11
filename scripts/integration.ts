@@ -82,8 +82,8 @@ async function documents(client:Client,reportId:string,prefix?:string):Promise<D
   const result={} as Documents;
   for(const locale of ["zh-CN","zh-HK"] as const){
     const response=await request(client,`/api/reports/${reportId}/document?locale=${locale}`);assert.equal(response.status,200);
-    const html=await response.text();assert.match(html,/Nova|nova/);assert.ok(html.includes(`lang="${locale}"`));
-    const pdf=await request(client,`/api/reports/${reportId}/pdf?locale=${locale}`);assert.equal(pdf.status,200);assert.match(pdf.headers.get("content-type")??"",/application\/pdf/);
+    const html=await response.text();assert.ok(html.includes('<div class="brand">TopE 心理助手</div>'));assert.ok(!html.includes("Nova Psycho Helper"));assert.ok(html.includes(`lang="${locale}"`));
+    const pdf=await request(client,`/api/reports/${reportId}/pdf?locale=${locale}`);assert.equal(pdf.status,200);assert.match(pdf.headers.get("content-type")??"",/application\/pdf/);assert.equal(pdf.headers.get("content-disposition"),`attachment; filename="TopE-${reportId.slice(0,8)}-${locale}.pdf"`);
     const bytes=Buffer.from(await pdf.arrayBuffer());assert.equal(bytes.subarray(0,4).toString(),"%PDF");assert.ok(bytes.length>1000);
     if(prefix){await fs.writeFile(path.join(outputDir,`${prefix}-${locale}.html`),html,{flag:"wx"});await fs.writeFile(path.join(outputDir,`${prefix}-${locale}.pdf`),bytes,{flag:"wx"});}
     result[locale]={html,pdfSha256:sha256(bytes)};
