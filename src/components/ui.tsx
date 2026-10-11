@@ -14,7 +14,7 @@ export function useLocale() {
   function changeLocale(value: Locale) { localStorage.setItem("nova-locale", value); setLocale(value); window.dispatchEvent(new Event("nova-locale-change")); }
   return { locale, setLocale: changeLocale, t: copy(locale) };
 }
-export function Brand({ compact = false }: { compact?: boolean }) { return <div className={`brand ${compact ? "compact" : ""}`}><span className="brand-symbol"><FlowerLotus size={22} weight="regular" /></span><div><strong>TopE<span>心理助手</span></strong>{!compact && <small>FAMILY WELLBEING</small>}</div></div>; }
+export function Brand({ compact = false }: { compact?: boolean }) { return <div className={`brand ${compact ? "compact" : ""}`}><span className="brand-symbol"><FlowerLotus size={22} weight="regular" /></span><div><strong>TopE<span>心理助手</span></strong></div></div>; }
 export function LocaleSwitch({ locale, onChange }: { locale: Locale; onChange: (locale: Locale) => void }) { const t = copy(locale); return <div className="locale-control" role="group" aria-label={t("language")}><button type="button" aria-pressed={locale === "zh-CN"} onClick={() => onChange("zh-CN")}>简</button><button type="button" aria-pressed={locale === "zh-HK"} onClick={() => onChange("zh-HK")}>繁</button></div>; }
 export function Badge({ children, tone = "neutral" }: { children: ReactNode; tone?: "neutral" | "sage" | "peach" | "danger" | "teal" }) { return <span className={`badge badge-${tone}`}>{children}</span>; }
 export function Loading({ locale }: { locale: Locale }) { return <div className="loading-state" role="status"><CircleNotch size={28} className="spin" /><span>{copy(locale)("loading")}</span></div>; }

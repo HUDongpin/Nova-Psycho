@@ -52,7 +52,7 @@ async function renderInContext(context:BrowserContext,html:string,fontStyle?:str
       if(loaded.length!==1||!document.fonts.check('16px "Nova CJK"',"家庭成長学习"))throw new Error("Bundled PDF font did not load");
     });
   }
-  const result=await page.pdf({format:"A4",printBackground:true,preferCSSPageSize:true,displayHeaderFooter:true,headerTemplate:"<span></span>",footerTemplate:'<div style="font-size:8px;width:100%;text-align:center;color:#748378">Nova Psycho Helper · <span class="pageNumber"></span> / <span class="totalPages"></span></div>'});
+  const result=await page.pdf({format:"A4",printBackground:true,preferCSSPageSize:true,displayHeaderFooter:true,headerTemplate:"<span></span>",footerTemplate:'<div style="font-size:8px;width:100%;text-align:center;color:#748378">TopE · <span class="pageNumber"></span> / <span class="totalPages"></span></div>'});
   if(result.subarray(0,4).toString()!=="%PDF")throw new Error("Invalid PDF render");return result;
 }
 async function renderServerlessPdf(html:string):Promise<Buffer>{
