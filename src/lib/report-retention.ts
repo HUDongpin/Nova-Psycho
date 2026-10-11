@@ -3,14 +3,14 @@ import path from "node:path";
 // Dedicated advisory-lock pair for report-file retention during backup.
 // Backup takes the exclusive SESSION lock outside any transaction, then starts
 // a REPEATABLE READ snapshot. Deletion takes the matching shared transaction
-// lock so it waits for the copy to finish rather than racing it.
+// lock when available; a busy backup defers cleanup to the next worker cycle.
 export const REPORT_RETENTION_LOCK_CLASS = 807001;
 export const REPORT_RETENTION_LOCK_ID = 1;
 export const REPORT_RETENTION_LOCK_TIMEOUT = "60s";
 
 export const PRIVATE_PDF_KEY_PATTERN = /^[0-9a-f-]{36}\.[0-9a-f-]{36}\.zh-(CN|HK)\.pdf\.enc$/;
 
-type Queryable = { query: (sql: string, values?: unknown[]) => Promise<unknown> };
+type Queryable = { query: (sql: string, values?: unknown[]) => Promise<{rows: Record<string, unknown>[]}> };
 
 export function assertPrivatePdfKey(key: string): string {
   if (typeof key !== "string" || !PRIVATE_PDF_KEY_PATTERN.test(key)) throw new Error("Invalid private report key");
@@ -27,12 +27,9 @@ export function privatePdfPath(reportDir: string, key: string): string {
   return dest;
 }
 
-export async function acquireSharedReportRetentionLock(client: Queryable): Promise<void> {
-  // The application pool sets a 15s statement_timeout. A backup can hold the
-  // exclusive lock through dump and copy, so deletion must wait rather than fail.
-  await client.query("SET LOCAL statement_timeout = 0");
-  await client.query("SET LOCAL lock_timeout = 0");
-  await client.query("SELECT pg_advisory_xact_lock_shared($1, $2)", [REPORT_RETENTION_LOCK_CLASS, REPORT_RETENTION_LOCK_ID]);
+export async function tryAcquireSharedReportRetentionLock(client: Queryable): Promise<boolean> {
+  const result = await client.query("SELECT pg_try_advisory_xact_lock_shared($1, $2) AS acquired", [REPORT_RETENTION_LOCK_CLASS, REPORT_RETENTION_LOCK_ID]);
+  return result.rows[0].acquired === true;
 }
 
 export async function acquireExclusiveReportRetentionLock(client: Queryable): Promise<void> {

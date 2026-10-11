@@ -109,9 +109,9 @@ This writes `work/backups/<REGION>/<timestamp>/` (override with `NOVA_BACKUP_DIR
 Consistency guarantees:
 
 - The backup takes an exclusive PostgreSQL advisory session lock (`807001, 1`) before opening a `REPEATABLE READ READ ONLY` transaction, then exports that snapshot with `pg_export_snapshot()` and passes it to `pg_dump --snapshot`. Manifest row counts and `reports.pdf_keys` are read from the same transaction, which stays open through dump and file copy.
-- Worker deletion, orphan cleanup and failed-render cleanup all take the matching shared transaction lock inside `removePrivatePdf`. They wait until the backup has copied the referenced files, then resume. Report generation itself is not locked.
+- Worker deletion, orphan cleanup and failed-render cleanup try the matching shared transaction lock inside `removePrivatePdf`. A busy backup returns `busy` immediately: files and queued deletion tasks remain in place, and the current cleanup pass stops. The continuous worker can still generate reports and update its heartbeat. Cleanup retries on a later pass after the backup releases its lock; report generation itself is not locked.
 - The archive contains exactly those referenced files, not whatever happens to sit in the live report directory. A missing referenced file fails the backup rather than recording success. Stray or later-written files are left on disk; unpublished jobs can regenerate after restore, and deletion of an already-absent file stays idempotent.
-- The exclusive lock is acquired with `lock_timeout = 60s`. If a deletion or another backup still holds it after that, this backup fails instead of claiming a consistent copy. Expect deletions to pause for the duration of dump-plus-copy, typically seconds, longer on a large region.
+- The exclusive lock is acquired with `lock_timeout = 60s`. If a deletion or another backup still holds it after that, this backup fails instead of claiming a consistent copy. Physical deletion is deferred for the duration of dump-plus-copy; this does not hold the worker inside a lock wait. Other database or filesystem errors still fail explicitly.
 
 The report key itself is never included. The fingerprint exists so that a restore can detect a mismatched key, which would otherwise produce silently unreadable PDFs.
 

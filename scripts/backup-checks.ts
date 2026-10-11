@@ -7,14 +7,18 @@ import {getConfig} from "../src/lib/config";
 import {closeDatabase,pool,query} from "../src/lib/db";
 import {acquireExclusiveReportRetentionLock,releaseExclusiveReportRetentionLock} from "../src/lib/report-retention";
 import {removePrivatePdf,writePrivatePdf} from "../src/lib/storage";
-import {createRegionalBackup,missingRestoredReportKeys,run,withConsistentBackupSnapshot} from "./backup-lib";
+import {processDeletionJobs} from "../src/lib/worker";
+import {backupKeyFromEnv,createRegionalBackup,missingRestoredReportKeys,run,withConsistentBackupSnapshot} from "./backup-lib";
+import {withDecryptedBackup} from "./restore-lib";
+import {assertThrowawayDatabase,assertThrowawayTarget} from "./test-database-guard";
 
 // Isolated acceptance for backup snapshot/count/file consistency. Codex runs this
 // against a local PostgreSQL 16 cluster. The script creates a throwaway database
 // and synthetic report files only.
 
-const original=getConfig();assert.equal(original.mode,"demo");
-const control=new pg.Client({connectionString:original.databaseUrl});await control.connect();
+const original=getConfig();
+assertThrowawayTarget({mode:original.mode,databaseUrl:original.databaseUrl,aiEnabled:original.ai.enabled});
+const control=new pg.Client({connectionString:original.databaseUrl});
 const database=`nova_backup_${randomBytes(6).toString("hex")}`;let created=false;
 const stamp=randomBytes(4).toString("hex");
 const reportDir=path.resolve("work/qa",`backup-checks-reports-${stamp}`);
@@ -29,6 +33,8 @@ const KEY_DELETE=`${randomUUID()}.${randomUUID()}.zh-CN.pdf.enc`;
 const KEY_MISSING=`${randomUUID()}.${randomUUID()}.zh-CN.pdf.enc`;
 
 try{
+  await control.connect();
+  await assertThrowawayDatabase(control);
   await control.query(`CREATE DATABASE "${database}"`);created=true;
   const url=new URL(original.databaseUrl);url.pathname=`/${database}`;process.env.DATABASE_URL=url.toString();
   process.env.NOVA_REPORT_DIR=reportDir;process.env.NOVA_BACKUP_DIR=backupRoot;
@@ -61,23 +67,25 @@ try{
     }finally{await extra.end();}
   });
 
-  await check("deletion waits for the exclusive backup lock and then resumes",async()=>{
+  await check("deletion returns busy during backup, retains its task, and succeeds on the next cycle",async()=>{
     const lockClient=new pg.Client({connectionString:url.toString()});
     await lockClient.connect();
     let lockHeld=false;
     try{
+      await query("INSERT INTO file_deletion_jobs(file_key) VALUES($1)",[KEY_DELETE]);
       await acquireExclusiveReportRetentionLock(lockClient);
       lockHeld=true;
-      let finished=false;
-      const pending=removePrivatePdf(KEY_DELETE).then(()=>{finished=true;});
-      await new Promise(resolve=>setTimeout(resolve,300));
-      assert.equal(finished,false);
+      const started=Date.now();
+      assert.equal(await removePrivatePdf(KEY_DELETE),"busy");
+      assert.equal(await processDeletionJobs(),"busy");
+      assert.ok(Date.now()-started<2000,"Cleanup must not wait for the exclusive backup lock");
       assert.equal((await fs.readdir(reportDir)).includes(KEY_DELETE),true);
+      assert.equal((await query("SELECT file_key FROM file_deletion_jobs WHERE file_key=$1",[KEY_DELETE])).length,1);
       await releaseExclusiveReportRetentionLock(lockClient);
       lockHeld=false;
-      await pending;
-      assert.equal(finished,true);
+      assert.equal(await processDeletionJobs(),"done");
       assert.equal((await fs.readdir(reportDir)).includes(KEY_DELETE),false);
+      assert.equal((await query("SELECT file_key FROM file_deletion_jobs WHERE file_key=$1",[KEY_DELETE])).length,0);
     }finally{
       if(lockHeld){try{await releaseExclusiveReportRetentionLock(lockClient);}catch{/* still close */}}
       await lockClient.end();
@@ -85,30 +93,33 @@ try{
   });
 
   await check("backup archives referenced files and refuses a missing reference",async()=>{
-    const createdBackup=await createRegionalBackup();
-    const archive=path.join(createdBackup.target,"reports.tar.gz");
-    const listing=await run("tar",["-tzf",archive]);
-    const names=String(listing.stdout);
-    assert.match(names,new RegExp(KEY_CN.replaceAll(".","\\.")));
-    assert.match(names,new RegExp(KEY_HK.replaceAll(".","\\.")));
-    assert.doesNotMatch(names,new RegExp(KEY_LIVE.replaceAll(".","\\.")));
-    assert.doesNotMatch(names,new RegExp(KEY_DELETE.replaceAll(".","\\.")));
-    assert.equal(createdBackup.manifest.reports.fileCount,2);
-    const restored=path.resolve("work/qa",`backup-checks-restored-${stamp}`);
-    await fs.mkdir(restored,{recursive:true,mode:0o700});
-    await run("tar",["-xzf",archive,"-C",restored]);
-    const present=await missingRestoredReportKeys(restored,[{pdf_keys:{"zh-CN":KEY_CN,"zh-HK":KEY_HK}}]);
-    assert.deepEqual(present,[]);
-    const rejected=await missingRestoredReportKeys(restored,[{pdf_keys:{"zh-CN":KEY_CN,"zh-HK":KEY_MISSING}}]);
-    assert.deepEqual(rejected,[KEY_MISSING]);
+    const {target,manifest}=await createRegionalBackup();
+    await withDecryptedBackup(target,path.join(target,manifest.database.file),path.join(target,manifest.reports.file),manifest.encrypted,backupKeyFromEnv(),async(_dump,archive)=>{
+      const listing=await run("tar",["-tzf",archive]);
+      const names=String(listing.stdout).split(/\r?\n/).map(name=>name.replace(/^\.\//,"")).filter(name=>name&&name!==".");
+      assert.deepEqual(names.sort(),[KEY_CN,KEY_HK].sort());
+      assert.equal(manifest.reports.fileCount,2);
+      const restored=path.resolve("work/qa",`backup-checks-restored-${stamp}`);
+      await fs.mkdir(restored,{recursive:true,mode:0o700});
+      await run("tar",["-xzf",archive,"-C",restored]);
+      assert.deepEqual((await fs.readdir(restored)).sort(),[KEY_CN,KEY_HK].sort());
+      const present=await missingRestoredReportKeys(restored,[{pdf_keys:{"zh-CN":KEY_CN,"zh-HK":KEY_HK}}]);
+      assert.deepEqual(present,[]);
+      const rejected=await missingRestoredReportKeys(restored,[{pdf_keys:{"zh-CN":KEY_CN,"zh-HK":KEY_MISSING}}]);
+      assert.deepEqual(rejected,[KEY_MISSING]);
+    });
 
-    await removePrivatePdf(KEY_HK);
+    assert.equal(await removePrivatePdf(KEY_HK),"done");
     await assert.rejects(()=>createRegionalBackup(),/Referenced report file is missing/);
   });
 }finally{
-  await closeDatabase();process.env.DATABASE_URL=original.databaseUrl;process.env.NOVA_REPORT_DIR=original.reportDir;
-  if(created)await control.query(`DROP DATABASE "${database}"`);
-  await control.end();
+  try{
+    await closeDatabase();
+    if(created)await control.query(`DROP DATABASE "${database}"`);
+  }finally{
+    process.env.DATABASE_URL=original.databaseUrl;process.env.NOVA_REPORT_DIR=original.reportDir;
+    await control.end();
+  }
   await fs.mkdir("work/qa",{recursive:true});
   await fs.writeFile("work/qa/backup-checks.json",JSON.stringify({timestamp:new Date().toISOString(),isolatedDatabase:true,syntheticDataOnly:true,results},null,2));
 }
