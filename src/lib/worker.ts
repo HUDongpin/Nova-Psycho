@@ -65,6 +65,25 @@ async function unclaimedJobResult(jobId:string|undefined):Promise<ReportJobResul
   const due=new Date(job.state==="running"?job.lease_until:job.available_at).getTime();
   return {status:"retry_at",retryAt:new Date(Math.max(Date.now()+1000,Number.isFinite(due)?due:Date.now()+10000)).toISOString()};
 }
+// The claim filter skips a due ready job when parent_report consent is gone, and the
+// queue would retry that delivery every second. Pause it on the same ledger as a
+// post-claim pause. Family lock first, then the job: consent grant and publication
+// take the locks in that order, and a re-check under those locks drops a race.
+async function pauseDueReadyJobMissingParentReportConsent(jobId:string):Promise<boolean>{
+  const region=getConfig().region;
+  const missingConsent=`NOT (${consentScopeGrantedSql("a.family_id","parent_report")})`;
+  return transaction(async client=>{
+    const located=await client.query<{id:string;family_id:string}>(`SELECT j.id,a.family_id FROM report_jobs j JOIN assessments a ON a.id=j.assessment_id WHERE j.id=$1 AND a.region=$2 AND j.state='ready' AND j.available_at<=now() AND ${missingConsent}`,[jobId,region]);
+    const row=located.rows[0];
+    if(!row)return false;
+    const family=await client.query("SELECT id FROM families WHERE id=$1 AND region=$2 FOR UPDATE",[row.family_id,region]);
+    if(!family.rows[0])return false;
+    const locked=await client.query(`SELECT j.id FROM report_jobs j JOIN assessments a ON a.id=j.assessment_id WHERE j.id=$1 AND a.region=$2 AND a.family_id=$3 AND j.state='ready' AND j.available_at<=now() AND ${missingConsent} FOR UPDATE OF j`,[jobId,region,row.family_id]);
+    if(!locked.rows[0])return false;
+    const paused=await client.query("UPDATE report_jobs SET state='paused', lease_until=NULL, claim_token=NULL, last_error_code='PARENT_REPORT_CONSENT_REQUIRED' WHERE id=$1 AND state='ready' RETURNING id",[jobId]);
+    return paused.rows.length>0;
+  });
+}
 async function runReportJob(jobId?:string):Promise<ReportJobResult>{
   const token=randomUUID();
   const jobs=await query(`WITH candidate AS (
@@ -74,7 +93,11 @@ async function runReportJob(jobId?:string):Promise<ReportJobResult>{
       AND ${consentScopeGrantedSql("a.family_id","parent_report")}
     ORDER BY a.submitted_at,j.created_at LIMIT 1 FOR UPDATE OF j SKIP LOCKED
   ) UPDATE report_jobs j SET state='running',attempts=LEAST(j.attempts+1,3),lease_until=now()+interval '5 minutes',claim_token=$1 FROM candidate WHERE j.id=candidate.id RETURNING j.*,candidate.attempt_limit_reached`,[token,getConfig().region,jobId??null]);
-  const job=jobs[0];if(!job)return unclaimedJobResult(jobId);
+  const job=jobs[0];
+  if(!job){
+    if(jobId&&await pauseDueReadyJobMissingParentReportConsent(jobId))return {status:"paused"};
+    return unclaimedJobResult(jobId);
+  }
   const keys:Partial<Record<Locale,string>>={};
   const pdfs:Partial<Record<Locale,Buffer>>={};
   let unboundTriad=false;
