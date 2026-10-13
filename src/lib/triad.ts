@@ -2,13 +2,14 @@ import { randomBytes, randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
 import type { Actor, Locale, RespondentRole } from "../domain/types";
 import { z } from "zod";
-import { triadScales } from "../domain/triad-scales";
+import { childScale, parentScale, teacherScale, triadScales } from "../domain/triad-scales";
 import { TRIAD_BUNDLE, triadRolesReady } from "../domain/triad-report";
 import { pair } from "../domain/zh-pair";
 import { parseAdvice, parseScale, parseTemplate } from "../domain/validation";
 import { ageAt, familyFor } from "./access";
 import { audit, hashPassword, limitLogin } from "./auth";
-import { getConfig } from "./config";
+import { TRIAD_LIBRARY_KEY, upsertSeededContent } from "./content-seed";
+import { getConfig, isDemoMode } from "./config";
 import { query, transaction } from "./db";
 import { HttpError, requireRole, validateId } from "./http";
 import { noticeVersion } from "./privacy";
@@ -16,7 +17,11 @@ import type { VerifiedClerkIdentity } from "./clerk-auth";
 import { formatJoinCode, joinCodeFormatMessage, parseJoinCode, registrationName, registrationPassword, registrationUsername } from "../domain/registration";
 export { formatJoinCode } from "../domain/registration";
 
-const SCALE_ID = { parent: "growth-parent@1.0.0", student: "growth-child@1.0.0", teacher: "growth-teacher@1.0.0" } as const;
+const SCALE_ID = {
+  parent: `${parentScale.id}@${parentScale.version}`,
+  student: `${childScale.id}@${childScale.version}`,
+  teacher: `${teacherScale.id}@${teacherScale.version}`
+} as const;
 const short = registrationName;
 const username = registrationUsername;
 const password = registrationPassword;
@@ -77,6 +82,15 @@ async function familyByJoinCode(client: PoolClient, code: string): Promise<Regis
 
 export interface FamilyJoinResult { userId: string; familyId: string; assessmentId: string; alreadyMember: boolean }
 
+// Demo mode can open the unvalidated triad. Service mode refuses while any
+// version these routes assign still has norm.validated !== true.
+export function assertPublicTriadOpen(): void {
+  if (isDemoMode()) return;
+  const assigned = [childScale, parentScale, teacherScale];
+  if (assigned.some(scale => scale.norm.validated !== true)) throw new HttpError(409, "正式服务尚未提供已验证常模的三方问卷，暂时不能创建或加入家庭。", "UNVALIDATED_INSTRUMENT");
+  if (assigned.some(scale => scale.demo)) throw new HttpError(409, "正式服务环境不能使用演示问卷创建或加入家庭。", "DEMO_INSTRUMENT");
+}
+
 // The caller holds the family lock and has validated the current account and consent.
 export async function joinTriadFamilyInTransaction(client: PoolClient, actor: Actor, family: RegistrationFamily, locale: Locale): Promise<FamilyJoinResult> {
   requireRole(actor.role, ["student", "teacher"]);
@@ -87,7 +101,10 @@ export async function joinTriadFamilyInTransaction(client: PoolClient, actor: Ac
   if (own && own.role !== role) throw new HttpError(409, "这个账号在家庭中的角色不一致，请联系服务人员。", "ROLE_CONFLICT");
   if (members.rows.some(member => member.role === role && member.user_id !== actor.id)) throw new HttpError(409, role === "student" ? "这个家庭已经有孩子进入了。" : "这个家庭已经有老师进入了。", "ROLE_TAKEN");
   if (own) {
-    const existing = await client.query<{ id: string }>("SELECT id FROM assessments WHERE family_id=$1 AND respondent_id=$2 AND respondent_role=$3 AND scale_version_id=$4 AND region=$5 ORDER BY created_at DESC,id DESC LIMIT 1", [family.id, actor.id, role, SCALE_ID[role], actor.region]);
+    // Any version of this role's triad scale. A member who already has a task gets
+    // that task back instead of opening the version now assigned to new members.
+    const scaleFamily = role === "student" ? childScale.id : teacherScale.id;
+    const existing = await client.query<{ id: string }>("SELECT a.id FROM assessments a JOIN scales s ON s.id=a.scale_version_id WHERE a.family_id=$1 AND a.respondent_id=$2 AND a.respondent_role=$3 AND a.region=$4 AND s.scale_id=$5 ORDER BY a.created_at DESC,a.id DESC LIMIT 1", [family.id, actor.id, role, actor.region, scaleFamily]);
     if (existing.rows[0]) return { userId: actor.id, familyId: family.id, assessmentId: existing.rows[0].id, alreadyMember: true };
   }
   const scale = await client.query("SELECT id FROM scales WHERE id=$1 AND status='active'", [SCALE_ID[role]]);
@@ -101,6 +118,7 @@ export async function joinTriadFamilyInTransaction(client: PoolClient, actor: Ac
 }
 
 export async function joinFamily(actor: Actor, input: unknown, locale: Locale): Promise<FamilyJoinResult> {
+  assertPublicTriadOpen();
   requireRole(actor.role, ["student", "teacher"]);
   const data = z.object({ code: z.string() }).strict().parse(input);
   const code = normalizeCode(data.code);
@@ -113,6 +131,7 @@ export async function joinFamily(actor: Actor, input: unknown, locale: Locale): 
 }
 
 export async function joinClerkStudent(principal: VerifiedClerkIdentity, input: unknown, locale: Locale): Promise<FamilyJoinResult> {
+  assertPublicTriadOpen();
   const data = z.object({ code: z.string(), name: short, role: z.literal("student") }).strict().parse(input);
   const code = normalizeCode(data.code);
   if (principal.region !== getConfig().region) throw new HttpError(403, "请使用账号所属地区的入口。", "REGION_MISMATCH");
@@ -127,6 +146,7 @@ export async function joinClerkStudent(principal: VerifiedClerkIdentity, input: 
 }
 
 export async function createParentFamily(actor: Actor, input: unknown, locale: Locale): Promise<{ userId: string; familyId: string; joinCode: string }> {
+  assertPublicTriadOpen();
   requireRole(actor.role, ["parent"]);
   const data = z.object({ requestId: z.string().uuid(), relationship: z.enum(relationships), childName: short, birthDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), grade: z.enum(grades), accepted: z.literal(true) }).strict().parse(input);
   assertChildAge(data.birthDate);
@@ -161,15 +181,26 @@ export async function ensureTriadInstruments(): Promise<void> {
   await query("CREATE UNIQUE INDEX IF NOT EXISTS staff_alerts_assessment ON staff_alerts(assessment_id) WHERE assessment_id IS NOT NULL");
   for (const scale of triadScales) {
     const parsed = parseScale(scale);
-    await query("INSERT INTO scales(id,scale_id,version,definition) VALUES($1,$2,$3,$4) ON CONFLICT(id) DO NOTHING", [`${parsed.id}@${parsed.version}`, parsed.id, parsed.version, JSON.stringify(parsed)]);
+    const id = `${parsed.id}@${parsed.version}`;
+    // Insert only. scales_immutable rejects definition rewrites, and an open assessment scores the row it was opened with.
+    await query("INSERT INTO scales(id,scale_id,version,definition) VALUES($1,$2,$3,$4) ON CONFLICT(id) DO NOTHING", [id, parsed.id, parsed.version, JSON.stringify(parsed)]);
+    // Retire every other active version of this scale. The row just published stays assignable.
+    await query("UPDATE scales SET status='retired' WHERE scale_id=$1 AND id<>$2 AND status='active'", [parsed.id, id]);
   }
-  const advice = parseAdvice({ title: pair("三方了解说明"), blocks: [{ id: "triad_context", title: pair("先看具体情境"), body: pair("这份报告把孩子、家长和老师的观察放在一起，不合成一个总分，也不做诊断。"), source: "Nova growth triad intake, 2026-10", dimensionKeys: ["cognition"] }] });
-  const template = parseTemplate({ title: pair("孩子的成长了解"), introduction: pair("这份报告给家长阅读。它把孩子、家长和老师各自看到的情况放在一起。"), limitation: pair("这不是诊断，也没有临床常模。三方说法不同时，不代表有人说了谎。香港繁体文本是便于阅读的字形转换，不是另行验证的译本。"), nextStep: pair("可以挑一个小变化，和孩子一起试四周。如果报告开头有安全提示，请先处理安全。") });
-  const existingAdvice = await query("SELECT id FROM content_versions WHERE kind='advice' LIMIT 1");
-  if (!existingAdvice.length) await query("INSERT INTO content_versions(id,kind,version,content) VALUES($1,'advice','1.0.0',$2) ON CONFLICT(kind,version) DO NOTHING", [randomUUID(), JSON.stringify(advice)]);
-  const existingTemplate = await query("SELECT id FROM content_versions WHERE kind='template' LIMIT 1");
-  if (!existingTemplate.length) await query("INSERT INTO content_versions(id,kind,version,content) VALUES($1,'template','1.0.0',$2) ON CONFLICT(kind,version) DO NOTHING", [randomUUID(), JSON.stringify(template)]);
+  await query("ALTER TABLE content_versions ADD COLUMN IF NOT EXISTS library_key text");
+  await query("ALTER TABLE content_versions ADD COLUMN IF NOT EXISTS origin text NOT NULL DEFAULT 'staff'");
+  await query("ALTER TABLE content_versions DROP CONSTRAINT IF EXISTS content_versions_kind_version_key");
+  await query("ALTER TABLE content_versions DROP CONSTRAINT IF EXISTS content_versions_origin_check");
+  await query("ALTER TABLE content_versions ADD CONSTRAINT content_versions_origin_check CHECK (origin IN ('seed','staff'))");
+  await query("CREATE UNIQUE INDEX IF NOT EXISTS content_versions_general_version ON content_versions(kind, version) WHERE library_key IS NULL");
+  await query("CREATE UNIQUE INDEX IF NOT EXISTS content_versions_library_version ON content_versions(kind, library_key, version) WHERE library_key IS NOT NULL");
+  // Keyed rows only. A general-library row, including one an administrator published, is not updated.
+  await upsertSeededContent("advice", TRIAD_LIBRARY_KEY, triadAdvice);
+  await upsertSeededContent("template", TRIAD_LIBRARY_KEY, triadTemplate);
 }
+
+export const triadAdvice = parseAdvice({ title: pair("三方了解说明"), blocks: [{ id: "triad_context", title: pair("先看具体情境"), body: pair("这份报告把孩子、家长和老师的观察放在一起，不合成一个总分，也不做诊断。"), source: "Nova growth triad intake, 2026-10", dimensionKeys: ["cognition"] }] });
+export const triadTemplate = parseTemplate({ title: pair("孩子的成长了解"), introduction: pair("这份报告给家长阅读。它把孩子、家长和老师各自看到的情况放在一起。"), limitation: pair("这不是诊断，也没有临床常模。三方说法不同时，不代表有人说了谎。香港繁体文本是便于阅读的字形转换，不是另行验证的译本。"), nextStep: pair("可以挑一个小变化，和孩子一起试四周。如果报告开头有安全提示，请先处理安全。") });
 
 async function freshCode(client: PoolClient): Promise<string> {
   for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -200,6 +231,7 @@ export async function triadRoundFor(client: PoolClient, familyId: string, role: 
 }
 
 export async function startParentCase(input: unknown, locale: "zh-CN" | "zh-HK"): Promise<{ userId: string; familyId: string; joinCode: string }> {
+  assertPublicTriadOpen();
   const data = z.object({ parentName: short, username, password, relationship: z.enum(relationships), childName: short, birthDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), grade: z.enum(grades), accepted: z.literal(true) }).strict().parse(input);
   assertChildAge(data.birthDate);
   await limitLogin(data.username);
@@ -228,6 +260,7 @@ export async function startParentCase(input: unknown, locale: "zh-CN" | "zh-HK")
 }
 
 export async function joinWithCode(input: unknown, locale: "zh-CN" | "zh-HK"): Promise<{ userId: string }> {
+  assertPublicTriadOpen();
   const data = z.object({ code: z.string(), role: z.enum(["student", "teacher"]), name: short, username, password }).strict().parse(input);
   const code = normalizeCode(data.code);
   await limitLogin(data.username);

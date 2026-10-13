@@ -10,10 +10,11 @@ function element(item: ScaleItem, role: RespondentRole, locale: Locale): Record<
   const title = text(role === "student" || !item.observerLabel ? item.label : item.observerLabel, locale);
   const kind = item.kind ?? "single";
   const base: Record<string, unknown> = { name: item.id, title, isRequired: item.required };
+  if (item.noAutoAdvance) base.noAutoAdvance = true;
   const rule = visibleIf(item);
   if (rule) base.visibleIf = rule;
   if (kind === "text") return { ...base, type: "comment", maxLength: 2000, rows: 4 };
-  const choices = item.choices.map(choice => ({ value: choice.value, text: text(choice.label, locale) }));
+  const choices = item.choices.map(choice => ({ value: choice.value, text: text(choice.label, locale), ...(choice.exclusive ? { isExclusive: true } : {}) }));
   if (kind === "multi") return { ...base, type: "checkbox", choices, ...(item.maxChoices ? { maxSelectedChoices: item.maxChoices } : {}), choicesOrder: item.shuffle ? "random" : "none" };
   return { ...base, type: "radiogroup", choices, colCount: 1, choicesOrder: item.shuffle ? "random" : "none" };
 }
@@ -41,14 +42,16 @@ function panels(items: ScaleItem[], role: RespondentRole, locale: Locale): Recor
   return elements;
 }
 
-export function surveyDefinition(scale: ScaleDefinition, role: RespondentRole, locale: Locale) {
+export function surveyDefinition(scale: ScaleDefinition, role: RespondentRole, locale: Locale, context: { age?: number } = {}) {
   const traditional = locale === "zh-HK";
+  const age = context.age;
+  const items = scale.items.filter(item => item.visibleFromAge === undefined || (Number.isInteger(age) && (age as number) >= item.visibleFromAge));
   const pages: { name: string; title?: string; elements: Record<string, unknown>[] }[] = [];
-  for (const item of scale.items) {
+  for (const item of items) {
     const name = item.page ?? "assessment";
     const current = pages.find(page => page.name === name);
     if (current) continue;
-    const grouped = scale.items.filter(candidate => (candidate.page ?? "assessment") === name);
+    const grouped = items.filter(candidate => (candidate.page ?? "assessment") === name);
     pages.push({ name, title: item.pageTitle ? text(item.pageTitle, locale) : undefined, elements: panels(grouped, role, locale) });
   }
   return {

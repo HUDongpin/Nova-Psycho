@@ -127,6 +127,33 @@ describe("choice auto-advance", () => {
     stop();
   });
 
+  it("does not auto-advance a safety single-choice question", () => {
+    const survey = new Model({
+      pages: [{
+        elements: [
+          { type: "radiogroup", name: "before", choices: ["a", "b"] },
+          { type: "radiogroup", name: "c15", noAutoAdvance: true, choices: ["是", "不是"] },
+          { type: "radiogroup", name: "after", choices: ["a", "b"] }
+        ]
+      }]
+    });
+    survey.questionsOnPageMode = "inputPerPage";
+    survey.showCompleteButton = false;
+    survey.mode = "edit";
+    vi.useFakeTimers();
+    const stop = bindChoiceAutoAdvance(survey, { delay: 5000 });
+    survey.setValue("before", "a");
+    vi.advanceTimersByTime(5000);
+    expect(survey.currentSingleQuestion?.name).toBe("c15");
+    survey.setValue("c15", "是");
+    vi.advanceTimersByTime(5000);
+    expect(survey.currentSingleQuestion?.name).toBe("c15");
+    expect(survey.state).toBe("running");
+    survey.nextPage();
+    expect(survey.currentSingleQuestion?.name).toBe("after");
+    stop();
+  });
+
   it("does not arm a timer while the questionnaire is locked", () => {
     const survey = choiceSurvey();
     survey.mode = "display";

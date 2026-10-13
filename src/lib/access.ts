@@ -1,4 +1,5 @@
 import type { Actor } from "../domain/types";
+import { getConfig } from "./config";
 import { query } from "./db";
 import { HttpError, validateId } from "./http";
 export interface FamilyRow {
@@ -21,10 +22,21 @@ export async function familyFor(actor:Actor,id:string):Promise<FamilyRow>{
   const rows=await query<FamilyRow>(`SELECT f.* FROM families f WHERE f.id=$1 AND ${scope.sql}`,[id,...scope.values]);
   if(!rows[0])throw new HttpError(404,"未找到该家庭或没有访问权限。","NOT_FOUND");return rows[0];
 }
+const SERVICE_ZONE={CN:"Asia/Shanghai",HK:"Asia/Hong_Kong"} as const;
+function localCalendar(at:Date,region:"CN"|"HK"):{year:number;month:number;day:number}{
+  // CN and HK are UTC+8, so 16:00Z is already the next local morning. Age uses that
+  // calendar date, never UTC and never a client-supplied age.
+  const parts=new Intl.DateTimeFormat("en-US",{timeZone:SERVICE_ZONE[region],calendar:"gregory",year:"numeric",month:"2-digit",day:"2-digit"}).formatToParts(at);
+  const value=(type:Intl.DateTimeFormatPartTypes)=>Number(parts.find(part=>part.type===type)?.value);
+  return {year:value("year"),month:value("month"),day:value("day")};
+}
 export function ageAt(birthDate:string,at=new Date()):number{
-  const birth=new Date(`${birthDate}T00:00:00Z`);
-  let age=at.getUTCFullYear()-birth.getUTCFullYear();
-  if(at.getUTCMonth()<birth.getUTCMonth()||(at.getUTCMonth()===birth.getUTCMonth()&&at.getUTCDate()<birth.getUTCDate()))age--;
+  const region=getConfig().region;
+  if(region!=="CN"&&region!=="HK")throw new Error("NOVA_REGION must be CN or HK");
+  const today=localCalendar(at,region);
+  const [year,month,day]=birthDate.slice(0,10).split("-").map(Number);
+  let age=today.year-year;
+  if(today.month<month||(today.month===month&&today.day<day))age-=1;
   return age;
 }
 export const iso=(value:Date|string|null):string|null=>value===null?null:new Date(value).toISOString();

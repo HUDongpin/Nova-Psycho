@@ -191,12 +191,14 @@ describe("portrait, safety and privacy boundaries", () => {
     const before = JSON.stringify(sources);
     const report = composeTriad(sources);
     expect(JSON.stringify(sources)).toBe(before);
-    expect(sources.every(item => item.scale.version === "1.0.0")).toBe(true);
+    expect(sources.map(item => item.scale.version)).toEqual(["1.3.0", "1.2.0", "1.2.0"]);
+    expect(sources.every(item => item.scale.demo && item.scale.norm.validated === false)).toBe(true);
     expect(report.safety.length).toBeGreaterThan(0);
     for (const collection of [report.situations, report.priorities, report.words]) expect(collection.every(item => item.role !== "student")).toBe(true);
     for (const locale of locales) {
       const html = reportHtml(payload(sources), locale);
       expect(html.indexOf(locale === "zh-CN" ? "请先关注安全" : "請先關注安全")).toBeLessThan(html.indexOf(locale === "zh-CN" ? "三方看到的情况" : "三方看到的情況"));
+      expect(html).toContain(locale === "zh-CN" ? "演示报告" : "示範報告");
       expect(html).not.toContain("student-words-SYNTHETIC_PRIVATE");
       expect(html).not.toContain("staff-SYNTHETIC_PRIVATE");
       expect(html).toContain("parent-words-SYNTHETIC_PRIVATE");
