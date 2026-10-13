@@ -99,7 +99,7 @@ async function dispatch(request:Request,context:Context):Promise<Response>{retur
   if(method==="POST"&&route==="families")return json(await createFamily(actor,await body(request)),201);
   if(path[0]==="families"&&path[1]){
     if(method==="PATCH"&&path.length===3&&path[2]==="assignment")return json(await assignFamily(actor,path[1],await body(request)));
-    if(method==="POST"&&path.length===3&&path[2]==="consent")return json(await recordConsent(actor,path[1],await body(request)));
+    if(method==="POST"&&path.length===3&&path[2]==="consent")return json(await recordConsent(actor,path[1],await body(request),after));
     if(method==="POST"&&path.length===3&&path[2]==="invites")return json(await createInvitation(actor,path[1],await body(request)),201);
     if(method==="DELETE"&&path.length===2)return json(await deleteFamily(actor,path[1],await body(request)));
   }

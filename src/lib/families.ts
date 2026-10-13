@@ -10,6 +10,7 @@ import { HttpError, requireRole, validateId } from "./http";
 import { ACTIVE_CONSENT_ROWS_SQL, CONSENT_SCOPES, PARENT_REPORT_SCOPE, REQUIRED_WITHDRAW_SCOPES, hasGranted, insertConsentRecords, rejectBundledConsent, scopeNotRevokedSql, type ConsentScope } from "./consent";
 import { noticeVersion } from "./privacy";
 import type { VerifiedClerkIdentity } from "./clerk-auth";
+import type { DeferredReportWork } from "./report-dispatch";
 import { assertTriadRegistrationReady, enqueueReportsHeldForConsent, joinTriadFamilyInTransaction, lockRegistrationActor, requireRegistrationConsent, type RegistrationFamily } from "./triad";
 import { registrationName, registrationPassword, registrationUsername } from "../domain/registration";
 const short=registrationName;
@@ -63,7 +64,7 @@ async function withdrawConsentScope(client:PoolClient,actor:Actor,familyId:strin
 async function retireRevokedSingleScope(client:PoolClient,familyId:string,scope:ConsentScope):Promise<void>{
   await client.query(`UPDATE consents SET revoked_at=now() WHERE family_id=$1 AND revoked_at IS NULL AND jsonb_typeof(scopes)='array' AND jsonb_array_length(scopes)=1 AND scopes @> $2::jsonb AND NOT (${scopeNotRevokedSql("consents","$3")})`,[familyId,JSON.stringify([scope]),scope]);
 }
-export async function recordConsent(actor:Actor,id:string,input:unknown){
+export async function recordConsent(actor:Actor,id:string,input:unknown,defer?:DeferredReportWork){
   requireRole(actor.role,["admin","staff","parent"]);
   rejectBundledConsent(input);
   await familyFor(actor,id);
@@ -88,7 +89,7 @@ export async function recordConsent(actor:Actor,id:string,input:unknown){
   });
   if(queued.length){
     const {dispatchAssessmentReport}=await import("./report-dispatch");
-    for(const assessmentId of queued)await dispatchAssessmentReport(assessmentId);
+    for(const assessmentId of queued)await dispatchAssessmentReport(assessmentId,defer);
   }
   await audit(actor,d.action==="grant"?"consent.recorded":"consent.withdrawn",id);return {ok:true};
 }
