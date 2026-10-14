@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { demoAdvice, demoTemplate } from "../src/domain/demo";
 import { reportHtml } from "../src/domain/report-html";
 import { scoreAssessment } from "../src/domain/scoring";
-import { composeTriad, previewAnswers, type TriadSource } from "../src/domain/triad-report";
+import { composeTriad, previewAnswers, staffOnlyText, type TriadSource } from "../src/domain/triad-report";
 import { childScale, parentScale, teacherScale } from "../src/domain/triad-scales";
 import type { Locale, ReportPayload, ScaleDefinition, TriadReport } from "../src/domain/types";
 
@@ -191,7 +191,12 @@ describe("portrait, safety and privacy boundaries", () => {
     const before = JSON.stringify(sources);
     const report = composeTriad(sources);
     expect(JSON.stringify(sources)).toBe(before);
-    expect(sources.map(item => item.scale.version)).toEqual(["1.3.0", "1.2.0", "1.2.0"]);
+    expect(sources.map(item => item.scale.version)).toEqual(["1.3.0", "1.3.0", "1.3.0"]);
+    const notes = sources.flatMap(source => staffOnlyText(source.scale, source.answers).map(note => note.value));
+    for (const id of ["q32", "q33", "q34", "q35", "q36", "q37", "q38"]) expect(parentScale.items.find(item => item.id === id)?.report).toBe("staff");
+    expect(teacherScale.items.find(item => item.id === "t23")?.report).toBe("staff");
+    expect(notes).toContain("parent-staff-SYNTHETIC_PRIVATE");
+    expect(notes).toContain("teacher-staff-SYNTHETIC_PRIVATE");
     expect(sources.every(item => item.scale.demo && item.scale.norm.validated === false)).toBe(true);
     expect(report.safety.length).toBeGreaterThan(0);
     for (const collection of [report.situations, report.priorities, report.words]) expect(collection.every(item => item.role !== "student")).toBe(true);
