@@ -1,7 +1,8 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { PoolClient } from "pg";
 
 vi.mock("../src/lib/db", () => ({ query: vi.fn(), transaction: vi.fn() }));
-vi.mock("../src/lib/pdf", () => ({ renderPdf: vi.fn(async () => Buffer.from("%PDF")), closePdfBrowser: vi.fn() }));
+vi.mock("../src/lib/pdf", () => ({ renderPdf: vi.fn(async () => Buffer.from("%PDF")), closePdfBrowser: vi.fn(async () => undefined) }));
 vi.mock("../src/lib/storage", () => ({ writePrivatePdf: vi.fn(async () => undefined), removePrivatePdf: vi.fn(async () => "done"), listPrivatePdfKeys: vi.fn(async () => []) }));
 vi.mock("../src/domain/narrative", () => ({ selectNarrative: vi.fn(async () => ({ selectedAdviceIds: [], generationMode: "template", fallbackReason: "ai_disabled", aiModel: null })) }));
 
@@ -9,7 +10,10 @@ import { query, transaction } from "../src/lib/db";
 import { consentFor } from "../src/lib/access";
 import { saveDraft, submitAssessment, retryReport } from "../src/lib/assessments";
 import { ACTIVE_CONSENT_ROWS_SQL, consentScopeGrantedSql, consentScopePredicate, effectiveScopesSelect } from "../src/lib/consent";
+import { renderPdf } from "../src/lib/pdf";
+import { consumeReportMessage, ReportRetryAt } from "../src/lib/report-queue";
 import { reportFor } from "../src/lib/reports";
+import { enqueueReportsHeldForConsent } from "../src/lib/triad";
 import { processOneJob, processReportJob } from "../src/lib/worker";
 import { workspaceFor } from "../src/lib/workspace";
 import { demoAdvice, demoScale, demoTemplate } from "../src/domain/demo";
@@ -22,6 +26,7 @@ const FAMILY_ID = "11111111-2222-4333-8444-555555555555";
 const ACTOR_ID = "99999999-8888-4777-8666-555555555555";
 const ASSESSMENT_ID = "22222222-3333-4444-8555-666666666666";
 const REPORT_ID = "33333333-4444-4555-8666-777777777777";
+const JOB_ID = "44444444-5555-4666-8777-888888888888";
 const parent: Actor = { id: ACTOR_ID, name: "Synthetic", role: "parent", region: "CN" };
 const admin: Actor = { id: ACTOR_ID, name: "Synthetic", role: "admin", region: "CN" };
 const revokedLegacy = [{ scopes: ["assessment", "sensitive_data"] }];
@@ -177,5 +182,130 @@ describe("one revocation predicate for every consent read", () => {
     expect(assessmentSql).toContain(consentScopeGrantedSql("a.family_id", "parent_report"));
     const listSql = String(mockQuery.mock.calls.find(([sql]) => String(sql).includes("AS scopes FROM consents c"))?.[0]);
     expect(listSql).toContain(effectiveScopesSelect("c"));
+  });
+});
+
+const missingParentReport = `NOT (${consentScopeGrantedSql("a.family_id", "parent_report")})`;
+
+function queueEnv() {
+  vi.stubEnv("NOVA_WORKER_MODE", "queue");
+  vi.stubEnv("NOVA_QUEUE_REGION", "sin1");
+}
+
+describe("claim filter pauses a due ready job when parent-report consent is gone", () => {
+  afterEach(() => { vi.stubEnv("NOVA_WORKER_MODE", "continuous"); });
+
+  function clientQuery(match: (sql: string, params: unknown[]) => { rows: unknown[] } | undefined) {
+    const calls: { sql: string; params: unknown[] }[] = [];
+    mockTransaction.mockImplementation((async (fn: (client: { query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }> }) => Promise<unknown>) => fn({
+      query: async (sql: string, params?: unknown[]) => {
+        const values = params ?? [];
+        calls.push({ sql, params: values });
+        return match(sql, values) ?? { rows: [] };
+      }
+    })) as never);
+    return calls;
+  }
+
+  it("pauses the skipped job, acknowledges the queue message, and publishes exactly one report after consent returns", async () => {
+    queueEnv();
+    vi.mocked(renderPdf).mockClear();
+    const calls = clientQuery((sql, params) => {
+      const gated = sql.includes("j.state='ready'") && sql.includes("available_at<=now()") && sql.includes("a.region=$2") && sql.includes(missingParentReport);
+      if (sql.includes("SELECT") && sql.includes("a.family_id") && !sql.includes("FOR UPDATE") && gated && params[0] === JOB_ID && params[1] === "CN") return { rows: [{ id: JOB_ID, family_id: FAMILY_ID }] };
+      if (sql.includes("FROM families") && sql.includes("FOR UPDATE") && params[0] === FAMILY_ID && params[1] === "CN") return { rows: [{ id: FAMILY_ID }] };
+      if (sql.includes("FOR UPDATE OF j") && gated && params[0] === JOB_ID && params[1] === "CN" && params[2] === FAMILY_ID) return { rows: [{ id: JOB_ID }] };
+      if (sql.includes("state='paused'") && sql.includes("last_error_code='PARENT_REPORT_CONSENT_REQUIRED'") && sql.includes("state='ready'") && params[0] === JOB_ID) return { rows: [{ id: JOB_ID }] };
+      return { rows: [] };
+    });
+    mockQuery.mockImplementation((async (sql: string) => {
+      if (String(sql).includes("WITH candidate")) return [];
+      return [];
+    }) as never);
+    await expect(consumeReportMessage({ jobId: JOB_ID, region: "CN" })).resolves.toBeUndefined();
+    const claim = String(mockQuery.mock.calls[0][0]);
+    expect(claim).toContain("WITH candidate");
+    expect(claim).toContain(consentScopeGrantedSql("a.family_id", "parent_report"));
+    expect(claim).toContain("a.region=$2");
+    expect(mockQuery.mock.calls.some(([sql]) => String(sql).includes("j.state,j.available_at"))).toBe(false);
+    const familyAt = calls.findIndex(call => call.sql.includes("FROM families") && call.sql.includes("FOR UPDATE"));
+    const jobAt = calls.findIndex(call => call.sql.includes("FOR UPDATE OF j"));
+    const pauseAt = calls.findIndex(call => call.sql.includes("state='paused'") && call.sql.includes("PARENT_REPORT_CONSENT_REQUIRED"));
+    expect(familyAt).toBeGreaterThanOrEqual(0);
+    expect(jobAt).toBeGreaterThan(familyAt);
+    expect(pauseAt).toBeGreaterThan(jobAt);
+    expect(calls[jobAt].sql).toContain("consent_scope_revocations");
+    expect(calls[jobAt].sql).toContain(missingParentReport);
+    expect(calls[pauseAt].sql).not.toContain("attempts=");
+    expect(vi.mocked(renderPdf)).not.toHaveBeenCalled();
+
+    const resumed: string[] = [];
+    const client = { query: vi.fn(async (sql: string) => {
+      resumed.push(sql);
+      if (sql.includes("NOT EXISTS (SELECT 1 FROM report_jobs")) return { rows: [] };
+      if (sql.startsWith("INSERT INTO report_jobs")) return { rows: [{ id: "duplicate" }] };
+      if (sql.includes("j.state='paused'") && sql.includes("PARENT_REPORT_CONSENT_REQUIRED")) return { rows: [{ id: ASSESSMENT_ID }] };
+      if (sql.includes("j.state='ready'")) return { rows: [{ id: ASSESSMENT_ID }] };
+      if (sql.includes("triad_round_id")) return { rows: [] };
+      return { rows: [] };
+    }) };
+    await expect(enqueueReportsHeldForConsent(client as unknown as PoolClient, FAMILY_ID)).resolves.toEqual([ASSESSMENT_ID]);
+    expect(resumed.some(sql => sql.startsWith("INSERT INTO report_jobs"))).toBe(false);
+    expect(resumed.some(sql => sql.includes("SET state='ready'") && sql.includes("PARENT_REPORT_CONSENT_REQUIRED"))).toBe(true);
+
+    const published: string[] = [];
+    mockQuery.mockImplementation((async (sql: string) => {
+      const text = String(sql);
+      if (text.includes("WITH candidate")) return [{ id: JOB_ID, assessment_id: ASSESSMENT_ID, attempts: 1 }];
+      if (text.includes("SELECT * FROM assessments WHERE id=$1")) return [{ id: ASSESSMENT_ID, family_id: FAMILY_ID, snapshot: publishedSnapshot, submitted_at: publishedSnapshot.submittedAt }];
+      return [];
+    }) as never);
+    mockTransaction.mockImplementation((async (fn: (client: { query: (sql: string) => Promise<{ rows: unknown[] }> }) => Promise<unknown>) => fn({
+      query: async (sql: string) => {
+        published.push(sql);
+        if (sql === ACTIVE_CONSENT_ROWS_SQL) return { rows: [{ scopes: ["parent_report"] }] };
+        return { rows: [{ id: "locked" }] };
+      }
+    })) as never);
+    await expect(processReportJob(JOB_ID)).resolves.toEqual({ status: "published" });
+    expect(published.filter(sql => sql.includes("INSERT INTO reports"))).toHaveLength(1);
+    expect(vi.mocked(renderPdf)).toHaveBeenCalledTimes(2);
+
+    mockQuery.mockImplementation((async (sql: string) => {
+      const text = String(sql);
+      if (text.includes("WITH candidate")) return [];
+      if (text.includes("j.state,j.available_at")) return [{ state: "done" }];
+      return [];
+    }) as never);
+    mockTransaction.mockImplementation((async (fn: (client: { query: (sql: string) => Promise<{ rows: unknown[] }> }) => Promise<unknown>) => fn({
+      query: async () => ({ rows: [] })
+    })) as never);
+    await expect(processReportJob(JOB_ID)).resolves.toEqual({ status: "already_done" });
+    expect(published.filter(sql => sql.includes("INSERT INTO reports"))).toHaveLength(1);
+    expect(vi.mocked(renderPdf)).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a not-yet-due ready job on retry_at while parent-report consent is still granted", async () => {
+    queueEnv();
+    const availableAt = new Date(Date.now() + 20_000).toISOString();
+    const calls = clientQuery((sql) => {
+      if (sql.includes("UPDATE") && sql.includes("state='paused'")) return { rows: [{ id: JOB_ID }] };
+      if (sql.includes("FROM families") && sql.includes("FOR UPDATE")) return { rows: [{ id: FAMILY_ID }] };
+      if (sql.includes("report_jobs") && sql.includes("SELECT")) {
+        const gated = sql.includes("available_at<=now()") && sql.includes("a.region=$2") && sql.includes(missingParentReport);
+        return { rows: gated ? [] : [{ id: JOB_ID, family_id: FAMILY_ID }] };
+      }
+      return { rows: [] };
+    });
+    mockQuery.mockImplementation((async (sql: string) => {
+      const text = String(sql);
+      if (text.includes("WITH candidate")) return [];
+      if (text.includes("j.state,j.available_at")) return [{ state: "ready", available_at: availableAt, lease_until: null }];
+      return [];
+    }) as never);
+    const rejected = consumeReportMessage({ jobId: JOB_ID, region: "CN" });
+    await expect(rejected).rejects.toBeInstanceOf(ReportRetryAt);
+    await expect(rejected).rejects.toMatchObject({ retryAt: availableAt });
+    expect(calls.some(call => call.sql.includes("state='paused'") || call.sql.includes("PARENT_REPORT_CONSENT_REQUIRED"))).toBe(false);
   });
 });
