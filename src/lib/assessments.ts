@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { PoolClient } from "pg";
 import { z } from "zod";
 import type { Actor,AdviceLibrary,AssessmentSnapshot,Locale,ReportTemplate,RespondentRole,ScaleDefinition } from "../domain/types";
 import { text } from "../domain/types";
@@ -10,7 +11,8 @@ import { queueTriadReport,triadRoundFor } from "./triad";
 import { ensureAdviceReferences } from "../domain/validation";
 import { ageAt,canManageFamilyReports,consentFor,familyFor } from "./access";
 import { audit } from "./auth";
-import { getConfig } from "./config";
+import { isDemoMode } from "./config";
+import { effectiveDemo, normValidated } from "../domain/validation";
 import { currentContent,getScale,lockContent } from "./content";
 import { query,transaction } from "./db";
 import { HttpError,requireRole,validateId } from "./http";
@@ -25,18 +27,34 @@ const answerSchema=z.record(z.string(),z.union([z.number(),z.array(z.number()).m
   return answers;
 });
 export { surveyDefinition };
+type SubmissionPhase = "waiting" | "reporting" | null;
+async function submissionPhase(client:PoolClient,id:string,status:string,scale:ScaleDefinition):Promise<SubmissionPhase>{
+  if(scale.bundle!==TRIAD_BUNDLE||status!=="queued")return null;
+  const jobs=await client.query("SELECT id FROM report_jobs WHERE assessment_id=$1 OR $1=ANY(source_assessment_ids) LIMIT 1",[id]);
+  return jobs.rows[0]?"reporting":"waiting";
+}
+function safetyGuidanceFor(snapshot:AssessmentSnapshot|null|undefined):boolean{
+  return snapshot?.score?.risk===true;
+}
 async function refuseDemoBesideOfficial(familyId:string,respondentId:string,region:"CN"|"HK",role:RespondentRole,age:number){
-  const held=await query("SELECT a.id FROM assessments a JOIN scales s ON s.id=a.scale_version_id WHERE a.family_id=$1 AND a.respondent_id=$2 AND a.region=$3 AND COALESCE(s.definition->>'demo','false')<>'true' LIMIT 1",[familyId,respondentId,region]);
+  const held=await query("SELECT a.id FROM assessments a JOIN scales s ON s.id=a.scale_version_id WHERE a.family_id=$1 AND a.respondent_id=$2 AND a.region=$3 AND COALESCE(s.definition->>'demo','false')<>'true' AND COALESCE(s.definition->'norm'->>'validated','false')='true' LIMIT 1",[familyId,respondentId,region]);
   if(held[0])throw new HttpError(409,"这位成员已经有正式问卷，不能再加一份演示卷。","DEMO_NOT_ASSIGNABLE");
-  const official=await query("SELECT id FROM scales WHERE status='active' AND COALESCE(definition->>'demo','false')<>'true' AND (definition->'regions') ? $1 AND (definition->'roles') ? $2 AND (definition->>'minAge')::int<=$3 AND (definition->>'maxAge')::int>=$3 LIMIT 1",[region,role,age]);
+  const official=await query("SELECT id FROM scales WHERE status='active' AND COALESCE(definition->>'demo','false')<>'true' AND COALESCE(definition->'norm'->>'validated','false')='true' AND (definition->'regions') ? $1 AND (definition->'roles') ? $2 AND (definition->>'minAge')::int<=$3 AND (definition->>'maxAge')::int>=$3 LIMIT 1",[region,role,age]);
   if(official[0])throw new HttpError(409,"正式问卷已经可以使用，不能再分配演示题。","DEMO_NOT_ASSIGNABLE");
+}
+function refuseUnvalidatedInService(scale:{demo:boolean;norm?:{validated?:boolean}},action:"assign"|"draft"|"submit"):void{
+  if(isDemoMode())return;
+  if(!normValidated(scale.norm))throw new HttpError(409,"正式服务不能使用尚未验证常模的量表。","UNVALIDATED_INSTRUMENT");
+  if(!scale.demo)return;
+  const message=action==="assign"?"正式服务环境不能分配演示量表。":action==="draft"?"正式服务环境不能收集演示量表答案。":"正式服务环境不能提交演示量表。";
+  throw new HttpError(409,message,"DEMO_INSTRUMENT");
 }
 export async function createAssessment(actor:Actor,input:unknown){
   requireRole(actor.role,["admin","staff","parent"]);
   const d=z.object({familyId:z.string().uuid(),respondentId:z.string().uuid(),scaleVersionId:z.string().max(100),locale:z.enum(["zh-CN","zh-HK"])}).strict().parse(input);
   const family=await familyFor(actor,d.familyId),scale=await getScale(d.scaleVersionId);
   if(scale.status!=="active")throw new HttpError(409,"该量表版本已停用。","SCALE_RETIRED");
-  if(scale.definition.demo&&getConfig().mode!=="demo")throw new HttpError(409,"正式服务环境不能分配演示量表。","DEMO_INSTRUMENT");
+  refuseUnvalidatedInService(scale.definition,"assign");
   const members=await query("SELECT m.role FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.family_id=$1 AND m.user_id=$2 AND NOT u.disabled AND u.region=$3",[d.familyId,d.respondentId,actor.region]);
   if(!members[0])throw new HttpError(422,"填答者未与此家庭建立授权关系。","INVALID_RESPONDENT");
   const role=members[0].role as RespondentRole;
@@ -71,11 +89,17 @@ async function ownAssessment(actor:Actor,id:string){
 }
 export async function assessmentDetail(actor:Actor,id:string,locale:Locale){
   const a=await ownAssessment(actor,id),s=a.definition as ScaleDefinition;
-  return {id,status:a.status,childName:a.child_name,scaleTitle:text(s.title,locale),demo:s.demo,description:text(s.description,locale),surveyJson:surveyDefinition(s,a.respondent_role,locale),draftAnswers:a.status==="pending"?a.draft_answers:{},draftRevision:a.draft_revision,consentRequired:!await consentFor(a.family_id)};
+  const safetyGuidance=a.status!=="pending"&&safetyGuidanceFor(a.snapshot);
+  let phase:SubmissionPhase=null;
+  if(s.bundle===TRIAD_BUNDLE&&a.status==="queued"){
+    const jobs=await query("SELECT id FROM report_jobs WHERE assessment_id=$1 OR $1=ANY(source_assessment_ids) LIMIT 1",[id]);
+    phase=jobs[0]?"reporting":"waiting";
+  }
+  return {id,status:a.status,childName:a.child_name,scaleTitle:text(s.title,locale),demo:effectiveDemo(s),description:text(s.description,locale),surveyJson:surveyDefinition(s,a.respondent_role,locale),draftAnswers:a.status==="pending"?a.draft_answers:{},draftRevision:a.draft_revision,consentRequired:!await consentFor(a.family_id),phase,safetyGuidance};
 }
 export async function saveDraft(actor:Actor,id:string,input:unknown){
   const {answers,revision}=z.object({answers:answerSchema,acknowledged:z.literal(true),revision:z.number().int().nonnegative()}).strict().parse(input),a=await ownAssessment(actor,id);
-  if(a.definition.demo&&getConfig().mode!=="demo")throw new HttpError(409,"正式服务环境不能收集演示量表答案。","DEMO_INSTRUMENT");
+  refuseUnvalidatedInService(a.definition,"draft");
   if(!await consentFor(a.family_id))throw new HttpError(409,"请先完成监护人授权。","GUARDIAN_CONSENT_REQUIRED");
   try{validateAnswers(a.definition,answers);}catch{throw new HttpError(422,"答案格式不符合量表要求。","INVALID_ANSWERS");}
   const r=await query("UPDATE assessments SET draft_answers=$1,draft_revision=draft_revision+1,acknowledged_at=COALESCE(acknowledged_at,now()) WHERE id=$2 AND respondent_id=$3 AND status='pending' AND draft_revision=$4 RETURNING id,draft_revision",[JSON.stringify(answers),id,actor.id,revision]);
@@ -83,14 +107,15 @@ export async function saveDraft(actor:Actor,id:string,input:unknown){
 }
 export async function submitAssessment(actor:Actor,id:string,input:unknown){
   const d=z.object({answers:answerSchema,acknowledged:z.literal(true),revision:z.number().int().nonnegative()}).strict().parse(input);const own=await ownAssessment(actor,id);
-  const family=await familyFor(actor,own.family_id);const scale=own.definition as ScaleDefinition;
-  if(scale.demo&&getConfig().mode!=="demo")throw new HttpError(409,"正式服务环境不能提交演示量表。","DEMO_INSTRUMENT");
+  const scale=own.definition as ScaleDefinition;
+  refuseUnvalidatedInService(scale,"submit");
+  const family=await familyFor(actor,own.family_id);
   const result=await transaction(async client=>{
     const lockedFamily=await client.query("SELECT id FROM families WHERE id=$1 FOR UPDATE",[family.id]);
     if(!lockedFamily.rows[0])throw new HttpError(404,"该家庭已删除。","NOT_FOUND");
     const locked=await client.query("SELECT a.*,r.id AS report_id FROM assessments a LEFT JOIN reports r ON r.assessment_id=a.id WHERE a.id=$1 AND a.respondent_id=$2 FOR UPDATE OF a",[id,actor.id]);
     const a=locked.rows[0];if(!a)throw new HttpError(404,"测评不存在。","NOT_FOUND");
-    if(a.status!=="pending")return {id,status:a.status,reportId:a.report_id??null};
+    if(a.status!=="pending")return {id,status:a.status,reportId:a.report_id??null,phase:await submissionPhase(client,id,a.status,scale),safetyGuidance:safetyGuidanceFor(a.snapshot)};
     if(a.draft_revision!==d.revision)throw new HttpError(409,"草稿已在另一个页面更新，请重新载入并核对答案。","DRAFT_CONFLICT");
     const consent=await client.query("SELECT scopes FROM consents WHERE family_id=$1 AND revoked_at IS NULL ORDER BY created_at DESC LIMIT 1",[a.family_id]);
     const scopes=consent.rows[0]?.scopes as string[]|undefined;
@@ -113,9 +138,10 @@ export async function submitAssessment(actor:Actor,id:string,input:unknown){
         const alert=await client.query("INSERT INTO staff_alerts(id,family_id,region,assessment_id) VALUES($1,$2,$3,$4) ON CONFLICT(assessment_id) WHERE assessment_id IS NOT NULL DO NOTHING RETURNING id",[randomUUID(),a.family_id,actor.region,id]);
         if(alert.rows[0])await client.query("INSERT INTO audit_events(region,action,entity_id) VALUES($1,'triad.safety_notified',$2)",[actor.region,id]);
       }
-      await queueTriadReport(client,a.family_id,roundId);return {id,status:"queued",reportId:null};
+      await queueTriadReport(client,a.family_id,roundId);
+      return {id,status:"queued",reportId:null,phase:await submissionPhase(client,id,"queued",scale),safetyGuidance:score.risk};
     }
-    await client.query("INSERT INTO report_jobs(id,assessment_id) VALUES($1,$2) ON CONFLICT(assessment_id) DO NOTHING",[randomUUID(),id]);return {id,status:"queued",reportId:null};
+    await client.query("INSERT INTO report_jobs(id,assessment_id) VALUES($1,$2) ON CONFLICT(assessment_id) DO NOTHING",[randomUUID(),id]);return {id,status:"queued",reportId:null,phase:null,safetyGuidance:score.risk};
   });await audit(actor,"assessment.submitted",id);return result;
 }
 export async function retryReport(actor:Actor,id:string){

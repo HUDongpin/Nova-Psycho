@@ -3,16 +3,30 @@ import {demoScale,demoAdvice,demoTemplate} from "../src/domain/demo";
 import {ensureAdviceReferences,parseAdvice,parseScale,parseTemplate} from "../src/domain/validation";
 describe("versioned instrument ingestion",()=>{
   it("accepts the explicitly synthetic instrument and content",()=>{expect(parseScale(demoScale).demo).toBe(true);parseAdvice(demoAdvice);parseTemplate(demoTemplate);ensureAdviceReferences(demoScale,demoAdvice);});
-  it("accepts non-demo instruments without requiring rights or norm attestation flags",()=>{
+  it("rejects a non-demo instrument whose norm is not validated",()=>{
+    expect(()=>parseScale({...demoScale,demo:false})).toThrow(/Unvalidated instruments must be labelled demo/);
+    expect(()=>parseScale({
+      ...demoScale,
+      demo:false,
+      rights:{digital:true,commercial:true,reference:"operator-managed acquisition"},
+      norm:{...demoScale.norm,validated:false},
+    })).toThrow(/Unvalidated instruments must be labelled demo/);
+  });
+  it("accepts a non-demo instrument once its norm is validated, without treating rights flags as blockers",()=>{
     const scale=parseScale({
       ...demoScale,
       demo:false,
       rights:{digital:false,commercial:false,reference:"operator-managed acquisition"},
-      norm:{...demoScale.norm,validated:false},
+      norm:{...demoScale.norm,validated:true},
     });
     expect(scale.demo).toBe(false);
+    expect(scale.norm.validated).toBe(true);
     expect(scale.rights.digital).toBe(false);
     expect(scale.rights.commercial).toBe(false);
+  });
+  it("keeps an unvalidated demo instrument importable",()=>{
+    const scale=parseScale({...demoScale,demo:true,norm:{...demoScale.norm,validated:false}});
+    expect(scale.demo).toBe(true);
     expect(scale.norm.validated).toBe(false);
   });
   it("rejects references to missing or repeated items",()=>{const s=structuredClone(demoScale);s.dimensions[0].items=["unknown"];expect(()=>parseScale(s)).toThrow();s.dimensions[0].items=["q1","q1"];expect(()=>parseScale(s)).toThrow();});

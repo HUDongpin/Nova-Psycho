@@ -11,7 +11,7 @@ export interface Scale { id: string; scaleId: string; version: string; title: st
 export interface Goal { id: string; familyId: string; title: string; detail: string; status: "active" | "completed"; createdAt: string }
 export interface Observation { id: string; familyId: string; body: string; createdAt: string; authorName: string }
 export interface Workspace { user: User; region: Region; mode: "demo" | "service"; families: Family[]; assessments: Assessment[]; reports: Report[]; scales: Scale[]; goals: Goal[]; observations: Observation[]; staff: { id: string; name: string }[]; contentVersions: { id: string; kind: string; version: string; createdAt: string }[]; alerts: { id: string; familyId: string; childName: string; createdAt: string | null }[]; staffNotes: { familyId: string; label: string; value: string }[]; summary: Record<string, number> }
-export interface SurveyRecord { id: string; status: AssessmentStatus; childName: string; scaleTitle: string; demo: boolean; description: string; surveyJson: Record<string, unknown>; draftAnswers: Record<string, number | number[] | string>; draftRevision: number; consentRequired: boolean }
+export interface SurveyRecord { id: string; status: AssessmentStatus; childName: string; scaleTitle: string; demo: boolean; description: string; surveyJson: Record<string, unknown>; draftAnswers: Record<string, number | number[] | string>; draftRevision: number; consentRequired: boolean; phase?: "waiting" | "reporting" | null; safetyGuidance?: boolean }
 export interface Privacy { version: string; title: string; sections: { title: string; body: string }[] }
 /** Report-pipeline status from GET /api/ops/status (admin only). */
 export interface OpsStatus {
