@@ -52,7 +52,7 @@ describe("birth-date age uses the service region's local date", () => {
       expect(ageAt(birth, BEFORE)).toBe(before);
       expect(ageAt(birth, AFTER)).toBe(after);
     }
-    expect(childScale.version).toBe("1.3.0");
+    expect(childScale.version).toBe("1.4.0");
   });
 });
 
