@@ -53,6 +53,10 @@ describe("growth triad questionnaires", () => {
       score: sources[1].score, childName: "小林", grade: "初中", submittedAt: sources[1].submittedAt, aiConsented: false,
       selectedAdviceIds: [], generationMode: "template", fallbackReason: null, aiModel: null, comparison: { available: false }, triad
     }, "zh-CN");
+    expect(parentScale.demo).toBe(true);
+    expect(parentScale.norm.validated).toBe(false);
+    expect(sources[1].score.demo).toBe(true);
+    expect(html).toContain("演示报告");
     expect(html.indexOf("请先关注安全")).toBeGreaterThan(-1);
     expect(html.indexOf("请先关注安全")).toBeLessThan(html.indexOf("三方看到的情况"));
     const portrait = html.slice(html.indexOf('class="portrait"'), html.indexOf('class="situations"'));
@@ -109,6 +113,7 @@ describe("growth triad questionnaires", () => {
       }
       for (const message of child.score.riskMessages) expect(html).toContain(message[locale]);
       expect(html).toContain(locale === "zh-CN" ? "不做诊断" : "不做診斷");
+      expect(html).toContain(locale === "zh-CN" ? "演示报告" : "示範報告");
     }
   });
 });

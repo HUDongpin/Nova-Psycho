@@ -12,7 +12,7 @@ import { opsStatus } from "@/lib/ops";
 import { acceptRecovery, createRecovery, recoveryInfo } from "@/lib/recovery";
 import { workspaceFor } from "@/lib/workspace";
 import { acceptClerkInvitation,acceptInvitation,acceptInvitationForActor,assignFamily,createFamily,createInvitation,deleteFamily,invitationInfo,recordConsent } from "@/lib/families";
-import { acknowledgeSafetyAlert,createParentFamily,joinClerkStudent,joinFamily,joinWithCode,startParentCase } from "@/lib/triad";
+import { acknowledgeSafetyAlert,assertPublicTriadOpen,createParentFamily,joinClerkStudent,joinFamily,joinWithCode,startParentCase } from "@/lib/triad";
 import { assessmentDetail,createAssessment,retryReport,saveDraft,submitAssessment } from "@/lib/assessments";
 import { reportDetail,reportFor } from "@/lib/reports";
 import { readPrivatePdf } from "@/lib/storage";
@@ -77,6 +77,7 @@ async function dispatch(request:Request,context:Context):Promise<Response>{retur
   // create a session: the account holder signs in with the new password afterwards.
   if(method==="GET"&&route==="recovery")return json(await recoveryInfo(request.headers.get("x-recovery-token")??new URL(request.url).searchParams.get("token")));
   if(method==="POST"&&route==="recovery")return json(await acceptRecovery(await body(request)));
+  if(method==="POST"&&(route==="triad/parent"||route==="triad/family"||route==="triad/join"))assertPublicTriadOpen();
   if(method==="POST"&&route==="triad/parent"){
     if(getAuthProvider()!=="local")throw new HttpError(409,"请先完成邮箱注册，再填写家庭情况。","AUTH_PROVIDER_MISMATCH");
     const started=await startParentCase(await body(request),locale);
