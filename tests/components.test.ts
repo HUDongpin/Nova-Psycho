@@ -83,6 +83,32 @@ describe("family invitation controls",()=>{
   it.each(["zh-CN","zh-HK"] as const)("shows %s invitations when the server grants the capability",locale=>{
     expect(markup(true,locale)).toContain(copy(locale)("invite"));
   });
+  it.each([
+    ["zh-CN", false, "parent"],
+    ["zh-CN", true, "parent"],
+    ["zh-HK", false, "parent"],
+    ["zh-HK", true, "parent"],
+    ["zh-CN", false, "staff"],
+    ["zh-CN", true, "staff"],
+    ["zh-HK", false, "staff"],
+    ["zh-HK", true, "staff"],
+  ] as const)("shows the %s AI processing consent as %s to %s", (locale, aiProcessing, role) => {
+    const family: Family = { id: "f", familyName: "合成家庭", childName: "合成孩子", age: 12, birthDate: "2014-01-01", grade: "小学", region: "CN", guardianLabel: "家长", assignedTo: null, createdAt: "2026-01-01T00:00:00Z", consent: true, consents: { assessment: true, sensitiveData: true, parentReport: true, aiProcessing }, members: [], canInviteMembers: false };
+    const workspace: Workspace = { user: { id: role, name: role === "staff" ? "工作人员" : "家长", role, region: "CN" }, region: "CN", mode: "demo", families: [family], assessments: [], reports: [], scales: [], goals: [], observations: [], staff: [], contentVersions: [], alerts: [], staffNotes: [], summary: {} };
+    const html = renderToStaticMarkup(createElement(FamilyView, { family, workspace, locale, navigate: () => undefined, openForm: () => undefined, onRefresh: async () => undefined, openPrivacy: () => undefined }));
+    const t = copy(locale);
+    const label = t("consentScopeAi");
+    const state = t(aiProcessing ? "consentGranted" : "consentNotGranted");
+    const list = html.match(/<ul class="consent-scope-list">([\s\S]*?)<\/ul>/)?.[1] ?? "";
+    expect(t("aiConsent")).toContain(label);
+    expect(label).not.toBe(copy(locale === "zh-HK" ? "zh-CN" : "zh-HK")("consentScopeAi"));
+    expect(list).toContain(`<li><span>${label}</span><span class="badge badge-${aiProcessing ? "sage" : "peach"}">${state}</span></li>`);
+    expect(list).toContain(t("consentScopeAssessment"));
+    expect(list).toContain(t("consentScopeSensitive"));
+    expect(list).toContain(t("consentScopeParentReport"));
+    expect(list.match(/<li>/g)).toHaveLength(4);
+    expect(html).toContain(t("consentUpdate"));
+  });
   it("keeps parent-report consent reachable after assessment consent is already recorded",()=>{
     const family={id:"f",familyName:"合成家庭",childName:"合成孩子",age:12,birthDate:"2014-01-01",grade:"小学",region:"CN" as const,guardianLabel:"家长",assignedTo:null,createdAt:"2026-01-01T00:00:00Z",consent:true,consents:{assessment:true,sensitiveData:true,parentReport:false,aiProcessing:false},members:[],canInviteMembers:false};
     const workspace:Workspace={user:{id:"parent",name:"家长",role:"parent",region:"CN"},region:"CN",mode:"demo",families:[family],assessments:[{id:"a",familyId:"f",childName:"合成孩子",respondentId:"parent",respondentName:"家长",respondentRole:"parent",scaleVersionId:"s",scaleTitle:"量表",status:"queued",phase:"consent",createdAt:"2026-01-01T00:00:00Z",reportId:null,canRespond:false,canRetryReport:false}],reports:[],scales:[],goals:[],observations:[],staff:[],contentVersions:[],alerts:[],staffNotes:[],summary:{}};
