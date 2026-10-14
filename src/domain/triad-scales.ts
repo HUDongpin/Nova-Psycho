@@ -70,9 +70,10 @@ const NONE = "以上均没有";
 const UNSURE = "不确定";
 const DECLINE = "不愿回答";
 // New row on each definition change. An assessment keeps scoring the version it was opened with.
-// 1.2.0 labels these unvalidated instruments as demo. 1.3.0 shows the 12+ block from the
-// family birth-date age, not the stated c_age. 1.0.0, 1.1.0 and 1.2.0 stay immutable.
-const TRIAD_VERSION = "1.2.0";
+// 1.2.0 labels these unvalidated instruments as demo. Child 1.3.0 shows the 12+ block from the
+// family birth-date age, not the stated c_age. Parent and teacher 1.3.0 place writing addressed
+// to the service team (q32–q38 and t23) in staff notes. 1.0.0, 1.1.0 and 1.2.0 stay immutable.
+const TRIAD_VERSION = "1.3.0";
 const CHILD_VERSION = "1.3.0";
 
 function define(role: RespondentRole, id: string, title: string, description: string, built: Bag, version = TRIAD_VERSION): ScaleDefinition {
@@ -185,13 +186,13 @@ function parent(): ScaleDefinition {
     scene(built, id, "scenes", "遇到这些情况时，您通常实际会怎么做", label, labels);
     writing(built, `${id}a`, "scenes", "遇到这些情况时，您通常实际会怎么做", "您这样处理时最主要的考虑是什么", "words", false);
   }
-  writing(built, "q32", "close", "还想让服务团队知道的事", "您认为孩子目前最重要的三个优势是什么", "words");
-  writing(built, "q33", "close", "还想让服务团队知道的事", "您认为孩子目前最需要改善的状况是什么", "words");
-  writing(built, "q34", "close", "还想让服务团队知道的事", "您认为自己作为家长对孩子的影响主要体现在哪些方面", "words");
-  writing(built, "q35", "close", "还想让服务团队知道的事", "您认为整个家庭系统对孩子的重要影响有哪些", "words");
-  writing(built, "q36", "close", "还想让服务团队知道的事", "您认为自己作为家长目前最稳定的三个资源是什么", "words");
-  writing(built, "q37", "close", "还想让服务团队知道的事", "如果未来四至六周只能出现一个小变化，您最希望是什么", "words");
-  writing(built, "q38", "close", "还想让服务团队知道的事", "还有哪些重要信息希望服务团队提前知道", "words", false);
+  writing(built, "q32", "close", "还想让服务团队知道的事", "您认为孩子目前最重要的三个优势是什么", "staff");
+  writing(built, "q33", "close", "还想让服务团队知道的事", "您认为孩子目前最需要改善的状况是什么", "staff");
+  writing(built, "q34", "close", "还想让服务团队知道的事", "您认为自己作为家长对孩子的影响主要体现在哪些方面", "staff");
+  writing(built, "q35", "close", "还想让服务团队知道的事", "您认为整个家庭系统对孩子的重要影响有哪些", "staff");
+  writing(built, "q36", "close", "还想让服务团队知道的事", "您认为自己作为家长目前最稳定的三个资源是什么", "staff");
+  writing(built, "q37", "close", "还想让服务团队知道的事", "如果未来四至六周只能出现一个小变化，您最希望是什么", "staff");
+  writing(built, "q38", "close", "还想让服务团队知道的事", "还有哪些重要信息希望服务团队提前知道", "staff", false);
   checks(built, "q39", "close", "还想让服务团队知道的事", "您方便参加初访的方式", ["线上视频", "电话", "线下面谈", "尚未确定"]);
   writing(built, "q40", "close", "还想让服务团队知道的事", "联系方式（手机号或微信，只给工作人员，不写入给家长的报告）", "staff");
   return define("parent", "growth-parent", "家庭系统发展需求评估", "这份问卷同时看两件事：孩子在家里、学习和学校里可以观察到的表现，以及您面对信息、学习和情绪时通常怎么处理。结果用来准备沟通和支持，不给孩子做诊断，也不给家长划分等级。三方一起完成时适用于 8 至 17 岁。香港繁体是便于阅读的字形转换，不是另行验证的译本。", built);
@@ -231,7 +232,7 @@ function teacher(): ScaleDefinition {
   writing(built, "t20", "close", "已经做过的支持和您的建议", "请描述学生最稳定的三个优势", "words");
   writing(built, "t21", "close", "已经做过的支持和您的建议", "如果未来四至六周只设一个学校目标，您建议是什么", "words");
   checks(built, "t22", "close", "已经做过的支持和您的建议", "您认为下一步需要哪些协作", ["课堂内继续观察和支持", "与学生单独沟通", "家校共同制定计划", "学习能力或执行功能评估", "学校心理支持", "校外心理或医疗评估", "课程或任务调整", "同伴或校园安全支持", "暂不需要额外支持", "其他"], "priorities");
-  writing(built, "t23", "close", "已经做过的支持和您的建议", "其他需要服务团队了解的信息", "words", false);
+  writing(built, "t23", "close", "已经做过的支持和您的建议", "其他需要服务团队了解的信息", "staff", false);
   return define("teacher", "growth-teacher", "学生学习与身心发展观察", "请只报告您直接观察到的行为和频率，不推断家庭原因，也不做临床诊断。无法观察时请选择“不了解或不适用”。这份观察和家长、孩子的回答放在一起，给家长看一份报告。香港繁体是便于阅读的字形转换，不是另行验证的译本。", built);
 }
 
