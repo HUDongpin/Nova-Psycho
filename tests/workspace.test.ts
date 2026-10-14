@@ -4,6 +4,7 @@ vi.mock("../src/lib/db",()=>({query:vi.fn()}));
 import { query } from "../src/lib/db";
 import { workspaceFor } from "../src/lib/workspace";
 import { demoScale } from "../src/domain/demo";
+import { teacherScale } from "../src/domain/triad-scales";
 import { childScale as oldChild } from "./fixtures/triad-scales-ed66f27";
 import type { Actor,Role } from "../src/domain/types";
 
@@ -296,6 +297,30 @@ describe("administrator extras",()=>{
     const workspace=await workspaceFor(actor("staff"),"zh-CN");
     expect(workspace.observations).toHaveLength(1);
     expect(workspace.contentVersions).toEqual([]);
+  });
+});
+
+describe("reassessment staff notes",()=>{
+  it("keeps both notes when a later round repeats the item stem",async()=>{
+    const rounds=[
+      {id:"assess-1",family_id:FAMILY_ID,answers:{t16:"第一次客观记录"},definition:teacherScale},
+      {id:"assess-2",family_id:FAMILY_ID,answers:{t16:"第二次客观记录"},definition:teacherScale}
+    ];
+    mockQuery.mockImplementation((async(sql:string)=>{
+      const text=String(sql);
+      if(text.includes("FROM families f WHERE"))return [familyRow];
+      if(text.includes("definition->>'bundle'"))return rounds;
+      return [];
+    }) as never);
+    const workspace=await workspaceFor(actor("staff"),"zh-CN");
+    expect(workspace.staffNotes).toHaveLength(2);
+    expect(new Set(workspace.staffNotes.map(note=>note.label)).size).toBe(1);
+    expect(workspace.staffNotes.map(note=>({assessmentId:note.assessmentId,itemId:note.itemId,value:note.value}))).toEqual([
+      {assessmentId:"assess-1",itemId:"t16",value:"第一次客观记录"},
+      {assessmentId:"assess-2",itemId:"t16",value:"第二次客观记录"}
+    ]);
+    const parent=await workspaceFor(actor("parent"),"zh-CN");
+    expect(parent.staffNotes).toEqual([]);
   });
 });
 
