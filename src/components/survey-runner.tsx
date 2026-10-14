@@ -5,7 +5,7 @@ import { Survey } from "survey-react-ui";
 import "survey-core/i18n/simplified-chinese";
 import "survey-core/i18n/traditional-chinese";
 import { ArrowClockwise, CheckCircle, CircleNotch, Copy, FloppyDisk, Warning } from "@phosphor-icons/react";
-import { ApiError, errorMessage, type Locale, type SurveyRecord } from "./api";
+import { ApiError, errorMessage, type Locale, type SubmissionPhase, type SurveyRecord } from "./api";
 import { AssessmentDraftSession } from "./draft-session";
 import { copy } from "./copy";
 import { bindChoiceAutoAdvance, CHOICE_AUTO_ADVANCE_MS, focusFirstUnanswered, questionProgressLabel } from "./survey-navigation";
@@ -15,7 +15,7 @@ export default function SurveyRunner({ record, draft, locale, onSubmitted, onRel
   record: SurveyRecord;
   draft: AssessmentDraftSession;
   locale: Locale;
-  onSubmitted: () => Promise<void>;
+  onSubmitted: (result: { phase: SubmissionPhase }) => Promise<void>;
   onReloadLatest: () => Promise<void>;
   openPrivacy: () => void;
 }) {
@@ -115,9 +115,9 @@ export default function SurveyRunner({ record, draft, locale, onSubmitted, onRel
     model.mode = "display";
     draft.update({ ...model.data }, locale);
     try {
-      await draft.submit(locale);
+      const result = await draft.submit(locale);
       if (draft.getSnapshot().authenticationPaused) return;
-      await onSubmitted();
+      await onSubmitted({ phase: result.phase ?? null });
     } catch (err) {
       if (!(err instanceof ApiError && err.code === "DRAFT_CONFLICT")) setError(errorMessage(err));
     }

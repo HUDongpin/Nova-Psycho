@@ -19,6 +19,7 @@
     "worker:cn": "node scripts/run-region.mjs CN worker",
     "worker:hk": "node scripts/run-region.mjs HK worker",
     "test:integration": "tsx scripts/integration.ts",
+    "test:consent-race": "tsx scripts/consent-lock-race.ts",
     "backup:cn": "node scripts/run-region.mjs CN backup",
     "backup:hk": "node scripts/run-region.mjs HK backup"
   },

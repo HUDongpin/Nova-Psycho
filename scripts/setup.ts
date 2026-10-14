@@ -60,7 +60,7 @@ try{
           const members:[string,string][]=[[f.parent,"parent"],[f.student,"student"]];
           if(f.child==="林小禾")members.push([account("teacher").id,"teacher"]);
           for(const [uid,role] of members)await client.query("INSERT INTO memberships(family_id,user_id,role) VALUES($1,$2,$3)",[f.id,uid,role]);
-          await client.query("INSERT INTO consents(id,family_id,actor_id,guardian_name,method,reference,notice_version,scopes) VALUES($1,$2,$3,$4,'synthetic','SYNTHETIC-DEMO-ONLY',$5,$6)",[randomUUID(),f.id,f.parent,`${f.child}${hk?"家長":"家长"}`,noticeVersion,JSON.stringify(["assessment","parent_report","sensitive_data"])]);
+          for(const scope of ["assessment","parent_report","sensitive_data"])await client.query("INSERT INTO consents(id,family_id,actor_id,guardian_name,method,reference,notice_version,scopes) VALUES($1,$2,$3,$4,'synthetic','SYNTHETIC-DEMO-ONLY',$5,$6)",[randomUUID(),f.id,f.parent,`${f.child}${hk?"家長":"家长"}`,noticeVersion,JSON.stringify([scope])]);
         }
         const baseline={q1:3,q2:1,q3:2,q4:1,q5:3,q6:1,q7:2,q8:1,q9:0};
         const recent={q1:1,q2:2,q3:1,q4:2,q5:2,q6:2,q7:1,q8:2,q9:0};

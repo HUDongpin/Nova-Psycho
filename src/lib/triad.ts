@@ -8,6 +8,7 @@ import { pair } from "../domain/zh-pair";
 import { parseAdvice, parseScale, parseTemplate } from "../domain/validation";
 import { ageAt, familyFor } from "./access";
 import { audit, hashPassword, limitLogin } from "./auth";
+import { ACTIVE_CONSENT_ROWS_SQL, PARENT_REPORT_SCOPE, PARTICIPATION_SCOPES, hasGranted, insertConsentRecords, recordedScopes, rejectBundledConsent } from "./consent";
 import { getConfig } from "./config";
 import { query, transaction } from "./db";
 import { HttpError, requireRole, validateId } from "./http";
@@ -59,8 +60,8 @@ export async function lockRegistrationActor(client: PoolClient, actor: Actor): P
 }
 
 export async function requireRegistrationConsent(client: PoolClient, familyId: string): Promise<void> {
-  const consent = await client.query("SELECT id FROM consents WHERE family_id=$1 AND revoked_at IS NULL AND scopes @> '[\"assessment\",\"parent_report\",\"sensitive_data\"]'::jsonb LIMIT 1", [familyId]);
-  if (!consent.rows[0]) throw new HttpError(409, "请先由家长完成监护人授权。", "GUARDIAN_CONSENT_REQUIRED");
+  const consent = await client.query(ACTIVE_CONSENT_ROWS_SQL, [familyId]);
+  if (!hasGranted(consent.rows, PARTICIPATION_SCOPES)) throw new HttpError(409, "请先由家长完成测评与敏感资料授权。", "GUARDIAN_CONSENT_REQUIRED");
 }
 
 export async function assertTriadRegistrationReady(client: PoolClient, family: RegistrationFamily): Promise<void> {
@@ -128,7 +129,8 @@ export async function joinClerkStudent(principal: VerifiedClerkIdentity, input: 
 
 export async function createParentFamily(actor: Actor, input: unknown, locale: Locale): Promise<{ userId: string; familyId: string; joinCode: string }> {
   requireRole(actor.role, ["parent"]);
-  const data = z.object({ requestId: z.string().uuid(), relationship: z.enum(relationships), childName: short, birthDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), grade: z.enum(grades), accepted: z.literal(true) }).strict().parse(input);
+  rejectBundledConsent(input);
+  const data = z.object({ requestId: z.string().uuid(), relationship: z.enum(relationships), childName: short, birthDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), grade: z.enum(grades), assessment: z.literal(true), sensitiveData: z.literal(true), parentReport: z.boolean() }).strict().parse(input);
   assertChildAge(data.birthDate);
   return transaction(async client => {
     const current = await lockRegistrationActor(client, actor);
@@ -136,6 +138,8 @@ export async function createParentFamily(actor: Actor, input: unknown, locale: L
     if (existing.rows[0]) {
       const prior = existing.rows[0];
       if (prior.child_name !== data.childName || String(prior.birth_date).slice(0, 10) !== data.birthDate || prior.grade !== data.grade || prior.guardian_label !== data.relationship) throw new HttpError(409, "这个创建请求已完成，但家庭资料与本次填写不同。请刷新并核对已有家庭。", "REQUEST_ID_CONFLICT");
+      const priorConsent = await client.query(ACTIVE_CONSENT_ROWS_SQL, [prior.id]);
+      if (!hasGranted(priorConsent.rows, PARTICIPATION_SCOPES) || hasGranted(priorConsent.rows, [PARENT_REPORT_SCOPE]) !== data.parentReport) throw new HttpError(409, "这个创建请求已完成，但同意选择与本次不同。请在家庭里单独更新同意。", "CONSENT_CHOICE_CONFLICT");
       return { userId: current.id, familyId: prior.id, joinCode: formatJoinCode(prior.join_code) };
     }
     const scale = await client.query("SELECT id FROM scales WHERE id=$1 AND status='active'", [SCALE_ID.parent]);
@@ -143,7 +147,7 @@ export async function createParentFamily(actor: Actor, input: unknown, locale: L
     const joinCode = await freshCode(client), familyId = randomUUID();
     await client.query("INSERT INTO families(id,region,family_name,child_name,birth_date,grade,guardian_label,join_code,created_by,creation_request_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)", [familyId, current.region, `${data.childName}的家庭`, data.childName, data.birthDate, data.grade, data.relationship, joinCode, current.id, data.requestId]);
     await client.query("INSERT INTO memberships(family_id,user_id,role) VALUES($1,$2,'parent')", [familyId, current.id]);
-    await client.query("INSERT INTO consents(id,family_id,actor_id,guardian_name,method,notice_version,scopes) VALUES($1,$2,$3,$4,'online_guardian',$5,$6)", [randomUUID(), familyId, current.id, current.name, noticeVersion, JSON.stringify(["assessment", "parent_report", "sensitive_data"])]);
+    await insertConsentRecords(client, { familyId, actorId: current.id, guardianName: current.name, method: "online_guardian", noticeVersion, scopes: recordedScopes(data) });
     const roundId = await triadRoundFor(client, familyId, "parent");
     await client.query("INSERT INTO assessments(id,family_id,region,respondent_id,respondent_role,scale_version_id,locale,triad_round_id) VALUES($1,$2,$3,$4,'parent',$5,$6,$7)", [randomUUID(), familyId, current.region, current.id, SCALE_ID.parent, locale, roundId]);
     await client.query("INSERT INTO audit_events(region,actor_id,action,entity_id) VALUES($1,$2,'triad.parent_started',$3)", [current.region, current.id, familyId]);
@@ -200,7 +204,8 @@ export async function triadRoundFor(client: PoolClient, familyId: string, role: 
 }
 
 export async function startParentCase(input: unknown, locale: "zh-CN" | "zh-HK"): Promise<{ userId: string; familyId: string; joinCode: string }> {
-  const data = z.object({ parentName: short, username, password, relationship: z.enum(relationships), childName: short, birthDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), grade: z.enum(grades), accepted: z.literal(true) }).strict().parse(input);
+  rejectBundledConsent(input);
+  const data = z.object({ parentName: short, username, password, relationship: z.enum(relationships), childName: short, birthDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), grade: z.enum(grades), assessment: z.literal(true), sensitiveData: z.literal(true), parentReport: z.boolean() }).strict().parse(input);
   assertChildAge(data.birthDate);
   await limitLogin(data.username);
   const passwordHash = await hashPassword(data.password);
@@ -218,7 +223,7 @@ export async function startParentCase(input: unknown, locale: "zh-CN" | "zh-HK")
     }
     await client.query("INSERT INTO families(id,region,family_name,child_name,birth_date,grade,guardian_label,join_code) VALUES($1,$2,$3,$4,$5,$6,$7,$8)", [familyId, getConfig().region, `${data.childName}的家庭`, data.childName, data.birthDate, data.grade, data.relationship, joinCode]);
     await client.query("INSERT INTO memberships(family_id,user_id,role) VALUES($1,$2,'parent')", [familyId, userId]);
-    await client.query("INSERT INTO consents(id,family_id,actor_id,guardian_name,method,notice_version,scopes) VALUES($1,$2,$3,$4,'online_guardian',$5,$6)", [randomUUID(), familyId, userId, data.parentName, noticeVersion, JSON.stringify(["assessment", "parent_report", "sensitive_data"])]);
+    await insertConsentRecords(client, { familyId, actorId: userId, guardianName: data.parentName, method: "online_guardian", noticeVersion, scopes: recordedScopes(data) });
     const roundId = await triadRoundFor(client, familyId, "parent");
     await client.query("INSERT INTO assessments(id,family_id,region,respondent_id,respondent_role,scale_version_id,locale,triad_round_id) VALUES($1,$2,$3,$4,'parent',$5,$6,$7)", [randomUUID(), familyId, getConfig().region, userId, SCALE_ID.parent, locale, roundId]);
     await client.query("INSERT INTO audit_events(region,actor_id,action,entity_id) VALUES($1,$2,'triad.parent_started',$3)", [getConfig().region, userId, familyId]);
@@ -257,13 +262,38 @@ export async function joinWithCode(input: unknown, locale: "zh-CN" | "zh-HK"): P
   });
 }
 
-export async function queueTriadReport(client: PoolClient, familyId: string, roundId: string): Promise<void> {
+export async function queueTriadReport(client: PoolClient, familyId: string, roundId: string): Promise<string | null> {
   const region = getConfig().region;
   const rows = await client.query("SELECT id,respondent_role FROM assessments WHERE family_id=$1 AND region=$2 AND triad_round_id=$3 AND submitted_at IS NOT NULL ORDER BY respondent_role", [familyId, region, roundId]);
-  if (!triadRolesReady(rows.rows.map(row => String(row.respondent_role)))) return;
+  if (!triadRolesReady(rows.rows.map(row => String(row.respondent_role)))) return null;
   const parent = rows.rows.find(row => row.respondent_role === "parent");
-  if (!parent) return;
+  if (!parent) return null;
+  const consent = await client.query(ACTIVE_CONSENT_ROWS_SQL, [familyId]);
+  if (!hasGranted(consent.rows, [PARENT_REPORT_SCOPE])) return null;
   await client.query("INSERT INTO report_jobs(id,assessment_id,source_assessment_ids) VALUES($1,$2,$3) ON CONFLICT(assessment_id) DO NOTHING", [randomUUID(), parent.id, rows.rows.map(row => row.id)]);
+  return String(parent.id);
+}
+
+// Submissions can be stored before the guardian agrees to the parent report.
+// Call this only after that consent is active, while the family lock is held.
+export async function enqueueReportsHeldForConsent(client: PoolClient, familyId: string): Promise<string[]> {
+  const region = getConfig().region;
+  const ids = new Set<string>();
+  const held = await client.query("SELECT a.id FROM assessments a JOIN scales s ON s.id=a.scale_version_id WHERE a.family_id=$1 AND a.region=$2 AND a.status='queued' AND a.submitted_at IS NOT NULL AND COALESCE(s.definition->>'bundle','')<>$3 AND NOT EXISTS (SELECT 1 FROM report_jobs j WHERE j.assessment_id=a.id) AND NOT EXISTS (SELECT 1 FROM reports r WHERE r.assessment_id=a.id)", [familyId, region, TRIAD_BUNDLE]);
+  for (const row of held.rows) {
+    await client.query("INSERT INTO report_jobs(id,assessment_id) VALUES($1,$2) ON CONFLICT(assessment_id) DO NOTHING", [randomUUID(), row.id]);
+    ids.add(String(row.id));
+  }
+  const resumed = await client.query("UPDATE report_jobs j SET state='ready', available_at=now(), lease_until=NULL, claim_token=NULL, last_error_code=NULL FROM assessments a WHERE a.id=j.assessment_id AND a.family_id=$1 AND a.region=$2 AND j.state='paused' AND j.last_error_code='PARENT_REPORT_CONSENT_REQUIRED' AND NOT EXISTS (SELECT 1 FROM reports r WHERE r.assessment_id=a.id) RETURNING a.id", [familyId, region]);
+  for (const row of resumed.rows) ids.add(String(row.id));
+  const ready = await client.query("SELECT a.id FROM report_jobs j JOIN assessments a ON a.id=j.assessment_id WHERE a.family_id=$1 AND a.region=$2 AND j.state='ready' AND NOT EXISTS (SELECT 1 FROM reports r WHERE r.assessment_id=a.id)", [familyId, region]);
+  for (const row of ready.rows) ids.add(String(row.id));
+  const rounds = await client.query("SELECT DISTINCT triad_round_id FROM assessments WHERE family_id=$1 AND region=$2 AND triad_round_id IS NOT NULL AND submitted_at IS NOT NULL", [familyId, region]);
+  for (const row of rounds.rows) {
+    const parentId = await queueTriadReport(client, familyId, String(row.triad_round_id));
+    if (parentId) ids.add(parentId);
+  }
+  return [...ids];
 }
 
 export async function acknowledgeSafetyAlert(actor: Actor, alertId: string) {

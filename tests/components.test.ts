@@ -83,6 +83,17 @@ describe("family invitation controls",()=>{
   it.each(["zh-CN","zh-HK"] as const)("shows %s invitations when the server grants the capability",locale=>{
     expect(markup(true,locale)).toContain(copy(locale)("invite"));
   });
+  it("keeps parent-report consent reachable after assessment consent is already recorded",()=>{
+    const family={id:"f",familyName:"合成家庭",childName:"合成孩子",age:12,birthDate:"2014-01-01",grade:"小学",region:"CN" as const,guardianLabel:"家长",assignedTo:null,createdAt:"2026-01-01T00:00:00Z",consent:true,consents:{assessment:true,sensitiveData:true,parentReport:false,aiProcessing:false},members:[],canInviteMembers:false};
+    const workspace:Workspace={user:{id:"parent",name:"家长",role:"parent",region:"CN"},region:"CN",mode:"demo",families:[family],assessments:[{id:"a",familyId:"f",childName:"合成孩子",respondentId:"parent",respondentName:"家长",respondentRole:"parent",scaleVersionId:"s",scaleTitle:"量表",status:"queued",phase:"consent",createdAt:"2026-01-01T00:00:00Z",reportId:null,canRespond:false,canRetryReport:false}],reports:[],scales:[],goals:[],observations:[],staff:[],contentVersions:[],alerts:[],staffNotes:[],summary:{}};
+    const html=renderToStaticMarkup(createElement(FamilyView,{family,workspace,locale:"zh-CN",navigate:()=>undefined,openForm:()=>undefined,onRefresh:async()=>undefined,openPrivacy:()=>undefined}));
+    expect(html).toContain("向家长提供综合报告");
+    expect(html).toContain("未记录");
+    expect(html).toContain("更新同意");
+    expect(html).toContain("等待家长报告同意");
+    expect(html).not.toContain("报告正在生成");
+    expect(html).not.toContain("等待另外两方");
+  });
 });
 
 describe("eligibleScales",()=>{

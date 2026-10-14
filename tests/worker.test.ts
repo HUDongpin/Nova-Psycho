@@ -113,6 +113,7 @@ describe("processing one job",()=>{
     await processOneJob();
     const sql=String(mockQuery.mock.calls[0][0]);
     expect(sql).toContain("FOR UPDATE OF j SKIP LOCKED");
+    expect(sql).toContain("parent_report");
     expect(sql).toContain("lease_until<now()");
     expect(sql).toContain("lease_until=now()+interval '5 minutes'");
   });
@@ -209,7 +210,7 @@ describe("fixed triad report sources",()=>{
   it("renders only the pinned round and publishes those three sources",async()=>{
     configure();
     const calls:{sql:string;values:unknown[]}[]=[];
-    mockTransaction.mockImplementation((async(fn:(c:unknown)=>Promise<unknown>)=>fn({query:async(sql:string,values:unknown[])=>{calls.push({sql,values});return {rows:[{id:"locked"}]};}})) as never);
+    mockTransaction.mockImplementation((async(fn:(c:unknown)=>Promise<unknown>)=>fn({query:async(sql:string,values:unknown[])=>{calls.push({sql,values});if(sql.includes("AS scopes FROM consents WHERE family_id=$1"))return {rows:[{scopes:["parent_report"]}]};return {rows:[{id:"locked"}]};}})) as never);
     await processOneJob();
     expect(mockRender).toHaveBeenCalledTimes(2);
     const lookup=mockQuery.mock.calls.find(([sql])=>String(sql).includes("SELECT id,respondent_role,answers"));
@@ -268,7 +269,7 @@ describe("targeted queue execution",()=>{
       .mockResolvedValueOnce([{id:ASSESSMENT_ID,family_id:"family",snapshot,submitted_at:snapshot.submittedAt}])
       .mockResolvedValueOnce([]).mockResolvedValueOnce([]).mockResolvedValue([]);
     const events:string[]=[];
-    const lockedClient={query:vi.fn(async(sql:string)=>{events.push(sql);return {rows:[{id:"locked"}]};})};
+    const lockedClient={query:vi.fn(async(sql:string)=>{events.push(sql);if(sql.includes("AS scopes FROM consents WHERE family_id=$1"))return {rows:[{scopes:["parent_report"]}]};return {rows:[{id:"locked"}]};})};
     mockWrite.mockImplementation(async(_key,_pdf,client)=>{
       expect(client).toBe(lockedClient);
       expect(events.some(sql=>sql.includes("FROM families")&&sql.includes("FOR UPDATE"))).toBe(true);
@@ -279,7 +280,27 @@ describe("targeted queue execution",()=>{
     await expect(processReportJob(JOB_ID)).resolves.toEqual({status:"published"});
     expect(events.filter(value=>value==="pdf")).toHaveLength(2);
     expect(events.findIndex(value=>value.includes("INSERT INTO reports"))).toBeGreaterThan(events.lastIndexOf("pdf"));
+    expect(events.findIndex(value=>value.includes("AS scopes FROM consents WHERE family_id=$1"))).toBeGreaterThan(events.findIndex(value=>value.includes("FROM families")&&value.includes("FOR UPDATE")));
+    expect(events.findIndex(value=>value.includes("INSERT INTO reports"))).toBeGreaterThan(events.findIndex(value=>value.includes("AS scopes FROM consents WHERE family_id=$1")));
     mockWrite.mockImplementation(async()=>undefined);
+  });
+  it("pauses a claimed job inside the family lock when parent-report consent is gone and writes no report",async()=>{
+    mockQuery.mockResolvedValueOnce([{id:JOB_ID,assessment_id:ASSESSMENT_ID,attempts:1}])
+      .mockResolvedValueOnce([{id:ASSESSMENT_ID,family_id:"family",snapshot,submitted_at:snapshot.submittedAt}])
+      .mockResolvedValueOnce([]).mockResolvedValueOnce([]).mockResolvedValue([]);
+    const events:string[]=[];
+    const lockedClient={query:vi.fn(async(sql:string)=>{
+      events.push(sql);
+      if(sql.includes("AS scopes FROM consents WHERE family_id=$1"))return {rows:[{scopes:["assessment"]},{scopes:["sensitive_data"]}]};
+      return {rows:[{id:"locked"}]};
+    })};
+    mockTransaction.mockImplementation((async(fn:(c:unknown)=>Promise<unknown>)=>fn(lockedClient)) as never);
+    await expect(processReportJob(JOB_ID)).resolves.toEqual({status:"paused"});
+    const familyAt=events.findIndex(sql=>sql.includes("FROM families")&&sql.includes("FOR UPDATE"));
+    const pauseAt=events.findIndex(sql=>sql.includes("state='paused'")&&sql.includes("PARENT_REPORT_CONSENT_REQUIRED"));
+    expect(pauseAt).toBeGreaterThan(familyAt);
+    expect(events.some(sql=>sql.includes("INSERT INTO reports"))).toBe(false);
+    expect(mockQuery.mock.calls.some(([sql])=>String(sql).includes("UPDATE report_jobs SET state=$1"))).toBe(false);
   });
   it("does not run filesystem cleanup or heartbeat polling for database storage",async()=>{
     vi.stubEnv("NOVA_REPORT_STORAGE","database");

@@ -25,7 +25,7 @@ function stub(){
     const text=String(sql);
     if(text.includes("FROM families f WHERE"))return [familyRow];
     if(text.includes("FROM memberships m JOIN users u"))return [{family_id:FAMILY_ID,id:SELF,name:"Synthetic",role:"student"},{family_id:FAMILY_ID,id:OTHER,name:"Other",role:"parent"}];
-    if(text.includes("DISTINCT family_id FROM consents"))return [{family_id:FAMILY_ID}];
+    if(text.includes("AS scopes FROM consents c"))return [{family_id:FAMILY_ID,scopes:["assessment","sensitive_data","parent_report"]}];
     if(text.includes("FROM assessments a JOIN families f"))return [assessmentRow];
     if(text.includes("FROM reports WHERE family_id"))return [{id:"r1",family_id:FAMILY_ID,assessment_id:"a1",region:"CN",payload:{score:{risk:false,dimensions:[],respondentRole:"student",demo:true},template:{content:{title:{"zh-CN":"T","zh-HK":"T"}}},scale:{title:{"zh-CN":"S","zh-HK":"S"}},childName:"c",generationMode:"template",comparison:{available:false}},pdf_keys:{},html_documents:{},created_at:new Date()}];
     if(text.includes("FROM goals WHERE family_id"))return [{id:"g1",family_id:FAMILY_ID,title:"Goal",detail:"d",status:"active",created_at:new Date()}];
@@ -56,6 +56,31 @@ describe("assessment scoping",()=>{
     expect(String(sql)).toContain("($3::boolean OR a.respondent_id=$4)");
     expect(values).toContain(SELF);
     expect(values).toContain(false);
+  });
+  it("gates family participation and report visibility on separate consents",async()=>{
+    const workspace=await workspaceFor(actor("parent"),"zh-CN");
+    expect(workspace.families[0].consent).toBe(true);
+    expect(workspace.families[0].consents).toEqual({assessment:true,sensitiveData:true,parentReport:true,aiProcessing:false});
+    const reportSql=String(mockQuery.mock.calls.find(call=>String(call[0]).includes("FROM reports WHERE family_id"))![0]);
+    expect(reportSql).toContain('["parent_report"]');
+    expect(reportSql).toContain("consent_scope_revocations");
+    const assessmentSql=String(mockQuery.mock.calls.find(call=>String(call[0]).includes("FROM assessments a JOIN families f"))![0]);
+    expect(assessmentSql).toContain('["parent_report"]');
+    expect(assessmentSql).toContain("consent_scope_revocations");
+    expect(assessmentSql).toContain("round_ready");
+    expect(assessmentSql).not.toContain('["assessment","parent_report","sensitive_data"]');
+  });
+  it("marks a submitted assessment as waiting for parent-report consent instead of generating",async()=>{
+    mockQuery.mockImplementation((async(sql:string)=>{
+      const text=String(sql);
+      if(text.includes("FROM families f WHERE"))return [familyRow];
+      if(text.includes("FROM assessments a JOIN families f"))return [{...assessmentRow,status:"queued",has_consent:false,report_id:null}];
+      if(text.includes("AS scopes FROM consents c"))return [{family_id:FAMILY_ID,scopes:["assessment","sensitive_data"]}];
+      return [];
+    }) as never);
+    const workspace=await workspaceFor(actor("parent"),"zh-CN");
+    expect(workspace.families[0].consents?.parentReport).toBe(false);
+    expect(workspace.assessments[0].phase).toBe("consent");
   });
   it("lets caring roles see every assessment in their families",async()=>{
     await workspaceFor(actor("parent"),"zh-CN");
@@ -262,7 +287,7 @@ describe("triad reports with fixed round sources",()=>{
   const triadDefinition={...demoScale,bundle:"growth-triad"};
   const at=(day:string)=>new Date(`2026-${day}T00:00:00Z`);
   function row(over:Record<string,unknown>){
-    return {...assessmentRow,definition:triadDefinition,status:"published",submitted_at:at("03-01"),report_id:null,triad_round_id:"round-1",triad_job_id:null,respondent_id:OTHER,...over};
+    return {...assessmentRow,definition:triadDefinition,status:"published",submitted_at:at("03-01"),report_id:null,has_consent:true,triad_round_id:"round-1",triad_job_id:null,respondent_id:OTHER,...over};
   }
   function load(rows:unknown[],role:Role="parent"){
     mockQuery.mockImplementation((async(sql:string)=>{
@@ -272,6 +297,12 @@ describe("triad reports with fixed round sources",()=>{
     }) as never);
     return workspaceFor(actor(role),"zh-CN");
   }
+  it("does not advertise stored reports after parent-report consent is withdrawn",async()=>{
+    const workspace=await load(["student","parent","teacher"].map(role=>row({id:role,respondent_role:role,report_id:"r1",has_consent:false})));
+    expect(workspace.assessments).toHaveLength(3);
+    for(const item of workspace.assessments)expect(item).toMatchObject({status:"published",reportId:null,phase:"consent"});
+    expect(workspace.reports).toEqual([]);
+  });
   it("shows the same stored report for all three published sources",async()=>{
     const workspace=await load(["student","parent","teacher"].map(role=>row({id:role,respondent_role:role,report_id:"r1",triad_job_id:"job1"})));
     for(const item of workspace.assessments)expect(item).toMatchObject({status:"published",reportId:"r1",phase:null});

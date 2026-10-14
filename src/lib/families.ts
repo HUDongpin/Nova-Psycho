@@ -1,15 +1,16 @@
 import { randomBytes,randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { PoolClient } from "pg";
-import type { Actor, Locale, RespondentRole } from "../domain/types";
-import { ageAt, canInviteFamilyMembers, familyFor } from "./access";
+import type { Actor, Locale, RespondentRole, Role } from "../domain/types";
+import { ageAt, canInviteFamilyMembers, familyFor, familyScope } from "./access";
 import { audit, hashPassword, hashToken } from "./auth";
 import { getConfig } from "./config";
 import { query, transaction } from "./db";
 import { HttpError, requireRole, validateId } from "./http";
+import { ACTIVE_CONSENT_ROWS_SQL, CONSENT_SCOPES, PARENT_REPORT_SCOPE, REQUIRED_WITHDRAW_SCOPES, hasGranted, insertConsentRecords, rejectBundledConsent, scopeNotRevokedSql, type ConsentScope } from "./consent";
 import { noticeVersion } from "./privacy";
 import type { VerifiedClerkIdentity } from "./clerk-auth";
-import { assertTriadRegistrationReady, joinTriadFamilyInTransaction, lockRegistrationActor, requireRegistrationConsent, type RegistrationFamily } from "./triad";
+import { assertTriadRegistrationReady, enqueueReportsHeldForConsent, joinTriadFamilyInTransaction, lockRegistrationActor, requireRegistrationConsent, type RegistrationFamily } from "./triad";
 import { registrationName, registrationPassword, registrationUsername } from "../domain/registration";
 const short=registrationName;
 const familyInput=z.object({familyName:short,childName:short,birthDate:z.string().regex(/^\d{4}-\d{2}-\d{2}$/),grade:short,guardianLabel:short,assignedTo:z.string().uuid().optional()}).strict();
@@ -33,18 +34,63 @@ export async function assignFamily(actor:Actor,id:string,input:unknown){
     return {id,assignedTo};
   });
 }
+// Family row first, then the actor, matching assignment. The check outside this
+// transaction can go stale while the caller waits. The locked query uses
+// familyScope, so it follows access.ts rather than a second copy of that rule.
+async function assertConsentAuthority(client:PoolClient,actor:Actor,familyId:string):Promise<void>{
+  const scope=familyScope(actor,2);
+  const families=await client.query(`SELECT f.id FROM families f WHERE f.id=$1 AND ${scope.sql} FOR UPDATE`,[familyId,...scope.values]);
+  if(!families.rows[0])throw new HttpError(404,"未找到该家庭或没有访问权限。","NOT_FOUND");
+  const matched=await client.query("SELECT id FROM users WHERE id=$1 AND role=$2 AND region=$3 AND NOT disabled FOR SHARE",[actor.id,actor.role,actor.region]);
+  if(!matched.rows[0]){
+    const found=await client.query<{role:Role;region:"CN"|"HK";disabled:boolean}>("SELECT role, region, disabled FROM users WHERE id=$1 FOR SHARE",[actor.id]);
+    const current=found.rows[0];
+    if(!current||current.disabled)throw new HttpError(403,"账号已停用，请联系服务人员。","ACCOUNT_REVOKED");
+    if(current.region!==actor.region)throw new HttpError(403,"请使用账号所属地区的入口。","REGION_MISMATCH");
+    if(current.role!==actor.role)throw new HttpError(409,"账号角色已变更，请重新登录。","ROLE_CONFLICT");
+    throw new HttpError(403,"账号已停用，请联系服务人员。","ACCOUNT_REVOKED");
+  }
+}
+async function withdrawConsentScope(client:PoolClient,actor:Actor,familyId:string,scope:ConsentScope,evidence:{guardianName:string;method:"online_guardian"|"offline_signed";reference:string|null}):Promise<void>{
+  const carriers=await client.query<{id:string}>(`SELECT c.id, c.scopes FROM consents c WHERE c.family_id=$1 AND c.revoked_at IS NULL AND c.scopes @> $2::jsonb AND ${scopeNotRevokedSql("c","$3")}`,[familyId,JSON.stringify([scope]),scope]);
+  for(const row of carriers.rows){
+    await client.query("INSERT INTO consent_scope_revocations(id,consent_id,family_id,scope,actor_id,guardian_name,method,reference) VALUES($1,$2,$3,$4,$5,$6,$7,$8)",[randomUUID(),row.id,familyId,scope,actor.id,evidence.guardianName,evidence.method,evidence.reference]);
+  }
+}
+// A single-purpose grant stays in place after withdrawal so its original columns
+// do not change. The unique scope index ignores rows only after revoked_at is set,
+// so a later grant of that same purpose retires the already-revoked row first.
+async function retireRevokedSingleScope(client:PoolClient,familyId:string,scope:ConsentScope):Promise<void>{
+  await client.query(`UPDATE consents SET revoked_at=now() WHERE family_id=$1 AND revoked_at IS NULL AND jsonb_typeof(scopes)='array' AND jsonb_array_length(scopes)=1 AND scopes @> $2::jsonb AND NOT (${scopeNotRevokedSql("consents","$3")})`,[familyId,JSON.stringify([scope]),scope]);
+}
 export async function recordConsent(actor:Actor,id:string,input:unknown){
-  requireRole(actor.role,["admin","staff","parent"]);await familyFor(actor,id);
-  const d=z.object({accepted:z.literal(true),guardianName:short,reference:z.string().trim().max(500).optional(),aiProcessing:z.boolean().optional().default(false)}).strict().parse(input);
+  requireRole(actor.role,["admin","staff","parent"]);
+  rejectBundledConsent(input);
+  await familyFor(actor,id);
+  const d=z.object({action:z.enum(["grant","withdraw"]),scope:z.enum(CONSENT_SCOPES),guardianName:short,reference:z.string().trim().max(500).optional(),confirmWithdraw:z.boolean().optional()}).strict().parse(input);
   const offline=actor.role!=="parent";
   if(offline&&!d.reference)throw new HttpError(422,"请记录监护人已签署的线下授权凭据。","CONSENT_REFERENCE_REQUIRED");
-  const scopes=["assessment","parent_report","sensitive_data",...(d.aiProcessing?["ai_processing"]:[])];
-  await transaction(async client=>{
-    const lock=await client.query("SELECT id FROM families WHERE id=$1 FOR UPDATE",[id]);
-    if(!lock.rows[0])throw new HttpError(404,"该家庭已删除。","NOT_FOUND");
-    await client.query("UPDATE consents SET revoked_at=now() WHERE family_id=$1 AND revoked_at IS NULL",[id]);
-    await client.query("INSERT INTO consents(id,family_id,actor_id,guardian_name,method,reference,notice_version,scopes) VALUES($1,$2,$3,$4,$5,$6,$7,$8)",[randomUUID(),id,actor.id,d.guardianName,offline?"offline_signed":"online_guardian",d.reference??null,noticeVersion,JSON.stringify(scopes)]);
-  });await audit(actor,"consent.recorded",id);return {ok:true};
+  if(d.action==="withdraw"&&(REQUIRED_WITHDRAW_SCOPES as readonly string[]).includes(d.scope)&&d.confirmWithdraw!==true)throw new HttpError(422,"撤回测评或敏感资料同意需要明确确认。","CONSENT_WITHDRAW_CONFIRMATION");
+  const queued=await transaction(async client=>{
+    await assertConsentAuthority(client,actor,id);
+    const active=await client.query<{scopes:unknown}>(ACTIVE_CONSENT_ROWS_SQL,[id]);
+    const method: "online_guardian" | "offline_signed" = offline ? "offline_signed" : "online_guardian";
+    if(d.action==="grant"){
+      if(!hasGranted(active.rows,[d.scope])){
+        await retireRevokedSingleScope(client,id,d.scope);
+        await insertConsentRecords(client,{familyId:id,actorId:actor.id,guardianName:d.guardianName,method,reference:d.reference??null,noticeVersion,scopes:[d.scope]});
+      }
+      return d.scope===PARENT_REPORT_SCOPE?enqueueReportsHeldForConsent(client,id):[];
+    }
+    if(!hasGranted(active.rows,[d.scope]))return [];
+    await withdrawConsentScope(client,actor,id,d.scope,{guardianName:d.guardianName,method,reference:d.reference??null});
+    return [];
+  });
+  if(queued.length){
+    const {dispatchAssessmentReport}=await import("./report-dispatch");
+    for(const assessmentId of queued)await dispatchAssessmentReport(assessmentId);
+  }
+  await audit(actor,d.action==="grant"?"consent.recorded":"consent.withdrawn",id);return {ok:true};
 }
 export async function deleteFamily(actor:Actor,id:string,input:unknown){
   requireRole(actor.role,["admin","parent"]);const family=await familyFor(actor,id);
