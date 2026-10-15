@@ -107,7 +107,7 @@ async function registerTriad(base:string,locale:Locale):Promise<Triad>{
   for(const role of ["student","teacher"] as const){const joined=await request(visitor,`/api/triad/join?locale=${locale}`,"POST",{code:created.joinCode,role,name:`合成三方${role}`,username:`qa_triad_${region}_${role}_${nonce}`,password:randomBytes(18).toString("base64url")});assert.equal(joined.status,201);clients[role]=sessionClient(base,joined);}
   const w=await workspace(clients.parent,locale);assert.equal(w.families.find(f=>f.id===created.familyId)?.age,12);
   const tasks={} as Record<RespondentRole,Assessment>;
-  for(const role of roles){tasks[role]=familyTask(w,created.familyId,role,`${definitions[role].id}@1.0.0`);assert.equal(tasks[role].status,"pending");assert.equal(tasks[role].canRetryReport,false);assert.equal((await ok<SurveyRecord>(clients[role],`/api/assessments/${tasks[role].id}`)).demo,false);}
+  for(const role of roles){tasks[role]=familyTask(w,created.familyId,role,`${definitions[role].id}@${definitions[role].version}`);assert.equal(tasks[role].status,"pending");assert.equal(tasks[role].canRetryReport,false);assert.equal((await ok<SurveyRecord>(clients[role],`/api/assessments/${tasks[role].id}`)).demo,false);}
   return {familyId:created.familyId,clients,tasks};
 }
 
@@ -119,7 +119,8 @@ async function main(){
     const adminW=await workspace(admin),parentW=await workspace(parent),hkW=await workspace(hkAdmin,"zh-HK");
     for(const w of [adminW,hkW]){
       const demo=w.scales.find(scale=>scale.id===demoId);assert.ok(demo);assert.equal(demo.demo,true);assert.equal(demo.status,"active");assert.ok(demo.minAge<=7&&demo.maxAge>=7);assert.deepEqual([...demo.roles].sort(),["parent","student","teacher"]);
-      for(const definition of Object.values(definitions)){const scale=w.scales.find(s=>s.id===`${definition.id}@1.0.0`);assert.ok(scale);assert.equal(scale.demo,false);assert.equal(scale.status,"active");assert.deepEqual(scale.roles,definition.roles);assert.ok(scale.minAge<=12&&scale.maxAge>=12);}
+      for(const definition of Object.values(definitions)){const scale=w.scales.find(s=>s.id===`${definition.id}@${definition.version}`);assert.ok(scale);assert.equal(scale.demo,false);assert.equal(scale.status,"active");assert.deepEqual(scale.roles,definition.roles);assert.ok(scale.minAge<=12&&scale.maxAge>=12);}
+      const legacyParent=w.scales.find(scale=>scale.id==="growth-parent@1.0.0");assert.ok(legacyParent);assert.equal(legacyParent.version,"1.0.0");assert.equal(legacyParent.status,"active");
       assert.ok(!w.scales.some(scale=>!scale.demo&&scale.status==="active"&&scale.minAge<=7&&scale.maxAge>=7),"Seven-year-old demo scenario must remain outside active official instrument ages");
     }
     return {cn,hk,admin,parent,student,teacher,staff,otherStaff,hkAdmin,adminW,parentW,hkW};

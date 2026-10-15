@@ -198,7 +198,47 @@ function teacher(): ScaleDefinition {
   return define("teacher", "growth-teacher", "学生学习与身心发展观察", "请只报告您直接观察到的行为和频率，不推断家庭原因，也不做临床诊断。无法观察时请选择“不了解或不适用”。这份观察和家长、孩子的回答放在一起，给家长看一份报告。香港繁体是便于阅读的字形转换，不是另行验证的译本。", built);
 }
 
+function revisedParent(original: ScaleDefinition): ScaleDefinition {
+  const revised = structuredClone(original);
+  revised.version = "1.1.0";
+  const labels: Record<string, string> = {
+    p_care: "孩子主要由谁陪伴或照顾，平时有哪些照顾安排？",
+    q15_4: "孩子能安排任务的先后顺序，并估计任务大约需要多长时间。",
+    q24_4: "我会反思自己的应对方式是否让问题加重。",
+    q25_3: "我会区分“两件事有关联”和“一件事导致另一件事”，也避免把成绩变化只归因于一个因素。",
+    q28_3: "我会分析问题在什么情况下发生、哪些因素让它持续，以及哪些时候问题没有出现或较轻。"
+  };
+  const supplements: Record<string, { value: number; label: string }> = {
+    p_together: { value: 5, label: "其他共同生活安排（选填）" },
+    p_grade: { value: 6, label: "其他年级（选填）" },
+    p_curriculum: { value: 6, label: "其他课程体系（选填）" },
+    p_care: { value: 7, label: "其他照顾安排（选填）" },
+    p_changes: { value: 8, label: "其他重要变化（选填）" },
+    p_focus: { value: 11, label: "其他希望改善的方面（选填）" },
+    q31: { value: 10, label: "其他需要的支持（选填）" }
+  };
+  revised.items = revised.items.flatMap(item => {
+    if (labels[item.id]) item.label = pair(labels[item.id]);
+    if (item.id === "p_support") item.choices.find(choice => choice.value === 6)!.label = pair("亲子沟通与协作支持");
+    const supplement = supplements[item.id];
+    if (!supplement) return [item];
+    const detail: ScaleItem = {
+      id: `${item.id}_other`, label: pair(supplement.label), kind: "text", choices: [], reverse: false,
+      required: false, report: "staff", supplementFor: item.id, showIf: { itemId: item.id, anyOf: [supplement.value] },
+      page: item.page, pageTitle: item.pageTitle
+    };
+    return [item, detail];
+  });
+  return revised;
+}
+
 export const childScale = child();
-export const parentScale = parent();
+export const parentScaleV1 = parent();
+export const parentScale = revisedParent(parentScaleV1);
 export const teacherScale = teacher();
-export const triadScales = [childScale, parentScale, teacherScale];
+export const triadScales = [childScale, parentScaleV1, parentScale, teacherScale];
+export const currentTriadScaleIds = {
+  parent: `${parentScale.id}@${parentScale.version}`,
+  student: `${childScale.id}@${childScale.version}`,
+  teacher: `${teacherScale.id}@${teacherScale.version}`
+} as const;

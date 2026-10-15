@@ -7,6 +7,7 @@ type AdvanceHooks = {
   delay?: number;
   onPending?: () => void;
   onClear?: () => void;
+  isSuspended?: () => boolean;
 };
 
 function isCurrentSingleChoice(model: Model, question: Question | undefined): boolean {
@@ -16,7 +17,7 @@ function isCurrentSingleChoice(model: Model, question: Question | undefined): bo
   return !!current && current.name === question.name;
 }
 
-function answerableQuestions(model: Model): Question[] {
+export function answerableQuestions(model: Model): Question[] {
   return model.getAllQuestions().filter(question => question.isVisible && question.hasInput);
 }
 
@@ -38,13 +39,27 @@ export function questionProgressLabel(model: Model, traditional: boolean): strin
   return traditional ? `第 ${position}/${total} 題` : `第 ${position}/${total} 题`;
 }
 
+/** Configure the visible-question ordinal for this survey model's lifetime. */
+export function configureQuestionProgress(model: Model, traditional: boolean): void {
+  model.onGetProgressText.add((_sender, options) => {
+    options.text = questionProgressLabel(model, traditional);
+  });
+  model.onCurrentPageChanged.add(() => {
+    // SurveyJS 3.0.3 invalidates this cache with undefined on navigation. Publish
+    // the actual label so React updates even when the answered count is unchanged.
+    model.progressTextModel.setPropertyValue("progressText", questionProgressLabel(model, traditional));
+  });
+}
+
 /**
  * Move to the next question after a single-choice answer.
  * Checkboxes and comments stay put so the respondent can finish them and use Next.
  * The last question never auto-completes; submission stays on the explicit submit button.
  * A new answer, or leaving the question, replaces the previous wait.
  */
-export function bindChoiceAutoAdvance(model: Model, hooks: AdvanceHooks = {}): () => void {
+export type AutoAdvanceController = (() => void) & { cancel: () => void };
+
+export function bindChoiceAutoAdvance(model: Model, hooks: AdvanceHooks = {}): AutoAdvanceController {
   const delay = hooks.delay ?? CHOICE_AUTO_ADVANCE_MS;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const clear = (notify: boolean) => {
@@ -55,14 +70,14 @@ export function bindChoiceAutoAdvance(model: Model, hooks: AdvanceHooks = {}): (
   };
   const onValueChanged = (_sender: Model, options: { question?: Question }) => {
     clear(true);
-    if (model.mode !== "edit") return;
+    if (model.mode !== "edit" || hooks.isSuspended?.()) return;
     if (!isCurrentSingleChoice(model, options.question)) return;
     if (model.isLastElement) return;
     const from = model.currentSingleQuestion;
     timer = setTimeout(() => {
       timer = undefined;
       hooks.onClear?.();
-      if (model.mode !== "edit" || model.currentSingleQuestion !== from || model.isLastElement) return;
+      if (model.mode !== "edit" || hooks.isSuspended?.() || model.currentSingleQuestion !== from || model.isLastElement) return;
       model.nextPage();
     }, delay);
     hooks.onPending?.();
@@ -70,9 +85,54 @@ export function bindChoiceAutoAdvance(model: Model, hooks: AdvanceHooks = {}): (
   const onMoved = () => clear(true);
   model.onValueChanged.add(onValueChanged);
   model.onCurrentPageChanged.add(onMoved);
-  return () => {
+  const dispose = () => {
     clear(false);
     model.onValueChanged.remove(onValueChanged);
     model.onCurrentPageChanged.remove(onMoved);
+  };
+  return Object.assign(dispose, { cancel: () => clear(true) });
+}
+
+/** A review jump waits for SurveyJS's render event instead of a fixed timeout. */
+export function bindCompletionNavigation(model: Model, cancelAdvance: () => void, canNavigate: () => boolean) {
+  let pending: string | null = null;
+  let connected = false;
+  const rendered = new Map<string, HTMLElement>();
+  const focus = (question: Question, element: HTMLElement) => {
+    if (pending !== question.name || !canNavigate() || !question.isVisible || model.currentSingleQuestion?.name !== question.name || !element.isConnected) return;
+    pending = null;
+    question.focus();
+    element.scrollIntoView({ block: "start" });
+  };
+  const afterRender = (_sender: Model, options: { question: Question; htmlElement: HTMLElement }) => {
+    rendered.set(options.question.name, options.htmlElement);
+    focus(options.question, options.htmlElement);
+  };
+  return {
+    connect() {
+      if (connected) return;
+      model.onAfterRenderQuestion.add(afterRender);
+      connected = true;
+    },
+    jump(itemId: string): boolean {
+      cancelAdvance();
+      if (!canNavigate()) return false;
+      const question = answerableQuestions(model).find(candidate => candidate.name === itemId);
+      if (!question) return false;
+      // The current input is already rendered, including after an effect replay.
+      if (model.currentSingleQuestion?.name === itemId) {
+        pending = null;
+        question.focus();
+        rendered.get(itemId)?.scrollIntoView({ block: "start" });
+        return true;
+      }
+      pending = itemId;
+      model.currentElement = question;
+      const element = rendered.get(itemId);
+      if (element) focus(question, element);
+      return true;
+    },
+    cancel() { pending = null; },
+    dispose() { pending = null; rendered.clear(); model.onAfterRenderQuestion.remove(afterRender); connected = false; }
   };
 }

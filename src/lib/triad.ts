@@ -2,12 +2,12 @@ import { randomBytes, randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
 import type { Actor, Locale, RespondentRole } from "../domain/types";
 import { z } from "zod";
-import { triadScales } from "../domain/triad-scales";
+import { currentTriadScaleIds, triadScales } from "../domain/triad-scales";
 import { TRIAD_BUNDLE, triadRolesReady } from "../domain/triad-report";
 import { pair } from "../domain/zh-pair";
 import { parseAdvice, parseScale, parseTemplate } from "../domain/validation";
 import { ageAt, familyFor } from "./access";
-import { audit, hashPassword, limitLogin } from "./auth";
+import { hashPassword, limitLogin } from "./auth";
 import { getConfig } from "./config";
 import { query, transaction } from "./db";
 import { HttpError, requireRole, validateId } from "./http";
@@ -16,12 +16,13 @@ import type { VerifiedClerkIdentity } from "./clerk-auth";
 import { formatJoinCode, joinCodeFormatMessage, parseJoinCode, registrationName, registrationPassword, registrationUsername } from "../domain/registration";
 export { formatJoinCode } from "../domain/registration";
 
-const SCALE_ID = { parent: "growth-parent@1.0.0", student: "growth-child@1.0.0", teacher: "growth-teacher@1.0.0" } as const;
+const SCALE_ID = currentTriadScaleIds;
 const short = registrationName;
 const username = registrationUsername;
 const password = registrationPassword;
 const grades = ["学前大班", "小学一至三年级", "小学四至六年级", "初中", "高中", "其他"] as const;
 const relationships = ["母亲", "父亲", "祖父母或外祖父母", "其他主要照顾者"] as const;
+const clerkStudentJoinInput = z.object({ code: z.string(), name: short, role: z.literal("student") }).strict();
 
 function normalizeCode(code: string): string {
   const parsed = parseJoinCode(code);
@@ -47,10 +48,12 @@ export interface RegistrationFamily {
   join_code: string | null;
 }
 
-export async function lockRegistrationActor(client: PoolClient, actor: Actor): Promise<Actor> {
+export async function lockRegistrationActor(client: PoolClient, actor: Actor, lockMode: "UPDATE" | "SHARE" = "UPDATE"): Promise<Actor> {
   const config = getConfig();
   if (actor.region !== config.region) throw new HttpError(403, "请使用账号所属地区的入口。", "REGION_MISMATCH");
-  const result = await client.query<Actor & { disabled: boolean; demo: boolean }>("SELECT id,name,role,region,disabled,demo FROM users WHERE id=$1 FOR UPDATE", [actor.id]);
+  // Registration needs exclusivity for request replay. Other mutations can share
+  // this lock, protecting account changes without blocking user foreign keys.
+  const result = await client.query<Actor & { disabled: boolean; demo: boolean }>(`SELECT id,name,role,region,disabled,demo FROM users WHERE id=$1 FOR ${lockMode === "SHARE" ? "SHARE" : "UPDATE"}`, [actor.id]);
   const current = result.rows[0];
   if (!current || current.disabled || (config.mode !== "demo" && current.demo)) throw new HttpError(403, "账号已停用，请联系服务人员。", "ACCOUNT_REVOKED");
   if (current.region !== actor.region) throw new HttpError(403, "请使用账号所属地区的入口。", "REGION_MISMATCH");
@@ -102,7 +105,9 @@ export async function joinTriadFamilyInTransaction(client: PoolClient, actor: Ac
 
 export async function joinFamily(actor: Actor, input: unknown, locale: Locale): Promise<FamilyJoinResult> {
   requireRole(actor.role, ["student", "teacher"]);
-  const data = z.object({ code: z.string() }).strict().parse(input);
+  const authenticatedInput = z.object({ code: z.string() }).strict();
+  // A lost onboarding response can be retried after Clerk resolves the new student.
+  const data = (actor.role === "student" ? z.union([authenticatedInput, clerkStudentJoinInput]) : authenticatedInput).parse(input);
   const code = normalizeCode(data.code);
   return transaction(async client => {
     const family = await familyByJoinCode(client, code);
@@ -113,7 +118,7 @@ export async function joinFamily(actor: Actor, input: unknown, locale: Locale): 
 }
 
 export async function joinClerkStudent(principal: VerifiedClerkIdentity, input: unknown, locale: Locale): Promise<FamilyJoinResult> {
-  const data = z.object({ code: z.string(), name: short, role: z.literal("student") }).strict().parse(input);
+  const data = clerkStudentJoinInput.parse(input);
   const code = normalizeCode(data.code);
   if (principal.region !== getConfig().region) throw new HttpError(403, "请使用账号所属地区的入口。", "REGION_MISMATCH");
   return transaction(async client => {
@@ -271,9 +276,16 @@ export async function acknowledgeSafetyAlert(actor: Actor, alertId: string) {
   validateId(alertId);
   const rows = await query<{ id: string; family_id: string; viewed_at: Date | string | null }>("SELECT id,family_id,viewed_at FROM staff_alerts WHERE id=$1 AND region=$2", [alertId, actor.region]);
   if (!rows[0]) throw new HttpError(404, "未找到这条安全提示。", "NOT_FOUND");
-  await familyFor(actor, rows[0].family_id);
-  if (rows[0].viewed_at) return { ok: true };
-  const updated = await query("UPDATE staff_alerts SET viewed_at=now(),viewed_by=$1 WHERE id=$2 AND region=$3 AND viewed_at IS NULL RETURNING id", [actor.id, alertId, actor.region]);
-  if (updated[0]) await audit(actor, "safety.viewed", alertId);
-  return { ok: true };
+  return transaction(async client => {
+    const family = await client.query("SELECT id FROM families WHERE id=$1 AND region=$2 FOR UPDATE", [rows[0].family_id, actor.region]);
+    if (!family.rows[0]) throw new HttpError(404, "未找到这条安全提示。", "NOT_FOUND");
+    const current = await lockRegistrationActor(client, actor, "SHARE");
+    await familyFor(current, rows[0].family_id, client);
+    const alert = await client.query("SELECT id,family_id,viewed_at FROM staff_alerts WHERE id=$1 AND region=$2", [alertId, current.region]);
+    if (!alert.rows[0]) throw new HttpError(404, "未找到这条安全提示。", "NOT_FOUND");
+    if (alert.rows[0].viewed_at) return { ok: true };
+    const updated = await client.query("UPDATE staff_alerts SET viewed_at=now(),viewed_by=$1 WHERE id=$2 AND region=$3 AND viewed_at IS NULL RETURNING id", [current.id, alertId, current.region]);
+    if (updated.rows[0]) await client.query("INSERT INTO audit_events(region,actor_id,action,entity_id) VALUES($1,$2,$3,$4)", [current.region, current.id, "safety.viewed", alertId]);
+    return { ok: true };
+  });
 }

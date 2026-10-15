@@ -10,6 +10,7 @@ const item=z.object({
   reverse:z.boolean(),required:z.boolean(),excludeValues:z.array(z.number().int()).max(10).optional(),
   maxChoices:z.number().int().min(1).max(20).optional(),
   showIf:z.object({itemId:key,anyOf:z.array(z.number().int()).min(1).max(20)}).strict().optional(),
+  supplementFor:key.optional(),
   page:z.string().trim().min(1).max(80).optional(),pageTitle:localized.optional(),panel:localized.optional(),
   shuffle:z.boolean().optional(),gate:z.number().int().optional(),report:z.enum(["omit","words","situation","priorities","staff"]).optional()
 }).strict();
@@ -48,6 +49,15 @@ export const scaleSchema=z.object({
     }
   }
   const items=new Map(s.items.map(i=>[i.id,i]));
+  const supplementedParents=new Set<string>();
+  for(const i of s.items)if(i.supplementFor!==undefined){
+    const parent=items.get(i.supplementFor);
+    if(i.kind!=="text"||i.required||i.report!=="staff"||i.gate!==undefined)fail("Supplements must be optional staff-only text");
+    if(!parent||(parent.kind??"single")==="text"||i.showIf?.itemId!==i.supplementFor)fail("Supplement must be conditional on its choice parent");
+    if(supplementedParents.has(i.supplementFor))fail("Each choice item allows only one supplement");
+    supplementedParents.add(i.supplementFor);
+    if(s.dimensions.some(d=>d.items.includes(i.id))||s.riskRules.some(rule=>rule.itemId===i.id))fail("Supplements cannot contribute to scores or safety rules");
+  }
   for(const i of s.items)if(i.showIf){
     if(i.showIf.itemId===i.id)fail("Item cannot depend on itself");
     const target=items.get(i.showIf.itemId);

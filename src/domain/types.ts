@@ -18,6 +18,7 @@ export interface ScaleItem {
   excludeValues?: number[];
   maxChoices?: number;
   showIf?: { itemId: string; anyOf: number[] };
+  supplementFor?: string;
   page?: string;
   pageTitle?: TextPair;
   panel?: TextPair;

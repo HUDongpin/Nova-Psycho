@@ -1,4 +1,5 @@
 import type { Actor } from "../domain/types";
+import type { PoolClient } from "pg";
 import { query } from "./db";
 import { HttpError, validateId } from "./http";
 export interface FamilyRow {
@@ -16,9 +17,10 @@ export function familyScope(actor:Actor,start=1):{sql:string;values:unknown[]}{
   if(actor.role==="staff")return {sql:`${region} AND (f.assigned_to=$${start+1} OR EXISTS(SELECT 1 FROM staff_alerts sa WHERE sa.family_id=f.id AND sa.region=$${start}))`,values:[actor.region,actor.id]};
   return {sql:`${region} AND EXISTS(SELECT 1 FROM memberships m WHERE m.family_id=f.id AND m.user_id=$${start+1} AND m.role=$${start+2})`,values:[actor.region,actor.id,actor.role]};
 }
-export async function familyFor(actor:Actor,id:string):Promise<FamilyRow>{
+export async function familyFor(actor:Actor,id:string,client?:PoolClient):Promise<FamilyRow>{
   validateId(id);const scope=familyScope(actor,2);
-  const rows=await query<FamilyRow>(`SELECT f.* FROM families f WHERE f.id=$1 AND ${scope.sql}`,[id,...scope.values]);
+  const sql=`SELECT f.* FROM families f WHERE f.id=$1 AND ${scope.sql}`,values=[id,...scope.values];
+  const rows=client?(await client.query<FamilyRow>(sql,values)).rows:await query<FamilyRow>(sql,values);
   if(!rows[0])throw new HttpError(404,"未找到该家庭或没有访问权限。","NOT_FOUND");return rows[0];
 }
 export function ageAt(birthDate:string,at=new Date()):number{

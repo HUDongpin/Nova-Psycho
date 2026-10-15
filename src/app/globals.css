@@ -448,6 +448,33 @@ input:-webkit-autofill {
 .draft-conflict { background: #f8efe4; border-top: 1px solid #eadcc8; border-bottom: 1px solid #eadcc8; padding: 20px 28px; }
 .draft-conflict-heading { display: flex; align-items: center; gap: 8px; color: var(--warn); }
 .draft-conflict h2 { font-family: var(--serif); font-size: 22px; }
+.survey-notice-summary h2 { font-family: var(--serif); font-size: 20px; line-height: 1.45; margin-bottom: 12px; }
+.survey-notice-summary ul { margin: 0; padding-left: 1.25em; display: grid; gap: 8px; font-size: 14px; line-height: 1.65; }
+.survey-notice-open { display: block; min-height: 44px; margin: 8px 0; padding: 8px 0; text-align: left; }
+.survey-supplement-host:empty { display: none; }
+.survey-supplement { padding: 0 24px 24px; overflow-wrap: anywhere; }
+.survey-supplement label { display: block; color: var(--ink); font-size: 15px; line-height: 1.6; font-weight: 600; }
+.survey-supplement p { margin: 6px 0 10px; color: var(--muted); font-size: 13px; line-height: 1.55; }
+.survey-supplement textarea { display: block; width: 100%; min-height: 96px; resize: vertical; border: 1px solid var(--line-strong); border-radius: 8px; padding: 12px; background: var(--paper); color: var(--ink); font: inherit; line-height: 1.6; }
+.survey-supplement textarea:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
+.survey-supplement textarea:disabled { opacity: .65; cursor: not-allowed; }
+@media (max-width: 767px) { .survey-supplement { padding: 0 16px 20px; } .survey-supplement textarea { font-size: 16px; } }
+.survey-container .sd-question__title strong { font-weight: 800; text-decoration: underline; text-underline-offset: 3px; }
+.survey-completion { margin: 16px 24px 24px; padding: 20px; border: 1px solid var(--line-strong); border-radius: 12px; background: var(--paper); overflow-wrap: anywhere; }
+.survey-completion h2 { font-family: var(--serif); font-size: 22px; line-height: 1.4; scroll-margin-top: 100px; }
+.survey-completion h2:focus { outline: 2px solid var(--teal); outline-offset: 5px; border-radius: 3px; }
+.survey-completion p { margin-top: 8px; font-size: 14px; line-height: 1.65; }
+.completion-issues, .completion-question-list { list-style: none; padding: 0; margin: 16px 0 0; display: grid; gap: 16px; }
+.completion-issues > li { border-top: 1px solid var(--line); padding-top: 14px; min-width: 0; }
+.completion-issues strong { font-size: 15px; line-height: 1.5; }
+.completion-question-list { gap: 10px; margin-top: 12px; }
+.completion-question-link { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; width: 100%; text-align: left; padding: 10px 0; min-height: 44px; color: var(--teal); font-size: 14px; line-height: 1.6; background: transparent; border: 0; white-space: normal; overflow-wrap: anywhere; }
+.completion-question-link > span { text-decoration: underline; text-underline-offset: 3px; }
+.completion-question-link small, .completion-answer-state { color: var(--muted); font-size: 13px; line-height: 1.5; }
+.completion-question-link:disabled { cursor: not-allowed; opacity: .6; }
+.completion-question-link:focus-visible { outline: 2px solid var(--teal); outline-offset: 3px; }
+.completion-count { font-variant-numeric: tabular-nums; }
+@media (max-width: 767px) { .survey-completion { margin: 16px; padding: 16px; } }
 .draft-conflict > p { font-size: 14px; line-height: 1.65; margin: 10px 0; color: var(--warn); }
 .draft-conflict .field { max-width: 640px; }
 .ops-stats { margin-bottom: 8px; }

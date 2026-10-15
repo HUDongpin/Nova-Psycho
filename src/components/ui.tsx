@@ -22,7 +22,15 @@ export function ErrorNotice({ message, onRetry, locale }: { message: string; onR
 export function Empty({ title, text, icon, action }: { title: string; text?: string; icon?: ReactNode; action?: ReactNode }) { return <div className="empty-state">{icon && <span className="empty-icon">{icon}</span>}<strong>{title}</strong>{text && <p>{text}</p>}{action}</div>; }
 export function Modal({ title, children, onClose, locale, wide = false }: { title: string; children: ReactNode; onClose: () => void; locale: Locale; wide?: boolean }) {
   const ref = useRef<HTMLDialogElement>(null); const titleId = useId();
-  useEffect(() => { const dialog = ref.current; if (dialog && !dialog.open) dialog.showModal(); return () => { if (dialog?.open) dialog.close(); }; }, []);
+  useEffect(() => {
+    const dialog = ref.current;
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    if (dialog && !dialog.open) dialog.showModal();
+    return () => {
+      if (dialog?.open) dialog.close();
+      if (opener?.isConnected) opener.focus({ preventScroll: true });
+    };
+  }, []);
   return <dialog ref={ref} className={`modal ${wide ? "modal-wide" : ""}`} onCancel={event => { event.preventDefault(); onClose(); }} aria-labelledby={titleId}><div className="modal-header"><h2 id={titleId}>{title}</h2><button type="button" className="icon-button" aria-label={copy(locale)("close")} onClick={onClose}><X size={22} /></button></div><div className="modal-body">{children}</div></dialog>;
 }
 export function Field({ label, children, hint }: { label: string; children: ReactNode; hint?: string }) { const generatedId = useId(); const input = isValidElement<{ id?: string; "aria-describedby"?: string }>(children) ? children : null; const id = input?.props.id || generatedId; return <div className="field"><label htmlFor={id}>{label}</label>{input ? cloneElement(input, { id, ...(hint ? { "aria-describedby": `${id}-hint` } : {}) }) : children}{hint && <small id={`${id}-hint`}>{hint}</small>}</div>; }

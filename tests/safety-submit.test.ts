@@ -9,7 +9,7 @@ vi.mock("../src/lib/db",()=>({query:vi.fn(),transaction:vi.fn()}));
 vi.mock("../src/lib/content",()=>({currentContent:vi.fn(),lockContent:vi.fn()}));
 import { query,transaction } from "../src/lib/db";
 import { currentContent } from "../src/lib/content";
-import { submitAssessment } from "../src/lib/assessments";
+import { saveDraft,submitAssessment } from "../src/lib/assessments";
 import { queueTriadReport } from "../src/lib/triad";
 
 const familyId="11111111-2222-4333-8444-555555555555";
@@ -38,7 +38,9 @@ function setup(role:RespondentRole,status="pending"){
     if(sql.includes("FROM families f WHERE"))return [{id:familyId,child_name:"Synthetic child",birth_date:"2013-04-12",grade:"S2"}];
     return [];
   });
-  client.query.mockImplementation(async(sql:string)=>{
+  client.query.mockImplementation(async(sql:string,values?:unknown[])=>{
+    if(sql.includes("FROM users WHERE id=$1"))return {rows:values?.[0]===userId?[{...actor(role),disabled:false,demo:false}]:[]};
+    if(sql.includes("SELECT m.role FROM memberships"))return {rows:values?.[0]===familyId&&values[1]===userId&&values[2]==="CN"?[{role}]:[]};
     if(sql.includes("SELECT id FROM families"))return {rows:[{id:familyId}]};
     if(sql.includes("SELECT a.*,r.id AS report_id"))return {rows:[assessment]};
     if(sql.includes("SELECT scopes FROM consents"))return {rows:[{scopes:["assessment","parent_report","sensitive_data"]}]};
@@ -64,6 +66,23 @@ describe("safety at accepted triad submission",()=>{
     setup("student");
     await submitAssessment(actor("student"),assessmentId,{answers:previewAnswers(childScale,"calm"),acknowledged:true,revision:0});
     expect(calls().some(([sql])=>sql.includes("INSERT INTO staff_alerts"))).toBe(false);
+  });
+  it("rejects hidden safety answers before storing or creating an alert",async()=>{
+    setup("student");
+    const answers={...previewAnswers(childScale,"calm"),c14:[6],c15:1};
+    await expect(submitAssessment(actor("student"),assessmentId,{answers,acknowledged:true,revision:0})).rejects.toMatchObject({status:422,code:"INVALID_ANSWERS"});
+    expect(calls().some(([sql])=>sql.startsWith("UPDATE assessments")||sql.includes("INSERT INTO staff_alerts"))).toBe(false);
+  });
+  it("rejects hidden answers in drafts before persistence",async()=>{
+    setup("student");
+    const ownQuery=vi.mocked(query).getMockImplementation()!;
+    vi.mocked(query).mockImplementation(async(sql,values)=>{
+      if(sql.includes("SELECT id FROM consents"))return [{id:"consent"}];
+      if(sql.startsWith("UPDATE assessments SET draft_answers"))return [{id:assessmentId,draft_revision:1}];
+      return ownQuery(sql,values);
+    });
+    await expect(saveDraft(actor("student"),assessmentId,{answers:{c14:[6],c15:1},acknowledged:true,revision:0})).rejects.toMatchObject({status:422,code:"INVALID_ANSWERS"});
+    expect(vi.mocked(query).mock.calls.some(([sql])=>sql.startsWith("UPDATE assessments"))).toBe(false);
   });
   it("rejects an incomplete risk submission before notifying",async()=>{
     setup("student");

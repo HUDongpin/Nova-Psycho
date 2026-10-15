@@ -1,12 +1,16 @@
 import { randomUUID } from "node:crypto";
+import type { PoolClient } from "pg";
 import { z } from "zod";
 import type { Actor,AdviceLibrary,AssessmentSnapshot,Locale,ReportTemplate,RespondentRole,ScaleDefinition } from "../domain/types";
 import { text } from "../domain/types";
 import { scoreAssessment,ScoringError,validateAnswers } from "../domain/scoring";
+import { completionIssues,completionRules } from "../domain/completion";
 import { surveyDefinition } from "../domain/survey";
+import { titleEmphasis } from "../domain/survey-presentation";
+import { surveySupplements } from "../domain/survey-supplements";
 import { TRIAD_BUNDLE } from "../domain/triad-report";
 import { reportRetryBlocker } from "../domain/report-retry";
-import { queueTriadReport,triadRoundFor } from "./triad";
+import { lockRegistrationActor,queueTriadReport,requireRegistrationConsent,triadRoundFor } from "./triad";
 import { ensureAdviceReferences } from "../domain/validation";
 import { ageAt,canManageFamilyReports,consentFor,familyFor } from "./access";
 import { audit } from "./auth";
@@ -25,10 +29,11 @@ const answerSchema=z.record(z.string(),z.union([z.number(),z.array(z.number()).m
   return answers;
 });
 export { surveyDefinition };
-async function refuseDemoBesideOfficial(familyId:string,respondentId:string,region:"CN"|"HK",role:RespondentRole,age:number){
-  const held=await query("SELECT a.id FROM assessments a JOIN scales s ON s.id=a.scale_version_id WHERE a.family_id=$1 AND a.respondent_id=$2 AND a.region=$3 AND COALESCE(s.definition->>'demo','false')<>'true' LIMIT 1",[familyId,respondentId,region]);
+async function refuseDemoBesideOfficial(familyId:string,respondentId:string,region:"CN"|"HK",role:RespondentRole,age:number,client?:PoolClient){
+  const read=async(sql:string,values:unknown[])=>client?(await client.query(sql,values)).rows:query(sql,values);
+  const held=await read("SELECT a.id FROM assessments a JOIN scales s ON s.id=a.scale_version_id WHERE a.family_id=$1 AND a.respondent_id=$2 AND a.region=$3 AND COALESCE(s.definition->>'demo','false')<>'true' LIMIT 1",[familyId,respondentId,region]);
   if(held[0])throw new HttpError(409,"这位成员已经有正式问卷，不能再加一份演示卷。","DEMO_NOT_ASSIGNABLE");
-  const official=await query("SELECT id FROM scales WHERE status='active' AND COALESCE(definition->>'demo','false')<>'true' AND (definition->'regions') ? $1 AND (definition->'roles') ? $2 AND (definition->>'minAge')::int<=$3 AND (definition->>'maxAge')::int>=$3 LIMIT 1",[region,role,age]);
+  const official=await read("SELECT id FROM scales WHERE status='active' AND COALESCE(definition->>'demo','false')<>'true' AND (definition->'regions') ? $1 AND (definition->'roles') ? $2 AND (definition->>'minAge')::int<=$3 AND (definition->>'maxAge')::int>=$3 LIMIT 1",[region,role,age]);
   if(official[0])throw new HttpError(409,"正式问卷已经可以使用，不能再分配演示题。","DEMO_NOT_ASSIGNABLE");
 }
 export async function createAssessment(actor:Actor,input:unknown){
@@ -47,10 +52,18 @@ export async function createAssessment(actor:Actor,input:unknown){
     // Serialize new tasks per family to enforce retake/pending rules under concurrent requests.
     const lock=await client.query("SELECT id FROM families WHERE id=$1 FOR UPDATE",[family.id]);
     if(!lock.rows[0])throw new HttpError(404,"该家庭已删除。","NOT_FOUND");
+    await lockRegistrationActor(client,actor,"SHARE");
+    await familyFor(actor,family.id,client);
+    const currentMember=await client.query("SELECT m.role FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.family_id=$1 AND m.user_id=$2 AND NOT u.disabled AND u.region=$3 AND u.role=m.role FOR SHARE OF u,m",[family.id,d.respondentId,actor.region]);
+    if(currentMember.rows[0]?.role!==role)throw new HttpError(422,"填答者未与此家庭建立授权关系。","INVALID_RESPONDENT");
     await lockContent(client);
     const currentScale=await client.query("SELECT status FROM scales WHERE id=$1",[d.scaleVersionId]);
     if(currentScale.rows[0]?.status!=="active")throw new HttpError(409,"该量表版本已停用。","SCALE_RETIRED");
-    const pending=await client.query("SELECT id,triad_round_id FROM assessments WHERE family_id=$1 AND respondent_id=$2 AND scale_version_id=$3 AND status='pending'",[family.id,d.respondentId,d.scaleVersionId]);
+    if(scale.definition.demo)await refuseDemoBesideOfficial(family.id,d.respondentId,actor.region,role,age,client);
+    const parentVersions=scale.definition.bundle===TRIAD_BUNDLE&&scale.definition.id==="growth-parent";
+    const pending=parentVersions
+      ?await client.query("SELECT a.id,a.triad_round_id FROM assessments a JOIN scales s ON s.id=a.scale_version_id WHERE a.family_id=$1 AND a.respondent_id=$2 AND s.scale_id=$3 AND a.status='pending' ORDER BY a.created_at,a.id LIMIT 1",[family.id,d.respondentId,scale.definition.id])
+      :await client.query("SELECT id,triad_round_id FROM assessments WHERE family_id=$1 AND respondent_id=$2 AND scale_version_id=$3 AND status='pending'",[family.id,d.respondentId,d.scaleVersionId]);
     if(pending.rows[0]){
       if(scale.definition.bundle===TRIAD_BUNDLE&&!pending.rows[0].triad_round_id){
         const roundId=await triadRoundFor(client,family.id,role);
@@ -59,7 +72,9 @@ export async function createAssessment(actor:Actor,input:unknown){
       return {id:pending.rows[0].id};
     }
     // Failed report generation still counts: the child already submitted answers.
-    const last=await client.query("SELECT submitted_at FROM assessments WHERE family_id=$1 AND respondent_id=$2 AND scale_version_id=$3 AND submitted_at IS NOT NULL ORDER BY submitted_at DESC LIMIT 1",[family.id,d.respondentId,d.scaleVersionId]);
+    const last=parentVersions
+      ?await client.query("SELECT a.submitted_at FROM assessments a JOIN scales s ON s.id=a.scale_version_id WHERE a.family_id=$1 AND a.respondent_id=$2 AND s.scale_id=$3 AND a.submitted_at IS NOT NULL ORDER BY a.submitted_at DESC LIMIT 1",[family.id,d.respondentId,scale.definition.id])
+      :await client.query("SELECT submitted_at FROM assessments WHERE family_id=$1 AND respondent_id=$2 AND scale_version_id=$3 AND submitted_at IS NOT NULL ORDER BY submitted_at DESC LIMIT 1",[family.id,d.respondentId,d.scaleVersionId]);
     if(last.rows[0]&&Date.now()-new Date(last.rows[0].submitted_at).getTime()<scale.definition.retakeDays*86400000)throw new HttpError(409,`此量表建议至少间隔 ${scale.definition.retakeDays} 天复测。`,"RETAKE_INTERVAL");
     const roundId=scale.definition.bundle===TRIAD_BUNDLE?await triadRoundFor(client,family.id,role):null;
     const id=randomUUID();await client.query("INSERT INTO assessments(id,family_id,region,respondent_id,respondent_role,scale_version_id,locale,triad_round_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8)",[id,family.id,actor.region,d.respondentId,role,d.scaleVersionId,d.locale,roundId]);return {id};
@@ -71,15 +86,23 @@ async function ownAssessment(actor:Actor,id:string){
 }
 export async function assessmentDetail(actor:Actor,id:string,locale:Locale){
   const a=await ownAssessment(actor,id),s=a.definition as ScaleDefinition;
-  return {id,status:a.status,childName:a.child_name,scaleTitle:text(s.title,locale),demo:s.demo,description:text(s.description,locale),surveyJson:surveyDefinition(s,a.respondent_role,locale),draftAnswers:a.status==="pending"?a.draft_answers:{},draftRevision:a.draft_revision,consentRequired:!await consentFor(a.family_id)};
+  const emphasis=titleEmphasis(s,a.respondent_role,locale);
+  const supplements=surveySupplements(s,locale);
+  return {id,status:a.status,childName:a.child_name,scaleTitle:text(s.title,locale),demo:s.demo,description:text(s.description,locale),surveyJson:surveyDefinition(s,a.respondent_role,locale),...(s.bundle===TRIAD_BUNDLE?{completionRules:completionRules(s)}:{}),...(emphasis.length?{titleEmphasis:emphasis}:{}),...(supplements.length?{supplements}:{}),draftAnswers:a.status==="pending"?a.draft_answers:{},draftRevision:a.draft_revision,consentRequired:!await consentFor(a.family_id)};
 }
 export async function saveDraft(actor:Actor,id:string,input:unknown){
   const {answers,revision}=z.object({answers:answerSchema,acknowledged:z.literal(true),revision:z.number().int().nonnegative()}).strict().parse(input),a=await ownAssessment(actor,id);
   if(a.definition.demo&&getConfig().mode!=="demo")throw new HttpError(409,"正式服务环境不能收集演示量表答案。","DEMO_INSTRUMENT");
   if(!await consentFor(a.family_id))throw new HttpError(409,"请先完成监护人授权。","GUARDIAN_CONSENT_REQUIRED");
   try{validateAnswers(a.definition,answers);}catch{throw new HttpError(422,"答案格式不符合量表要求。","INVALID_ANSWERS");}
-  const r=await query("UPDATE assessments SET draft_answers=$1,draft_revision=draft_revision+1,acknowledged_at=COALESCE(acknowledged_at,now()) WHERE id=$2 AND respondent_id=$3 AND status='pending' AND draft_revision=$4 RETURNING id,draft_revision",[JSON.stringify(answers),id,actor.id,revision]);
-  if(!r[0])throw new HttpError(409,"草稿已在另一个页面更新或测评已提交，请重新载入并核对答案。","DRAFT_CONFLICT");return {ok:true,revision:r[0].draft_revision};
+  return transaction(async client=>{
+    const lock=await client.query("SELECT id FROM families WHERE id=$1 FOR UPDATE",[a.family_id]);
+    if(!lock.rows[0])throw new HttpError(404,"该家庭已删除。","NOT_FOUND");
+    await lockRegistrationActor(client,actor,"SHARE");
+    await requireRegistrationConsent(client,a.family_id);
+    const r=await client.query("UPDATE assessments SET draft_answers=$1,draft_revision=draft_revision+1,acknowledged_at=COALESCE(acknowledged_at,now()) WHERE id=$2 AND respondent_id=$3 AND status='pending' AND draft_revision=$4 RETURNING id,draft_revision",[JSON.stringify(answers),id,actor.id,revision]);
+    if(!r.rows[0])throw new HttpError(409,"草稿已在另一个页面更新或测评已提交，请重新载入并核对答案。","DRAFT_CONFLICT");return {ok:true,revision:r.rows[0].draft_revision};
+  });
 }
 export async function submitAssessment(actor:Actor,id:string,input:unknown){
   const d=z.object({answers:answerSchema,acknowledged:z.literal(true),revision:z.number().int().nonnegative()}).strict().parse(input);const own=await ownAssessment(actor,id);
@@ -88,6 +111,7 @@ export async function submitAssessment(actor:Actor,id:string,input:unknown){
   const result=await transaction(async client=>{
     const lockedFamily=await client.query("SELECT id FROM families WHERE id=$1 FOR UPDATE",[family.id]);
     if(!lockedFamily.rows[0])throw new HttpError(404,"该家庭已删除。","NOT_FOUND");
+    await lockRegistrationActor(client,actor,"SHARE");
     const locked=await client.query("SELECT a.*,r.id AS report_id FROM assessments a LEFT JOIN reports r ON r.assessment_id=a.id WHERE a.id=$1 AND a.respondent_id=$2 FOR UPDATE OF a",[id,actor.id]);
     const a=locked.rows[0];if(!a)throw new HttpError(404,"测评不存在。","NOT_FOUND");
     if(a.status!=="pending")return {id,status:a.status,reportId:a.report_id??null};
@@ -98,7 +122,7 @@ export async function submitAssessment(actor:Actor,id:string,input:unknown){
     let score;try{score=scoreAssessment(scale,d.answers,{age:ageAt(family.birth_date),region:actor.region,role:a.respondent_role});}catch(e){if(e instanceof ScoringError)throw new HttpError(422,"答案格式不符合量表要求。","INVALID_ANSWERS");throw e;}
     if(score.status==="ineligible")throw new HttpError(422,"当前量表不适用于此孩子。","INELIGIBLE");
     if(scale.items.some(item=>item.gate!==undefined&&d.answers[item.id]!==item.gate))throw new HttpError(422,"需要先同意参加这次了解，才能提交。","ENTRY_GATE");
-    if(scale.bundle===TRIAD_BUNDLE&&score.status!=="valid")throw new HttpError(422,"还有必答部分没完成，或某个方面的有效回答不足。选择“不确定或不适用”不会被算进分数。","INCOMPLETE_TRIAD");
+    if(scale.bundle===TRIAD_BUNDLE&&score.status!=="valid")throw new HttpError(422,"请查看未完成的题目或资料不足的部分。","INCOMPLETE_TRIAD",undefined,completionIssues(completionRules(scale),d.answers));
     // Only a new submission depends on current content. Replays above retain the
     // accepted snapshot even when its retired scale's advice is later removed.
     await lockContent(client);
@@ -127,6 +151,7 @@ export async function retryReport(actor:Actor,id:string){
     const familyLock=await client.query("SELECT id,region,assigned_to FROM families WHERE id=$1 AND region=$2 FOR UPDATE",[found[0].family_id,actor.region]);
     if(!familyLock.rows[0])throw new HttpError(404,"该家庭已删除。","NOT_FOUND");
     if(!canManageFamilyReports(actor,familyLock.rows[0]))throw new HttpError(404,"未找到该家庭或没有访问权限。","NOT_FOUND");
+    await lockRegistrationActor(client,actor,"SHARE");
     const locked=await client.query("SELECT * FROM assessments WHERE id=$1 AND region=$2 FOR UPDATE",[id,actor.region]);
     const a=locked.rows[0];if(!a)throw new HttpError(404,"未找到该测评。","NOT_FOUND");
     const jobs=await client.query("SELECT * FROM report_jobs WHERE assessment_id=$1 OR $1=ANY(source_assessment_ids) FOR UPDATE",[id]);

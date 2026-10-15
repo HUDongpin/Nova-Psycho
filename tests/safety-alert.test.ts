@@ -2,8 +2,9 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { createElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
-vi.mock("../src/lib/db", () => ({ query: vi.fn() }));
-import { query } from "../src/lib/db";
+vi.mock("../src/lib/db", () => ({ query: vi.fn(), transaction: vi.fn() }));
+import { query, transaction } from "../src/lib/db";
+import type { PoolClient } from "pg";
 import { acknowledgeSafetyAlert } from "../src/lib/triad";
 import { Dashboard, FamilyView } from "../src/components/workspace-views";
 import type { Family, Workspace as ClientWorkspace } from "../src/components/api";
@@ -13,7 +14,8 @@ const mockQuery = vi.mocked(query);
 const FAMILY_ID = "22222222-3333-4444-8555-666666666666";
 const ALERT_ID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
 const ACTOR_ID = "99999999-8888-4777-8666-555555555555";
-const actor = (role: Role): Actor => ({ id: ACTOR_ID, name: "Synthetic", role, region: "CN" });
+let currentRole: Role;
+const actor = (role: Role): Actor => ({ id: ACTOR_ID, name: "Synthetic", role: currentRole = role, region: "CN" });
 
 beforeEach(() => {
   vi.stubEnv("NOVA_REGION", "CN");
@@ -23,6 +25,11 @@ beforeEach(() => {
   vi.stubEnv("NOVA_REPORT_DIR", "work/test-private");
   vi.stubEnv("NOVA_REPORT_KEY", "0".repeat(64));
   mockQuery.mockReset();
+  vi.mocked(transaction).mockImplementation(async fn => fn({ query: async (sql: string, values?: unknown[]) => {
+    if (sql.includes("SELECT id FROM families WHERE")) return { rows: [{ id: FAMILY_ID, region: "CN" }] };
+    if (sql.includes("FROM users WHERE id=$1")) return { rows: [{ ...actor(currentRole), disabled: false, demo: false }] };
+    return { rows: await query(sql, values) };
+  } } as unknown as PoolClient));
 });
 afterEach(() => vi.unstubAllEnvs());
 
