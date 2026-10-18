@@ -115,10 +115,10 @@ describe("assessments opened on growth-child@1.0.0", () => {
 });
 
 describe("new triad assessments use the published definition", () => {
-  it("inserts child 1.3.0 and parent and teacher 1.2.0 without rewriting a stored definition", async () => {
-    expect(`${childScale.id}@${childScale.version}`).toBe("growth-child@1.3.0");
-    expect(`${parentScale.id}@${parentScale.version}`).toBe("growth-parent@1.2.0");
-    expect(`${teacherScale.id}@${teacherScale.version}`).toBe("growth-teacher@1.2.0");
+  it("inserts child 1.4.0 and parent and teacher 1.3.0 without rewriting a stored definition", async () => {
+    expect(`${childScale.id}@${childScale.version}`).toBe("growth-child@1.4.0");
+    expect(`${parentScale.id}@${parentScale.version}`).toBe("growth-parent@1.3.0");
+    expect(`${teacherScale.id}@${teacherScale.version}`).toBe("growth-teacher@1.3.0");
     expect(childScale.demo).toBe(true);
     expect(childScale.norm.validated).toBe(false);
     expect(childScale.items.find(item => item.id === "c15")?.showIf?.anyOf).toEqual([1, 2, 3, 4, 5, 7, 8]);
@@ -130,20 +130,29 @@ describe("new triad assessments use the published definition", () => {
     expect(sql.some(text => text.includes("DO UPDATE SET definition"))).toBe(false);
     expect(sql.some(text => text.includes("UPDATE content_versions"))).toBe(false);
     const inserts = vi.mocked(query).mock.calls.filter(([text]) => String(text).includes("INSERT INTO scales"));
-    expect(inserts.map(([, values]) => values?.[0])).toEqual(["growth-child@1.3.0", "growth-parent@1.2.0", "growth-teacher@1.2.0"]);
+    expect(inserts.map(([, values]) => values?.[0])).toEqual(["growth-child@1.4.0", "growth-parent@1.3.0", "growth-teacher@1.3.0"]);
     expect(inserts.every(([text]) => String(text).includes("ON CONFLICT(id) DO NOTHING"))).toBe(true);
     const stored = JSON.parse(String(inserts[0][1]?.[3]));
-    expect(stored.version).toBe("1.3.0");
+    expect(stored.version).toBe("1.4.0");
     expect(stored.demo).toBe(true);
     expect(stored.norm.validated).toBe(false);
     expect(stored.items.find((item: { id: string }) => item.id === "c15").showIf.anyOf).toEqual([1, 2, 3, 4, 5, 7, 8]);
     expect(stored.items.find((item: { id: string; visibleFromAge?: number; showIf?: unknown }) => item.id === "c18_1").visibleFromAge).toBe(12);
     expect(stored.items.find((item: { id: string; showIf?: unknown }) => item.id === "c18_1").showIf).toBeUndefined();
+    for (const id of ["c19", "c20", "c21", "c22"]) expect(stored.items.find((item: { id: string; report?: string }) => item.id === id).report).toBe("staff");
+    const parentStored = JSON.parse(String(inserts[1][1]?.[3]));
+    const teacherStored = JSON.parse(String(inserts[2][1]?.[3]));
+    expect(parentStored.version).toBe("1.3.0");
+    expect(teacherStored.version).toBe("1.3.0");
+    for (const id of ["q32", "q33", "q34", "q35", "q36", "q37", "q38"]) expect(parentStored.items.find((item: { id: string; report?: string }) => item.id === id).report).toBe("staff");
+    expect(teacherStored.items.find((item: { id: string; report?: string }) => item.id === "t23").report).toBe("staff");
+    expect(parentStored.items.find((item: { id: string; report?: string }) => item.id === "q40").report).toBe("staff");
+    expect(teacherStored.items.find((item: { id: string; report?: string }) => item.id === "t16").report).toBe("staff");
     const retired = vi.mocked(query).mock.calls.filter(([text]) => String(text).includes("UPDATE scales SET status='retired'"));
     expect(retired.map(([, values]) => values)).toEqual([
-      ["growth-child", "growth-child@1.3.0"],
-      ["growth-parent", "growth-parent@1.2.0"],
-      ["growth-teacher", "growth-teacher@1.2.0"]
+      ["growth-child", "growth-child@1.4.0"],
+      ["growth-parent", "growth-parent@1.3.0"],
+      ["growth-teacher", "growth-teacher@1.3.0"]
     ]);
   });
 });
