@@ -9,6 +9,7 @@ import { demoAdvice, demoTemplate } from "../src/domain/demo";
 import { childScale as oldChild, parentScale as oldParent, teacherScale as oldTeacher } from "./fixtures/triad-scales-ed66f27";
 import { childScale as v11Child, parentScale as v11Parent, teacherScale as v11Teacher } from "./fixtures/triad-scales-1.1.0";
 import { childScale as v12Child, parentScale as v12Parent, teacherScale as v12Teacher } from "./fixtures/triad-scales-1.2.0";
+import { childScale as v13Child } from "./fixtures/triad-scales-1.3.0";
 
 vi.mock("../src/lib/db", () => ({ query: vi.fn(), transaction: vi.fn() }));
 vi.mock("../src/lib/content", () => ({ currentContent: vi.fn(), lockContent: vi.fn(), getScale: vi.fn() }));
@@ -43,6 +44,10 @@ const V12_ADULT_TEACHER = "1a1a1a1a-1a1a-4a1a-8a1a-1a1a1a1a1a1a";
 const V12_PARENT_TASK = "1b1b1b1b-1b1b-4b1b-8b1b-1b1b1b1b1b1b";
 const V12_TEACHER_TASK = "1c1c1c1c-1c1c-4c1c-8c1c-1c1c1c1c1c1c";
 const V12_ADULT_ROUND = "1d1d1d1d-1d1d-4d1d-8d1d-1d1d1d1d1d1d";
+const V13 = "18181818-1818-4181-8818-181818181818";
+const V13_STUDENT = "19191919-1919-4191-8919-191919191919";
+const V13_TASK = "1e1e1e1e-1e1e-4e1e-8e1e-1e1e1e1e1e1e";
+const V13_ROUND = "1f1f1f1f-1f1f-4f1f-8f1f-1f1f1f1f1f1f";
 const CODE = "TOPE-A2B3C4D5";
 const PARENT_TEAM_WRITING = ["q32", "q33", "q34", "q35", "q36", "q37", "q38"] as const;
 
@@ -176,8 +181,8 @@ beforeEach(() => {
   vi.stubEnv("NOVA_REPORT_DIR", "work/test-private");
   vi.stubEnv("NOVA_REPORT_KEY", "0".repeat(64));
   scales.length = 0; assessments.length = 0; rounds.length = 0; families.length = 0; users.length = 0; memberships.length = 0; consented.clear(); sqlLog.length = 0;
-  for (const definition of [oldChild, oldParent, oldTeacher, v11Child, v11Parent, v11Teacher, v12Child, v12Parent, v12Teacher]) seedScale(definition);
-  families.push(family(REPLAY, CODE), family(ASSIGNED, null), family(FRESH, null), family(V11, null), family(V12, null), family(V12_ADULT, null));
+  for (const definition of [oldChild, oldParent, oldTeacher, v11Child, v11Parent, v11Teacher, v12Child, v12Parent, v12Teacher, v13Child]) seedScale(definition);
+  families.push(family(REPLAY, CODE), family(ASSIGNED, null), family(FRESH, null), family(V11, null), family(V12, null), family(V12_ADULT, null), family(V13, null));
   users.push(
     { id: STUDENT, name: "Synthetic student", role: "student", region: "CN", disabled: false, demo: false },
     { id: TEACHER, name: "Synthetic teacher", role: "teacher", region: "CN", disabled: false, demo: false },
@@ -188,7 +193,8 @@ beforeEach(() => {
     { id: V11_STUDENT, name: "Synthetic v11 student", role: "student", region: "CN", disabled: false, demo: false },
     { id: V12_STUDENT, name: "Synthetic v12 student", role: "student", region: "CN", disabled: false, demo: false },
     { id: V12_PARENT, name: "Synthetic v12 parent", role: "parent", region: "CN", disabled: false, demo: false },
-    { id: V12_ADULT_TEACHER, name: "Synthetic v12 teacher", role: "teacher", region: "CN", disabled: false, demo: false }
+    { id: V12_ADULT_TEACHER, name: "Synthetic v12 teacher", role: "teacher", region: "CN", disabled: false, demo: false },
+    { id: V13_STUDENT, name: "Synthetic v13 student", role: "student", region: "CN", disabled: false, demo: false }
   );
   memberships.push(
     { family_id: REPLAY, user_id: STUDENT, role: "student" },
@@ -200,15 +206,17 @@ beforeEach(() => {
     { family_id: V11, user_id: V11_STUDENT, role: "student" },
     { family_id: V12, user_id: V12_STUDENT, role: "student" },
     { family_id: V12_ADULT, user_id: V12_PARENT, role: "parent" },
-    { family_id: V12_ADULT, user_id: V12_ADULT_TEACHER, role: "teacher" }
+    { family_id: V12_ADULT, user_id: V12_ADULT_TEACHER, role: "teacher" },
+    { family_id: V13, user_id: V13_STUDENT, role: "student" }
   );
-  consented.add(REPLAY); consented.add(ASSIGNED); consented.add(FRESH); consented.add(V11); consented.add(V12); consented.add(V12_ADULT);
-  rounds.push({ id: ROUND, family_id: REPLAY, region: "CN" }, { id: V12_ROUND, family_id: V12, region: "CN" }, { id: V12_ADULT_ROUND, family_id: V12_ADULT, region: "CN" });
+  consented.add(REPLAY); consented.add(ASSIGNED); consented.add(FRESH); consented.add(V11); consented.add(V12); consented.add(V12_ADULT); consented.add(V13);
+  rounds.push({ id: ROUND, family_id: REPLAY, region: "CN" }, { id: V12_ROUND, family_id: V12, region: "CN" }, { id: V12_ADULT_ROUND, family_id: V12_ADULT, region: "CN" }, { id: V13_ROUND, family_id: V13, region: "CN" });
   seedTask(OLD_STUDENT_TASK, REPLAY, STUDENT, "student", "growth-child@1.0.0", ROUND);
   seedTask(OLD_TEACHER_TASK, REPLAY, TEACHER, "teacher", "growth-teacher@1.0.0", ROUND);
   seedTask(V12_TASK, V12, V12_STUDENT, "student", "growth-child@1.2.0", V12_ROUND);
   seedTask(V12_PARENT_TASK, V12_ADULT, V12_PARENT, "parent", "growth-parent@1.2.0", V12_ADULT_ROUND);
   seedTask(V12_TEACHER_TASK, V12_ADULT, V12_ADULT_TEACHER, "teacher", "growth-teacher@1.2.0", V12_ADULT_ROUND);
+  seedTask(V13_TASK, V13, V13_STUDENT, "student", "growth-child@1.3.0", V13_ROUND);
   vi.mocked(query).mockImplementation(async (sql, values) => apply(String(sql), values ?? []));
   vi.mocked(transaction).mockImplementation(fn => fn(client as unknown as PoolClient));
   client.query.mockImplementation(async (sql, values) => ({ rows: apply(String(sql), values ?? []) }));
@@ -229,6 +237,7 @@ const v11Student: Actor = { id: V11_STUDENT, name: "Synthetic v11 student", role
 const v12Student: Actor = { id: V12_STUDENT, name: "Synthetic v12 student", role: "student", region: "CN" };
 const legacyParent: Actor = { id: V12_PARENT, name: "Synthetic v12 parent", role: "parent", region: "CN" };
 const legacyTeacher: Actor = { id: V12_ADULT_TEACHER, name: "Synthetic v12 teacher", role: "teacher", region: "CN" };
+const v13Student: Actor = { id: V13_STUDENT, name: "Synthetic v13 student", role: "student", region: "CN" };
 const freshStudent: Actor = { id: FRESH_STUDENT, name: "Synthetic fresh student", role: "student", region: "CN" };
 const freshParent: Actor = { id: FRESH_PARENT, name: "Synthetic parent", role: "parent", region: "CN" };
 const freshTeacher: Actor = { id: FRESH_TEACHER, name: "Synthetic fresh teacher", role: "teacher", region: "CN" };
@@ -280,10 +289,12 @@ function parentReport(parentRow: AssessmentRow, teacherRow: AssessmentRow) {
 }
 
 describe("ed66f27 triad upgrade", () => {
-  it("keeps 1.0.0, 1.1.0 and 1.2.0 definitions, and opens new tasks on the latest version", async () => {
+  it("keeps earlier definitions immutable, and opens new tasks on child 1.4.0 and parent and teacher 1.3.0", async () => {
     expect(parentScale.version).toBe("1.3.0");
     expect(teacherScale.version).toBe("1.3.0");
-    expect(childScale.version).toBe("1.3.0");
+    expect(childScale.version).toBe("1.4.0");
+    expect(asideFromTeamWriting(parentScale, PARENT_TEAM_WRITING)).toBe(asideFromTeamWriting(v12Parent, PARENT_TEAM_WRITING));
+    expect(asideFromTeamWriting(teacherScale, ["t23"])).toBe(asideFromTeamWriting(v12Teacher, ["t23"]));
     const preserved = new Map(scales.map(row => [row.id, JSON.stringify(row.definition)]));
     const assigned = await createAssessment(admin, { familyId: ASSIGNED, respondentId: ASSIGNED_STUDENT, scaleVersionId: "growth-child@1.0.0", locale: "zh-CN" });
     expect(assessments.find(row => row.id === assigned.id)?.scale_version_id).toBe("growth-child@1.0.0");
@@ -296,7 +307,7 @@ describe("ed66f27 triad upgrade", () => {
       const row = scales.find(item => item.id === id);
       expect(JSON.stringify(row?.definition)).toBe(definition);
     }
-    for (const id of ["growth-child@1.0.0", "growth-child@1.1.0", "growth-child@1.2.0", "growth-parent@1.0.0", "growth-parent@1.1.0", "growth-parent@1.2.0", "growth-teacher@1.0.0", "growth-teacher@1.1.0", "growth-teacher@1.2.0"]) {
+    for (const id of ["growth-child@1.0.0", "growth-child@1.1.0", "growth-child@1.2.0", "growth-child@1.3.0", "growth-parent@1.0.0", "growth-parent@1.1.0", "growth-parent@1.2.0", "growth-teacher@1.0.0", "growth-teacher@1.1.0", "growth-teacher@1.2.0"]) {
       expect(scales.find(row => row.id === id)?.status).toBe("retired");
     }
     for (const current of [childScale, parentScale, teacherScale]) {
@@ -306,6 +317,12 @@ describe("ed66f27 triad upgrade", () => {
     }
     expect(scales.find(row => row.id === "growth-child@1.3.0")?.definition.items.find(item => item.id === "c18_1")?.visibleFromAge).toBe(12);
     expect(scales.find(row => row.id === "growth-child@1.3.0")?.definition.items.find(item => item.id === "c18_1")?.showIf).toBeUndefined();
+    expect(scales.find(row => row.id === "growth-child@1.4.0")?.definition.items.find(item => item.id === "c18_1")?.visibleFromAge).toBe(12);
+    expect(scales.find(row => row.id === "growth-child@1.4.0")?.definition.items.find(item => item.id === "c18_1")?.showIf).toBeUndefined();
+    for (const id of ["c19", "c20", "c21", "c22"]) {
+      expect(scales.find(row => row.id === "growth-child@1.3.0")?.definition.items.find(item => item.id === id)?.report).toBe("words");
+      expect(scales.find(row => row.id === "growth-child@1.4.0")?.definition.items.find(item => item.id === id)?.report).toBe("staff");
+    }
     expect(scales.find(row => row.id === "growth-child@1.2.0")?.definition.demo).toBe(true);
     expect(scales.find(row => row.id === "growth-child@1.2.0")?.definition.norm.validated).toBe(false);
     expect(scales.find(row => row.id === "growth-child@1.2.0")?.definition.items.find(item => item.id === "c15")?.showIf?.anyOf).toEqual([1, 2, 3, 4, 5, 7, 8]);
@@ -356,25 +373,36 @@ describe("ed66f27 triad upgrade", () => {
     expect((v12Row?.snapshot as { scale: { version: string; items: { id: string; showIf?: { itemId: string } }[] } }).scale.version).toBe("1.2.0");
     expect((v12Row?.snapshot as { scale: { items: { id: string; showIf?: { itemId: string }; visibleFromAge?: number }[] } }).scale.items.find(item => item.id === "c18_1")).toMatchObject({ showIf: { itemId: "c_age" } });
     expect((v12Row?.snapshot as { scale: { items: { id: string; visibleFromAge?: number }[] } }).scale.items.find(item => item.id === "c18_1")?.visibleFromAge).toBeUndefined();
+    const kept13 = await submitAssessment(v13Student, V13_TASK, { answers: previewAnswers(structuredClone(v13Child), "calm"), acknowledged: true, revision: 0 });
+    expect(kept13).toMatchObject({ status: "queued" });
+    const v13Row = assessments.find(item => item.id === V13_TASK);
+    expect(v13Row?.scale_version_id).toBe("growth-child@1.3.0");
+    expect((v13Row?.snapshot as { scale: { version: string; items: { id: string; report?: string }[] } }).scale.version).toBe("1.3.0");
+    expect((v13Row?.snapshot as { scale: { items: { id: string; report?: string }[] } }).scale.items.find(item => item.id === "c19")?.report).toBe("words");
 
     await expect(createAssessment(admin, { familyId: FRESH, respondentId: FRESH_STUDENT, scaleVersionId: "growth-child@1.0.0", locale: "zh-CN" })).rejects.toMatchObject({ code: "SCALE_RETIRED" });
     await expect(createAssessment(admin, { familyId: FRESH, respondentId: FRESH_STUDENT, scaleVersionId: "growth-child@1.1.0", locale: "zh-CN" })).rejects.toMatchObject({ code: "SCALE_RETIRED" });
     await expect(createAssessment(admin, { familyId: FRESH, respondentId: FRESH_STUDENT, scaleVersionId: "growth-child@1.2.0", locale: "zh-CN" })).rejects.toMatchObject({ code: "SCALE_RETIRED" });
+    await expect(createAssessment(admin, { familyId: FRESH, respondentId: FRESH_STUDENT, scaleVersionId: "growth-child@1.3.0", locale: "zh-CN" })).rejects.toMatchObject({ code: "SCALE_RETIRED" });
     await expect(createAssessment(admin, { familyId: FRESH, respondentId: FRESH_PARENT, scaleVersionId: "growth-parent@1.2.0", locale: "zh-CN" })).rejects.toMatchObject({ code: "SCALE_RETIRED" });
     await expect(createAssessment(admin, { familyId: FRESH, respondentId: FRESH_TEACHER, scaleVersionId: "growth-teacher@1.2.0", locale: "zh-CN" })).rejects.toMatchObject({ code: "SCALE_RETIRED" });
     const created = {
       parent: await createAssessment(admin, { familyId: FRESH, respondentId: FRESH_PARENT, scaleVersionId: "growth-parent@1.3.0", locale: "zh-CN" }),
-      student: await createAssessment(admin, { familyId: FRESH, respondentId: FRESH_STUDENT, scaleVersionId: "growth-child@1.3.0", locale: "zh-CN" }),
+      student: await createAssessment(admin, { familyId: FRESH, respondentId: FRESH_STUDENT, scaleVersionId: "growth-child@1.4.0", locale: "zh-CN" }),
       teacher: await createAssessment(admin, { familyId: FRESH, respondentId: FRESH_TEACHER, scaleVersionId: "growth-teacher@1.3.0", locale: "zh-CN" })
     };
     expect(assessments.find(row => row.id === created.parent.id)?.scale_version_id).toBe("growth-parent@1.3.0");
-    expect(assessments.find(row => row.id === created.student.id)?.scale_version_id).toBe("growth-child@1.3.0");
+    expect(assessments.find(row => row.id === created.student.id)?.scale_version_id).toBe("growth-child@1.4.0");
     expect(assessments.find(row => row.id === created.teacher.id)?.scale_version_id).toBe("growth-teacher@1.3.0");
     expect(new Set(Object.values(created).map(item => assessments.find(row => row.id === item.id)?.triad_round_id)).size).toBe(1);
-    const published = await submitAssessment(freshStudent, created.student.id, { answers: previewAnswers(parseScale(childScale), "calm"), acknowledged: true, revision: 0 });
+    const publishedAnswers = previewAnswers(parseScale(childScale), "calm");
+    for (const id of ["c19", "c20", "c21", "c22"]) publishedAnswers[id] = `STAFF_ONLY_${id}`;
+    const published = await submitAssessment(freshStudent, created.student.id, { answers: publishedAnswers, acknowledged: true, revision: 0 });
     expect(published).toMatchObject({ status: "queued" });
     const freshRow = assessments.find(row => row.id === created.student.id);
-    expect((freshRow?.snapshot as { scale: { version: string; demo: boolean }; score: { demo: boolean; status: string; reviewFlags?: string[] } }).scale).toMatchObject({ version: "1.3.0", demo: true });
+    expect((freshRow?.snapshot as { scale: { version: string; demo: boolean }; score: { demo: boolean; status: string; reviewFlags?: string[] } }).scale).toMatchObject({ version: "1.4.0", demo: true });
+    expect(staffOnlyText(childScale, publishedAnswers).map(note => note.value)).toEqual(["STAFF_ONLY_c19", "STAFF_ONLY_c20", "STAFF_ONLY_c21", "STAFF_ONLY_c22"]);
+    expect(JSON.stringify(freshRow?.snapshot)).not.toContain("STAFF_ONLY_");
     expect((freshRow?.snapshot as { score: { demo: boolean; status: string; reviewFlags?: string[] } }).score).toMatchObject({ demo: true, status: "valid", reviewFlags: ["age_mismatch"] });
     const mismatch = client.query.mock.calls.filter(([sql]) => String(sql).includes("triad.age_mismatch"));
     expect(mismatch.map(([, values]) => values?.[1])).toContain(created.student.id);
@@ -382,7 +410,7 @@ describe("ed66f27 triad upgrade", () => {
   });
 
   it("upgrades an old database without rewriting 1.2.0, and keeps service-team writing out of new parent reports", async () => {
-    expect(childScale.version).toBe("1.3.0");
+    expect(childScale.version).toBe("1.4.0");
     expect(asideFromTeamWriting(parentScale, PARENT_TEAM_WRITING)).toBe(asideFromTeamWriting(v12Parent, PARENT_TEAM_WRITING));
     expect(asideFromTeamWriting(teacherScale, ["t23"])).toBe(asideFromTeamWriting(v12Teacher, ["t23"]));
     for (const id of PARENT_TEAM_WRITING) {
@@ -404,10 +432,13 @@ describe("ed66f27 triad upgrade", () => {
     expect(sqlLog.filter(sql => sql.startsWith("INSERT INTO scales")).every(sql => sql.includes("ON CONFLICT(id) DO NOTHING"))).toBe(true);
     expect(sqlLog.some(sql => sql.includes("DO UPDATE SET definition") || sql.includes("UPDATE scales SET definition"))).toBe(false);
     for (const [id, definition] of preserved) expect(JSON.stringify(scales.find(row => row.id === id)?.definition)).toBe(definition);
+    expect(scales.find(row => row.id === "growth-child@1.3.0")?.status).toBe("retired");
     expect(scales.find(row => row.id === "growth-parent@1.2.0")?.status).toBe("retired");
     expect(scales.find(row => row.id === "growth-teacher@1.2.0")?.status).toBe("retired");
+    expect(scales.find(row => row.id === "growth-child@1.4.0")?.status).toBe("active");
     expect(scales.find(row => row.id === "growth-parent@1.3.0")?.status).toBe("active");
     expect(scales.find(row => row.id === "growth-teacher@1.3.0")?.status).toBe("active");
+    expect(scales.find(row => row.id === "growth-child@1.3.0")?.definition.items.find(item => item.id === "c19")?.report).toBe("words");
 
     const oldParentAnswers = previewAnswers(structuredClone(v12Parent), "calm");
     const oldTeacherAnswers = previewAnswers(structuredClone(v12Teacher), "calm");
