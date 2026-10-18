@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { scoreAssessment, compareResults, ScoringError } from "../src/domain/scoring";
-import { scaleFixture } from "./fixtures";
+import { pair, scaleFixture } from "./fixtures";
 const ctx = {age:12,region:"CN" as const,role:"student" as const};
 describe("authoritative scoring", () => {
   it("uses item reverse scoring and threshold minimum exactly", () => {
@@ -46,5 +46,21 @@ describe("authoritative scoring", () => {
     const current=scoreAssessment(scaleFixture(),{a:0,b:3,c:0},ctx);
     const prior=scoreAssessment(scaleFixture(),{a:3,b:0,c:0},ctx);
     expect(compareResults(current,prior,"2026-08-01").changes?.[0].delta).toBe(-6);
+  });
+  it("does not count a dimension whose only item is hidden by showIf as missing", () => {
+    const scale = scaleFixture();
+    scale.riskRules = [];
+    scale.items = [
+      { id: "gate", label: pair("gate"), choices: [0, 1].map(value => ({ value, label: pair(String(value)) })), reverse: false, required: true },
+      { id: "only", label: pair("only"), choices: [0, 1, 2, 3].map(value => ({ value, label: pair(String(value)) })), reverse: false, required: true, showIf: { itemId: "gate", anyOf: [1] } }
+    ];
+    scale.dimensions = [{ key: "only", label: pair("only"), items: ["only"], aggregation: "sum", maxMissing: 0, prorate: false, higherMeans: "more_support", bands: [] }];
+    const hidden = scoreAssessment(scale, { gate: 0 }, ctx);
+    expect(hidden.dimensions[0]).toMatchObject({ raw: null, totalItems: 0, missing: [], answered: 0 });
+    expect(hidden.reasons).not.toContain("dimension_items_missing");
+    expect(hidden.status).toBe("valid");
+    const shown = scoreAssessment(scale, { gate: 1 }, ctx);
+    expect(shown.dimensions[0].missing).toEqual(["only"]);
+    expect(shown.reasons).toContain("dimension_items_missing");
   });
 });
