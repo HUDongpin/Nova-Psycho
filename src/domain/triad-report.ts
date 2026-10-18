@@ -182,9 +182,9 @@ export function previewAnswers(scale: ScaleDefinition, mode: "calm" | "risk" = "
   return answers;
 }
 
-export function staffOnlyText(scale: ScaleDefinition, answers: Record<string, StoredAnswer>): { label: TextPair; value: string }[] {
+export function staffOnlyText(scale: ScaleDefinition, answers: Record<string, StoredAnswer>): { itemId: string; label: TextPair; value: string }[] {
   return scale.items.filter(item => item.report === "staff").flatMap(item => {
     const value = answers[item.id];
-    return typeof value === "string" && value.trim() ? [{ label: item.label, value: value.trim() }] : [];
+    return typeof value === "string" && value.trim() ? [{ itemId: item.id, label: item.label, value: value.trim() }] : [];
   });
 }
