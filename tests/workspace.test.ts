@@ -477,19 +477,20 @@ describe("triad reports with fixed round sources",()=>{
 });
 
 describe("child hopes staff notes",()=>{
+  const HOPES_ASSESSMENT="aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa";
   const hopes={c17:"CHILD_SCENE_WORDS_SENTINEL",c19:"STAFF_ONLY_c19",c20:"STAFF_ONLY_c20",c21:"STAFF_ONLY_c21",c22:"STAFF_ONLY_c22"};
   function load(definition:typeof childScale){
     mockQuery.mockImplementation((async(sql:string)=>{
       const text=String(sql);
       if(text.includes("FROM families f WHERE"))return [familyRow];
-      if(text.includes("definition->>'bundle'"))return [{family_id:FAMILY_ID,answers:hopes,definition}];
+      if(text.includes("definition->>'bundle'"))return [{id:HOPES_ASSESSMENT,family_id:FAMILY_ID,answers:hopes,definition}];
       return [];
     }) as never);
   }
   it("shows 1.4.0 hopes writing on the staff workbench and withholds it from parents",async()=>{
     load(childScale);
     const staff=await workspaceFor(actor("staff"),"zh-CN");
-    expect(staff.staffNotes).toEqual(["c19","c20","c21","c22"].map(id=>({familyId:FAMILY_ID,label:childScale.items.find(item=>item.id===id)!.label["zh-CN"],value:`STAFF_ONLY_${id}`})));
+    expect(staff.staffNotes).toEqual(["c19","c20","c21","c22"].map(id=>({familyId:FAMILY_ID,assessmentId:HOPES_ASSESSMENT,itemId:id,label:childScale.items.find(item=>item.id===id)!.label["zh-CN"],value:`STAFF_ONLY_${id}`})));
     expect(JSON.stringify(staff)).not.toContain("CHILD_SCENE_WORDS_SENTINEL");
     stub();
     const parent=await workspaceFor(actor("parent"),"zh-CN");
