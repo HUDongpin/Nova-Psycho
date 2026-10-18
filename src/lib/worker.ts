@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { PoolClient } from "pg";
 import type { AssessmentSnapshot,Locale,ReportPayload,StoredAnswer } from "../domain/types";
 import { selectNarrative } from "../domain/narrative";
 import { composeTriad,TRIAD_BUNDLE,triadRolesReady } from "../domain/triad-report";
@@ -65,24 +66,49 @@ async function unclaimedJobResult(jobId:string|undefined):Promise<ReportJobResul
   const due=new Date(job.state==="running"?job.lease_until:job.available_at).getTime();
   return {status:"retry_at",retryAt:new Date(Math.max(Date.now()+1000,Number.isFinite(due)?due:Date.now()+10000)).toISOString()};
 }
-// The claim filter skips a due ready job when parent_report consent is gone, and the
-// queue would retry that delivery every second. Pause it on the same ledger as a
-// post-claim pause. Family lock first, then the job: consent grant and publication
-// take the locks in that order, and a re-check under those locks drops a race.
+// The claim filter skips a job when parent_report consent is gone. A queue delivery
+// would otherwise retry every second, and the continuous worker would leave the row
+// ready or on an expired lease and poll it forever. Pause it on the same ledger as a
+// post-claim pause. A live running lease is left for that worker, which re-checks
+// consent before publication. Family lock first, then the job: consent grant and
+// publication take the locks in that order, and a re-check under those locks drops a race.
+function dueJobMissingParentReportSql():string{
+  const missingConsent=`NOT (${consentScopeGrantedSql("a.family_id","parent_report")})`;
+  return `((j.state='ready' AND j.available_at<=now()) OR (j.state='running' AND j.lease_until<now())) AND ${missingConsent}`;
+}
+async function pauseLockedJobMissingParentReportConsent(client:PoolClient,jobId:string,familyId:string,region:string):Promise<boolean>{
+  const family=await client.query("SELECT id FROM families WHERE id=$1 AND region=$2 FOR UPDATE",[familyId,region]);
+  if(!family.rows[0])return false;
+  const locked=await client.query(`SELECT j.id FROM report_jobs j JOIN assessments a ON a.id=j.assessment_id WHERE j.id=$1 AND a.region=$2 AND a.family_id=$3 AND ${dueJobMissingParentReportSql()} FOR UPDATE OF j`,[jobId,region,familyId]);
+  if(!locked.rows[0])return false;
+  // A ready row was never claimed, so its attempt count stays. An expired running
+  // row already counted the claim that did not publish; give that attempt back so
+  // restoring consent does not walk the job into the attempt cap.
+  const paused=await client.query("UPDATE report_jobs SET state='paused', lease_until=NULL, claim_token=NULL, last_error_code='PARENT_REPORT_CONSENT_REQUIRED', attempts=CASE WHEN state='running' THEN GREATEST(attempts-1,0) ELSE attempts END WHERE id=$1 AND ((state='ready' AND available_at<=now()) OR (state='running' AND lease_until<now())) RETURNING id",[jobId]);
+  return paused.rows.length>0;
+}
 async function pauseDueReadyJobMissingParentReportConsent(jobId:string):Promise<boolean>{
   const region=getConfig().region;
-  const missingConsent=`NOT (${consentScopeGrantedSql("a.family_id","parent_report")})`;
   return transaction(async client=>{
-    const located=await client.query<{id:string;family_id:string}>(`SELECT j.id,a.family_id FROM report_jobs j JOIN assessments a ON a.id=j.assessment_id WHERE j.id=$1 AND a.region=$2 AND j.state='ready' AND j.available_at<=now() AND ${missingConsent}`,[jobId,region]);
+    const located=await client.query<{id:string;family_id:string}>(`SELECT j.id,a.family_id FROM report_jobs j JOIN assessments a ON a.id=j.assessment_id WHERE j.id=$1 AND a.region=$2 AND ${dueJobMissingParentReportSql()}`,[jobId,region]);
     const row=located.rows[0];
     if(!row)return false;
-    const family=await client.query("SELECT id FROM families WHERE id=$1 AND region=$2 FOR UPDATE",[row.family_id,region]);
-    if(!family.rows[0])return false;
-    const locked=await client.query(`SELECT j.id FROM report_jobs j JOIN assessments a ON a.id=j.assessment_id WHERE j.id=$1 AND a.region=$2 AND a.family_id=$3 AND j.state='ready' AND j.available_at<=now() AND ${missingConsent} FOR UPDATE OF j`,[jobId,region,row.family_id]);
-    if(!locked.rows[0])return false;
-    const paused=await client.query("UPDATE report_jobs SET state='paused', lease_until=NULL, claim_token=NULL, last_error_code='PARENT_REPORT_CONSENT_REQUIRED' WHERE id=$1 AND state='ready' RETURNING id",[jobId]);
-    return paused.rows.length>0;
+    return pauseLockedJobMissingParentReportConsent(client,jobId,row.family_id,region);
   });
+}
+// The continuous worker claims without a job id, so the per-message pause never runs.
+// Discover due rows in this region, then pause one family per transaction. Holding
+// several family locks in one transaction could deadlock with a grant that locks
+// those families in another order.
+async function pauseIdleJobsMissingParentReportConsent():Promise<boolean>{
+  const region=getConfig().region;
+  const located=await query<{id:string;family_id:string}>(`SELECT j.id,a.family_id FROM report_jobs j JOIN assessments a ON a.id=j.assessment_id WHERE a.region=$1 AND ${dueJobMissingParentReportSql()} ORDER BY a.family_id,j.id LIMIT 25`,[region]);
+  let pausedAny=false;
+  for(const row of located){
+    const paused=await transaction(client=>pauseLockedJobMissingParentReportConsent(client,row.id,row.family_id,region));
+    if(paused)pausedAny=true;
+  }
+  return pausedAny;
 }
 async function runReportJob(jobId?:string):Promise<ReportJobResult>{
   const token=randomUUID();
@@ -96,6 +122,7 @@ async function runReportJob(jobId?:string):Promise<ReportJobResult>{
   const job=jobs[0];
   if(!job){
     if(jobId&&await pauseDueReadyJobMissingParentReportConsent(jobId))return {status:"paused"};
+    if(!jobId&&await pauseIdleJobsMissingParentReportConsent())return {status:"paused"};
     return unclaimedJobResult(jobId);
   }
   const keys:Partial<Record<Locale,string>>={};

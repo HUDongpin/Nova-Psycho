@@ -236,7 +236,11 @@ describe("claim filter pauses a due ready job when parent-report consent is gone
     expect(pauseAt).toBeGreaterThan(jobAt);
     expect(calls[jobAt].sql).toContain("consent_scope_revocations");
     expect(calls[jobAt].sql).toContain(missingParentReport);
-    expect(calls[pauseAt].sql).not.toContain("attempts=");
+    expect(calls[pauseAt].sql).toContain("CASE WHEN state='running' THEN GREATEST(attempts-1,0) ELSE attempts END");
+    expect(calls[pauseAt].sql).not.toContain("attempts=LEAST");
+    expect(calls[pauseAt].sql).not.toContain("attempts+1");
+    expect(calls[jobAt].sql).toContain("j.state='running'");
+    expect(calls[jobAt].sql).toContain("j.lease_until<now()");
     expect(vi.mocked(renderPdf)).not.toHaveBeenCalled();
 
     const resumed: string[] = [];
@@ -307,5 +311,97 @@ describe("claim filter pauses a due ready job when parent-report consent is gone
     await expect(rejected).rejects.toBeInstanceOf(ReportRetryAt);
     await expect(rejected).rejects.toMatchObject({ retryAt: availableAt });
     expect(calls.some(call => call.sql.includes("state='paused'") || call.sql.includes("PARENT_REPORT_CONSENT_REQUIRED"))).toBe(false);
+  });
+
+  it("pauses an expired running job instead of asking the queue to retry", async () => {
+    queueEnv();
+    const calls = clientQuery((sql, params) => {
+      const eligible = sql.includes("j.lease_until<now()") && sql.includes(missingParentReport) && sql.includes("a.region=$2");
+      if (sql.includes("SELECT") && sql.includes("a.family_id") && !sql.includes("FOR UPDATE") && eligible && params[0] === JOB_ID && params[1] === "CN") return { rows: [{ id: JOB_ID, family_id: FAMILY_ID }] };
+      if (sql.includes("FROM families") && sql.includes("FOR UPDATE") && params[0] === FAMILY_ID) return { rows: [{ id: FAMILY_ID }] };
+      if (sql.includes("FOR UPDATE OF j") && eligible && params[0] === JOB_ID && params[2] === FAMILY_ID) return { rows: [{ id: JOB_ID }] };
+      if (sql.includes("state='paused'") && sql.includes("CASE WHEN state='running'") && params[0] === JOB_ID) return { rows: [{ id: JOB_ID }] };
+      return { rows: [] };
+    });
+    mockQuery.mockImplementation((async (sql: string) => {
+      if (String(sql).includes("WITH candidate")) return [];
+      if (String(sql).includes("j.state,j.available_at")) return [{ state: "running", available_at: new Date().toISOString(), lease_until: new Date(Date.now() - 1000).toISOString() }];
+      return [];
+    }) as never);
+    await expect(consumeReportMessage({ jobId: JOB_ID, region: "CN" })).resolves.toBeUndefined();
+    const pause = calls.find(call => call.sql.includes("state='paused'"));
+    expect(pause?.sql).toContain("GREATEST(attempts-1,0)");
+    expect(pause?.sql).toContain("state='running' AND lease_until<now()");
+    expect(mockQuery.mock.calls.some(([sql]) => String(sql).includes("j.state,j.available_at"))).toBe(false);
+  });
+
+  it("leaves a running job with a live lease for the worker that holds it", async () => {
+    queueEnv();
+    const leaseUntil = new Date(Date.now() + 60_000).toISOString();
+    const calls = clientQuery((sql) => {
+      if (sql.includes("state='paused'")) return { rows: [{ id: JOB_ID }] };
+      if (sql.includes(missingParentReport)) return { rows: [] };
+      return { rows: [] };
+    });
+    mockQuery.mockImplementation((async (sql: string) => {
+      const text = String(sql);
+      if (text.includes("WITH candidate")) return [];
+      if (text.includes("j.state,j.available_at")) return [{ state: "running", available_at: new Date().toISOString(), lease_until: leaseUntil }];
+      return [];
+    }) as never);
+    const rejected = consumeReportMessage({ jobId: JOB_ID, region: "CN" });
+    await expect(rejected).rejects.toBeInstanceOf(ReportRetryAt);
+    await expect(rejected).rejects.toMatchObject({ retryAt: leaseUntil });
+    expect(calls.some(call => call.sql.includes("j.lease_until<now()") && call.sql.includes(missingParentReport))).toBe(true);
+    expect(calls.some(call => call.sql.includes("state='paused'"))).toBe(false);
+  });
+
+  it("pauses due jobs from the continuous worker and stops once they are paused", async () => {
+    vi.stubEnv("NOVA_WORKER_MODE", "continuous");
+    vi.mocked(renderPdf).mockClear();
+    const otherJob = "55555555-6666-4777-8888-999999999999";
+    const otherFamily = "66666666-7777-4888-8999-aaaaaaaaaaaa";
+    const calls: { sql: string; params: unknown[] }[] = [];
+    let transactions = 0;
+    mockTransaction.mockImplementation((async (fn: (client: { query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }> }) => Promise<unknown>) => {
+      const seen: { sql: string; params: unknown[] }[] = [];
+      transactions += 1;
+      const result = await fn({
+        query: async (sql: string, params?: unknown[]) => {
+          const values = params ?? [];
+          seen.push({ sql, params: values });
+          calls.push({ sql, params: values });
+          if (sql.includes("FROM families") && sql.includes("FOR UPDATE")) return { rows: [{ id: values[0] }] };
+          if (sql.includes("FOR UPDATE OF j") && sql.includes(missingParentReport)) return { rows: [{ id: values[0] }] };
+          if (sql.includes("state='paused'") && sql.includes("PARENT_REPORT_CONSENT_REQUIRED")) return { rows: [{ id: values[0] }] };
+          return { rows: [] };
+        }
+      });
+      const familyAt = seen.findIndex(call => call.sql.includes("FROM families") && call.sql.includes("FOR UPDATE"));
+      const jobAt = seen.findIndex(call => call.sql.includes("FOR UPDATE OF j"));
+      expect(jobAt).toBeGreaterThan(familyAt);
+      expect(seen[jobAt]?.sql).toContain("j.lease_until<now()");
+      return result;
+    }) as never);
+    mockQuery.mockImplementation((async (sql: string, params?: unknown[]) => {
+      const text = String(sql);
+      if (text.includes("WITH candidate")) return [];
+      if (text.includes("ORDER BY a.family_id,j.id LIMIT 25") && text.includes("a.region=$1") && text.includes(missingParentReport) && params?.[0] === "CN") {
+        return [{ id: JOB_ID, family_id: FAMILY_ID }, { id: otherJob, family_id: otherFamily }];
+      }
+      return [];
+    }) as never);
+    await expect(processOneJob()).resolves.toBe(true);
+    expect(transactions).toBe(2);
+    expect(calls.filter(call => call.sql.includes("FROM families") && call.sql.includes("FOR UPDATE")).map(call => call.params[0])).toEqual([FAMILY_ID, otherFamily]);
+    expect(calls.filter(call => call.sql.includes("state='paused'")).map(call => call.params[0])).toEqual([JOB_ID, otherJob]);
+    expect(calls.filter(call => call.sql.includes("state='paused'")).every(call => call.sql.includes("CASE WHEN state='running' THEN GREATEST(attempts-1,0) ELSE attempts END"))).toBe(true);
+    expect(mockQuery.mock.calls.some(([sql]) => String(sql).includes("j.state,j.available_at"))).toBe(false);
+    expect(vi.mocked(renderPdf)).not.toHaveBeenCalled();
+
+    transactions = 0;
+    mockQuery.mockImplementation((async () => []) as never);
+    await expect(processOneJob()).resolves.toBe(false);
+    expect(transactions).toBe(0);
   });
 });
