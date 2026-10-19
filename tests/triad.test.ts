@@ -6,7 +6,7 @@ import { surveyDefinition } from "../src/domain/survey";
 import { composeTriad, previewAnswers, triadRolesReady } from "../src/domain/triad-report";
 import { childScale, maxMissingForCoverage, parentScale, teacherScale } from "../src/domain/triad-scales";
 import { formatJoinCode } from "../src/lib/triad";
-import { parseScale } from "../src/domain/validation";
+import { parseScale, parseStoredScale } from "../src/domain/validation";
 import type { RespondentRole, ScaleDefinition } from "../src/domain/types";
 
 describe("family join codes", () => {
@@ -19,7 +19,10 @@ describe("family join codes", () => {
 
 describe("growth triad questionnaires", () => {
   it("keeps the three source instruments and the 75 percent rule", () => {
-    for (const scale of [childScale, parentScale, teacherScale]) parseScale(scale);
+    for (const scale of [childScale, parentScale, teacherScale]) {
+      parseStoredScale(scale);
+      expect(() => parseScale(scale)).toThrow(/Unvalidated instruments must be labelled demo/);
+    }
     expect(childScale.items.some(item => item.label["zh-CN"].includes("我知道自己已经学会了什么"))).toBe(true);
     expect(parentScale.items.some(item => item.label["zh-CN"].includes("我会先区分事实、我的解释和我的情绪"))).toBe(true);
     expect(teacherScale.items.some(item => item.label["zh-CN"].includes("学生能判断自己是否理解"))).toBe(true);
@@ -53,9 +56,9 @@ describe("growth triad questionnaires", () => {
       score: sources[1].score, childName: "小林", grade: "初中", submittedAt: sources[1].submittedAt, aiConsented: false,
       selectedAdviceIds: [], generationMode: "template", fallbackReason: null, aiModel: null, comparison: { available: false }, triad
     }, "zh-CN");
-    expect(parentScale.demo).toBe(true);
+    expect(parentScale.demo).toBe(false);
     expect(parentScale.norm.validated).toBe(false);
-    expect(sources[1].score.demo).toBe(true);
+    expect(sources[1].score.demo).toBe(false);
     expect(html).toContain("演示报告");
     expect(html.indexOf("请先关注安全")).toBeGreaterThan(-1);
     expect(html.indexOf("请先关注安全")).toBeLessThan(html.indexOf("三方看到的情况"));

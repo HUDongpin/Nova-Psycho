@@ -5,14 +5,16 @@ import { composeTriad,TRIAD_BUNDLE,triadRolesReady } from "../domain/triad-repor
 import { compareResults } from "../domain/scoring";
 import { reportHtml } from "../domain/report-html";
 import { normValidated } from "../domain/validation";
+import { ACTIVE_CONSENT_ROWS_SQL, PARENT_REPORT_SCOPE, consentScopePredicate, consentScopeGrantedSql, hasGranted } from "./consent";
 import { getConfig, isDemoMode } from "./config";
 import { query,transaction } from "./db";
 import { renderPdf } from "./pdf";
-import { listPrivatePdfKeys,removePrivatePdf,writePrivatePdf } from "./storage";
+import { cleanAbandonedPrivatePdfTemps,listPrivatePdfKeys,removePrivatePdf,writePrivatePdf } from "./storage";
 import { validateId } from "./http";
 export type ReportJobResult=
   |{status:"published"}
   |{status:"already_done"}
+  |{status:"paused"}
   |{status:"retry_at";retryAt:string}
   |{status:"terminal"};
 export async function processDeletionJobs():Promise<void>{
@@ -22,6 +24,7 @@ export async function processDeletionJobs():Promise<void>{
 }
 export async function cleanOrphanReports():Promise<void>{
   if(getConfig().reportStorage==="database")return;
+  await cleanAbandonedPrivatePdfTemps();
   for(const key of await listPrivatePdfKeys()){
     const id=key.slice(0,36);const rows=await query("SELECT a.status,r.pdf_keys FROM assessments a LEFT JOIN reports r ON r.assessment_id=a.id WHERE a.id=$1",[id]);
     const r=rows[0];if(!r||r.status==="failed"||(r.pdf_keys&&!Object.values(r.pdf_keys).includes(key)))await removePrivatePdf(key);
@@ -51,7 +54,7 @@ async function unclaimedJobResult(jobId:string|undefined):Promise<ReportJobResul
   const rows=await query(`SELECT j.state,j.available_at,j.lease_until FROM report_jobs j
     JOIN assessments a ON a.id=j.assessment_id WHERE j.id=$1 AND a.region=$2`,[jobId,getConfig().region]);
   const job=rows[0];
-  if(!job||job.state==="done")return {status:"already_done"};
+  if(!job||job.state==="done"||job.state==="paused")return job?.state==="paused"?{status:"paused"}:{status:"already_done"};
   if(job.state==="failed")return {status:"terminal"};
   const due=new Date(job.state==="running"?job.lease_until:job.available_at).getTime();
   return {status:"retry_at",retryAt:new Date(Math.max(Date.now()+1000,Number.isFinite(due)?due:Date.now()+10000)).toISOString()};
@@ -62,6 +65,7 @@ async function runReportJob(jobId?:string):Promise<ReportJobResult>{
     SELECT j.id,j.attempts>=3 AS attempt_limit_reached FROM report_jobs j JOIN assessments a ON a.id=j.assessment_id
     WHERE a.region=$2 AND ($3::uuid IS NULL OR j.id=$3) AND j.available_at<=now()
       AND (j.state='ready' OR (j.state='running' AND j.lease_until<now()))
+      AND ${consentScopeGrantedSql("a.family_id","parent_report")}
     ORDER BY a.submitted_at,j.created_at LIMIT 1 FOR UPDATE OF j SKIP LOCKED
   ) UPDATE report_jobs j SET state='running',attempts=LEAST(j.attempts+1,3),lease_until=now()+interval '5 minutes',claim_token=$1 FROM candidate WHERE j.id=candidate.id RETURNING j.*,candidate.attempt_limit_reached`,[token,getConfig().region,jobId??null]);
   const job=jobs[0];if(!job)return unclaimedJobResult(jobId);
@@ -99,7 +103,7 @@ async function runReportJob(jobId?:string):Promise<ReportJobResult>{
       publishIds=siblings.map(row=>row.id);
     }else{
       // Consent may be withdrawn after submission. Never contact AI without current permission too.
-      const consent=await query("SELECT id FROM consents WHERE family_id=$1 AND revoked_at IS NULL AND scopes @> '[\"ai_processing\"]'::jsonb LIMIT 1",[assessment.family_id]);
+      const consent=await query(`SELECT id FROM consents c WHERE c.family_id=$1 AND ${consentScopePredicate("c","ai_processing")} LIMIT 1`,[assessment.family_id]);
       const selection=await selectNarrative({...snapshot,aiConsented:snapshot.aiConsented&&consent.length>0},getConfig().ai);
       const previous=await query("SELECT snapshot,submitted_at FROM assessments WHERE family_id=$1 AND respondent_id=$2 AND scale_version_id=$3 AND submitted_at<$4 AND snapshot IS NOT NULL ORDER BY submitted_at DESC LIMIT 1",[assessment.family_id,assessment.respondent_id,assessment.scale_version_id,assessment.submitted_at]);
       const prior=previous[0];
@@ -113,11 +117,16 @@ async function runReportJob(jobId?:string):Promise<ReportJobResult>{
       if(getConfig().reportStorage==="database")pdfs[locale]=pdf;
       else await writePrivatePdf(key,pdf);
     }
-    await transaction(async client=>{
+    const outcome=await transaction(async client=>{
       const familyLock=await client.query("SELECT id FROM families WHERE id=$1 AND region=$2 FOR UPDATE",[assessment.family_id,getConfig().region]);
       if(!familyLock.rows[0])throw new Error("Family deleted");
       const claim=await client.query("SELECT id FROM report_jobs WHERE id=$1 AND claim_token=$2 AND state='running' AND lease_until>now() FOR UPDATE",[job.id,token]);
       if(!claim.rows[0])throw new Error("Report claim expired or family deleted");
+      const consent=await client.query<{scopes:unknown}>(ACTIVE_CONSENT_ROWS_SQL,[assessment.family_id]);
+      if(!hasGranted(consent.rows,[PARENT_REPORT_SCOPE])){
+        await client.query("UPDATE report_jobs SET state='paused', lease_until=NULL, claim_token=NULL, last_error_code='PARENT_REPORT_CONSENT_REQUIRED', attempts=GREATEST(attempts-1,0) WHERE id=$1 AND claim_token=$2 AND state='running'",[job.id,token]);
+        return "paused" as const;
+      }
       if(getConfig().reportStorage==="database")for(const locale of ["zh-CN","zh-HK"] as const){
         await writePrivatePdf(keys[locale]!,pdfs[locale]!,client);
       }
@@ -125,21 +134,37 @@ async function runReportJob(jobId?:string):Promise<ReportJobResult>{
       await client.query("UPDATE assessments SET status='published' WHERE id=ANY($1::uuid[])",[publishIds]);
       await client.query("UPDATE report_jobs SET state='done',lease_until=NULL,last_error_code=NULL WHERE id=$1 AND claim_token=$2",[job.id,token]);
       await client.query("INSERT INTO audit_events(region,action,entity_id) VALUES($1,'report.auto_published',$2)",[getConfig().region,assessment.id]);
+      return "published" as const;
     });
+    if(outcome==="paused"){
+      if(getConfig().reportStorage==="filesystem")for(const key of Object.values(keys))await removePrivatePdf(key).catch(()=>{});
+      return {status:"paused"};
+    }
     return {status:"published"};
   }catch{
-    if(getConfig().reportStorage==="filesystem")for(const key of Object.values(keys))await removePrivatePdf(key).catch(()=>{});
     const terminal=unboundTriad||blockCode!==null||job.attempts>=3;
     const reason=blockCode??(unboundTriad?"TRIAD_SOURCES_UNBOUND":job.attempt_limit_reached?"REPORT_ATTEMPTS_EXHAUSTED":"REPORT_GENERATION_FAILED");
-    const changed=await query(`WITH changed AS (
+    const failureSql=`WITH changed AS (
       UPDATE report_jobs SET state=$1,lease_until=NULL,available_at=now()+interval '10 seconds',last_error_code=$4
       WHERE id=$2 AND claim_token=$3 AND state='running' RETURNING assessment_id,source_assessment_ids,available_at
     ), failed_assessments AS (
       UPDATE assessments SET status='failed' WHERE $1='failed' AND status='queued'
         AND id IN (SELECT unnest(COALESCE(source_assessment_ids,ARRAY[assessment_id])) FROM changed) RETURNING id
-    ) SELECT assessment_id,source_assessment_ids,available_at FROM changed`,[terminal?"failed":"ready",job.id,token,reason]);
+    ) SELECT assessment_id,source_assessment_ids,available_at FROM changed`;
+    const failureValues=[terminal?"failed":"ready",job.id,token,reason];
+    const changed=terminal?await transaction(async client=>{
+      await client.query("SELECT f.id FROM families f JOIN assessments a ON a.family_id=f.id WHERE a.id=$1 AND f.region=$2 FOR UPDATE OF f",[job.assessment_id,getConfig().region]);
+      return (await client.query(failureSql,failureValues)).rows;
+    }):await query(failureSql,failureValues);
+    if(getConfig().reportStorage==="filesystem"&&Object.keys(keys).length){
+      // COMMIT may succeed even if its response is lost. The job update above
+      // waits for that transaction before deciding which files are unreferenced.
+      const published=changed.length?[]:await query<{pdf_keys:Record<Locale,string>}>("SELECT pdf_keys FROM reports WHERE assessment_id=$1 AND region=$2",[job.assessment_id,getConfig().region]);
+      const referenced=new Set(Object.values(published[0]?.pdf_keys??{}));
+      for(const key of Object.values(keys))if(!referenced.has(key))await removePrivatePdf(key).catch(()=>{});
+    }
     console.error("nova_report_generation_failed",{region:getConfig().region,attempt:job.attempts});
-    if(!changed[0])return {status:"already_done"};
+    if(!changed[0])return unclaimedJobResult(job.id);
     return terminal?{status:"terminal"}:{status:"retry_at",retryAt:new Date(changed[0].available_at??Date.now()+10000).toISOString()};
   }
 }

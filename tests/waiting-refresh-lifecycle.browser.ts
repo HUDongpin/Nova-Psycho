@@ -21,7 +21,7 @@ const match='**/api/workspace?*';
 async function call(c:BrowserContext,path:string,data?:unknown){const r=await c.request.fetch(base+path,{method:data===undefined?'GET':'POST',headers:{Origin:base},...(data===undefined?{}:{data})});assert.ok(r.ok(),`${path} ${r.status()}`);return r.json();}
 async function waiting(){
  const c=await browser.newContext({viewport:{width:1440,height:1000}});await c.route('**/*',r=>new URL(r.request().url()).origin===base?r.continue():r.abort());
- const id=randomUUID().slice(0,8);await call(c,'/api/triad/parent',{parentName:'合成刷新生命周期家长',username:'lifecycle-'+id,password:randomUUID()+'aA9',relationship:'母亲',childName:'合成生命周期孩子',birthDate:'2013-06-15',grade:'小学四至六年级',accepted:true});
+ const id=randomUUID().slice(0,8);await call(c,'/api/triad/parent',{parentName:'合成刷新生命周期家长',username:'lifecycle-'+id,password:randomUUID()+'aA9',relationship:'母亲',childName:'合成生命周期孩子',birthDate:'2013-06-15',grade:'小学四至六年级',assessment:true,sensitiveData:true,parentReport:true});
  const w=await call(c,'/api/workspace');const assessment=w.assessments.find((a:any)=>a.canRespond);await call(c,`/api/assessments/${assessment.id}/submit`,{answers:previewAnswers(parentScale,'calm'),acknowledged:true,revision:0});
  const page=await c.newPage();page.on('pageerror',e=>evidence.browserErrors.push(e.name));await page.goto(base);await page.getByRole('heading',{name:/欢迎回来/}).waitFor();
  return {c,page};

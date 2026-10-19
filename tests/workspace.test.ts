@@ -26,7 +26,7 @@ function stub(){
     const text=String(sql);
     if(text.includes("FROM families f WHERE"))return [familyRow];
     if(text.includes("FROM memberships m JOIN users u"))return [{family_id:FAMILY_ID,id:SELF,name:"Synthetic",role:"student"},{family_id:FAMILY_ID,id:OTHER,name:"Other",role:"parent"}];
-    if(text.includes("DISTINCT family_id FROM consents"))return [{family_id:FAMILY_ID}];
+    if(text.includes("AS scopes FROM consents c"))return [{family_id:FAMILY_ID,scopes:["assessment","sensitive_data","parent_report"]}];
     if(text.includes("FROM assessments a JOIN families f"))return [assessmentRow];
     if(text.includes("FROM reports WHERE family_id"))return [{id:"r1",family_id:FAMILY_ID,assessment_id:"a1",region:"CN",payload:{score:{risk:false,dimensions:[],respondentRole:"student",demo:true},template:{content:{title:{"zh-CN":"T","zh-HK":"T"}}},scale:{title:{"zh-CN":"S","zh-HK":"S"}},childName:"c",generationMode:"template",comparison:{available:false}},pdf_keys:{},html_documents:{},created_at:new Date()}];
     if(text.includes("FROM goals WHERE family_id"))return [{id:"g1",family_id:FAMILY_ID,title:"Goal",detail:"d",status:"active",created_at:new Date()}];
@@ -97,6 +97,31 @@ describe("assessment scoping",()=>{
     expect(String(sql)).toContain("($3::boolean OR a.respondent_id=$4)");
     expect(values).toContain(SELF);
     expect(values).toContain(false);
+  });
+  it("gates family participation and report visibility on separate consents",async()=>{
+    const workspace=await workspaceFor(actor("parent"),"zh-CN");
+    expect(workspace.families[0].consent).toBe(true);
+    expect(workspace.families[0].consents).toEqual({assessment:true,sensitiveData:true,parentReport:true,aiProcessing:false});
+    const reportSql=String(mockQuery.mock.calls.find(call=>String(call[0]).includes("FROM reports WHERE family_id"))![0]);
+    expect(reportSql).toContain('["parent_report"]');
+    expect(reportSql).toContain("consent_scope_revocations");
+    const assessmentSql=String(mockQuery.mock.calls.find(call=>String(call[0]).includes("FROM assessments a JOIN families f"))![0]);
+    expect(assessmentSql).toContain('["parent_report"]');
+    expect(assessmentSql).toContain("consent_scope_revocations");
+    expect(assessmentSql).toContain("round_ready");
+    expect(assessmentSql).not.toContain('["assessment","parent_report","sensitive_data"]');
+  });
+  it("marks a submitted assessment as waiting for parent-report consent instead of generating",async()=>{
+    mockQuery.mockImplementation((async(sql:string)=>{
+      const text=String(sql);
+      if(text.includes("FROM families f WHERE"))return [familyRow];
+      if(text.includes("FROM assessments a JOIN families f"))return [{...assessmentRow,status:"queued",has_consent:false,report_id:null}];
+      if(text.includes("AS scopes FROM consents c"))return [{family_id:FAMILY_ID,scopes:["assessment","sensitive_data"]}];
+      return [];
+    }) as never);
+    const workspace=await workspaceFor(actor("parent"),"zh-CN");
+    expect(workspace.families[0].consents?.parentReport).toBe(false);
+    expect(workspace.assessments[0].phase).toBe("consent");
   });
   it("lets caring roles see every assessment in their families",async()=>{
     await workspaceFor(actor("parent"),"zh-CN");
@@ -275,10 +300,11 @@ describe("administrator extras",()=>{
 });
 
 describe("safety alerts on the workbench",()=>{
-  it("asks only for alerts that nobody has marked viewed",async()=>{
+  it("asks for unresolved alerts and does not drop them when they have been acknowledged",async()=>{
     await workspaceFor(actor("staff"),"zh-CN");
     const sql=sqls().find(item=>item.includes("FROM staff_alerts a"));
-    expect(sql).toContain("a.viewed_at IS NULL");
+    expect(sql).toContain("a.resolved_at IS NULL");
+    expect(sql).not.toContain("viewed_at IS NULL");
   });
   it("does not query alerts for a parent or a student",async()=>{
     await workspaceFor(actor("parent"),"zh-CN");
@@ -299,12 +325,52 @@ describe("safety alerts on the workbench",()=>{
       mockQuery.mockClear();
       const workspace=await workspaceFor(actor(role),"zh-CN");
       expect(workspace.families[0].assignedTo).toBeNull();
-      expect(workspace.alerts).toEqual([{id:"alert-unassigned",familyId:FAMILY_ID,childName:"Synthetic child",createdAt:"2026-10-06T00:00:00.000Z"}]);
+      expect(workspace.alerts).toEqual([{id:"alert-unassigned",familyId:FAMILY_ID,childName:"Synthetic child",createdAt:"2026-10-06T00:00:00.000Z",viewedAt:null}]);
       const sql=sqls().find(item=>item.includes("FROM staff_alerts a"));
       expect(sql).toContain("a.region=$1");
-      expect(sql).toContain("a.viewed_at IS NULL");
-      expect(sql).not.toMatch(/assigned_to/);
+      expect(sql).toContain("a.resolved_at IS NULL");
+      expect(sql).not.toMatch(/assigned_to|guardian_label|join_code/);
+      expect(sql).toContain("f.child_name");
+      expect(mockQuery.mock.calls.find(([query])=>String(query).includes("FROM staff_alerts a"))?.[1]).toEqual(["CN"]);
     }
+  });
+  it("lists an assigned family's alert to other regional staff without the record, notes, report or contact info",async()=>{
+    mockQuery.mockImplementation((async(sql:string)=>{
+      const text=String(sql);
+      if(text.includes("FROM staff_alerts a"))return [{id:"alert-assigned",family_id:FAMILY_ID,child_name:"Synthetic child",created_at:new Date("2026-10-06T00:00:00Z")}];
+      return [];
+    }) as never);
+    const workspace=await workspaceFor(actor("staff"),"zh-CN");
+    expect(workspace.alerts).toEqual([{id:"alert-assigned",familyId:FAMILY_ID,childName:"Synthetic child",createdAt:"2026-10-06T00:00:00.000Z",viewedAt:null}]);
+    expect(Object.keys(workspace.alerts[0]).sort()).toEqual(["childName","createdAt","familyId","id","viewedAt"]);
+    expect(workspace.families).toEqual([]);
+    expect(workspace.reports).toEqual([]);
+    expect(workspace.observations).toEqual([]);
+    expect(workspace.staffNotes).toEqual([]);
+    expect(JSON.stringify(workspace.alerts)).not.toMatch(/guardian|joinCode|join_code|Mother/);
+    const listed=sqls().find(item=>item.includes("FROM staff_alerts a"));
+    expect(listed).not.toMatch(/assigned_to|guardian_label|join_code/);
+    const detail=sqls().find(item=>item.includes("FROM families f WHERE"));
+    expect(detail).toContain("f.assigned_to=$2");
+    expect(detail).toContain("f.assigned_to IS NULL");
+    expect(detail).toContain("sa.resolved_at IS NULL");
+    expect(detail).not.toContain("viewed_at");
+  });
+  it("keeps an acknowledged unassigned alert in the payload until it is resolved",async()=>{
+    const unassigned={...familyRow,assigned_to:null,assigned_name:null};
+    mockQuery.mockImplementation((async(sql:string)=>{
+      const text=String(sql);
+      if(text.includes("FROM families f WHERE"))return [unassigned];
+      if(text.includes("FROM staff_alerts"))return [{id:"alert-1",family_id:FAMILY_ID,child_name:"Synthetic child",created_at:new Date("2026-10-06T00:00:00Z"),viewed_at:new Date("2026-10-07T00:00:00Z")}];
+      return [];
+    }) as never);
+    const workspace=await workspaceFor(actor("staff"),"zh-CN");
+    expect(workspace.families[0].assignedTo).toBeNull();
+    expect(workspace.alerts).toEqual([{id:"alert-1",familyId:FAMILY_ID,childName:"Synthetic child",createdAt:"2026-10-06T00:00:00.000Z",viewedAt:"2026-10-07T00:00:00.000Z"}]);
+    const scope=sqls().find(item=>item.includes("FROM families f WHERE"));
+    expect(scope).toContain("f.assigned_to IS NULL");
+    expect(scope).toContain("sa.resolved_at IS NULL");
+    expect(scope).not.toContain("viewed_at");
   });
   it("maps an open alert onto the workbench",async()=>{
     mockQuery.mockImplementation((async(sql:string)=>{
@@ -314,7 +380,7 @@ describe("safety alerts on the workbench",()=>{
       return [];
     }) as never);
     const workspace=await workspaceFor(actor("staff"),"zh-CN");
-    expect(workspace.alerts).toEqual([{id:"alert-1",familyId:FAMILY_ID,childName:"Synthetic child",createdAt:"2026-10-06T00:00:00.000Z"}]);
+    expect(workspace.alerts).toEqual([{id:"alert-1",familyId:FAMILY_ID,childName:"Synthetic child",createdAt:"2026-10-06T00:00:00.000Z",viewedAt:null}]);
   });
 });
 
@@ -322,7 +388,7 @@ describe("triad reports with fixed round sources",()=>{
   const triadDefinition={...demoScale,bundle:"growth-triad"};
   const at=(day:string)=>new Date(`2026-${day}T00:00:00Z`);
   function row(over:Record<string,unknown>){
-    return {...assessmentRow,definition:triadDefinition,status:"published",submitted_at:at("03-01"),report_id:null,triad_round_id:"round-1",triad_job_id:null,respondent_id:OTHER,...over};
+    return {...assessmentRow,definition:triadDefinition,status:"published",submitted_at:at("03-01"),report_id:null,has_consent:true,triad_round_id:"round-1",triad_job_id:null,respondent_id:OTHER,...over};
   }
   function load(rows:unknown[],role:Role="parent"){
     mockQuery.mockImplementation((async(sql:string)=>{
@@ -332,6 +398,12 @@ describe("triad reports with fixed round sources",()=>{
     }) as never);
     return workspaceFor(actor(role),"zh-CN");
   }
+  it("does not advertise stored reports after parent-report consent is withdrawn",async()=>{
+    const workspace=await load(["student","parent","teacher"].map(role=>row({id:role,respondent_role:role,report_id:"r1",has_consent:false})));
+    expect(workspace.assessments).toHaveLength(3);
+    for(const item of workspace.assessments)expect(item).toMatchObject({status:"published",reportId:null,phase:"consent"});
+    expect(workspace.reports).toEqual([]);
+  });
   it("shows the same stored report for all three published sources",async()=>{
     const workspace=await load(["student","parent","teacher"].map(role=>row({id:role,respondent_role:role,report_id:"r1",triad_job_id:"job1"})));
     for(const item of workspace.assessments)expect(item).toMatchObject({status:"published",reportId:"r1",phase:null});

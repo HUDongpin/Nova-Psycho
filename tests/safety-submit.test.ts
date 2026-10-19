@@ -1,7 +1,7 @@
 import { afterEach,beforeEach,describe,expect,it,vi } from "vitest";
 import type { PoolClient } from "pg";
 import type { Actor,RespondentRole } from "../src/domain/types";
-import { childScale,parentScale,teacherScale } from "../src/domain/triad-scales";
+import { childScaleSafety as childScale,parentScaleSafety as parentScale,teacherScaleSafety as teacherScale } from "../src/domain/triad-scales";
 import { previewAnswers } from "../src/domain/triad-report";
 import { demoAdvice,demoTemplate } from "../src/domain/demo";
 
@@ -9,7 +9,7 @@ vi.mock("../src/lib/db",()=>({query:vi.fn(),transaction:vi.fn()}));
 vi.mock("../src/lib/content",()=>({currentContent:vi.fn(),lockContent:vi.fn()}));
 import { query,transaction } from "../src/lib/db";
 import { currentContent } from "../src/lib/content";
-import { submitAssessment } from "../src/lib/assessments";
+import { saveDraft,submitAssessment } from "../src/lib/assessments";
 import { queueTriadReport } from "../src/lib/triad";
 
 const familyId="11111111-2222-4333-8444-555555555555";
@@ -38,10 +38,12 @@ function setup(role:RespondentRole,status="pending"){
     if(sql.includes("FROM families f WHERE"))return [{id:familyId,child_name:"Synthetic child",birth_date:"2013-04-12",grade:"S2"}];
     return [];
   });
-  client.query.mockImplementation(async(sql:string)=>{
+  client.query.mockImplementation(async(sql:string,values?:unknown[])=>{
+    if(sql.includes("FROM users WHERE id=$1"))return {rows:values?.[0]===userId?[{...actor(role),disabled:false,demo:false}]:[]};
+    if(sql.includes("SELECT m.role FROM memberships"))return {rows:values?.[0]===familyId&&values[1]===userId&&values[2]==="CN"?[{role}]:[]};
     if(sql.includes("SELECT id FROM families"))return {rows:[{id:familyId}]};
     if(sql.includes("SELECT a.*,r.id AS report_id"))return {rows:[assessment]};
-    if(sql.includes("SELECT scopes FROM consents"))return {rows:[{scopes:["assessment","parent_report","sensitive_data"]}]};
+    if(sql.includes("AS scopes FROM consents WHERE family_id=$1"))return {rows:[{scopes:["assessment","parent_report","sensitive_data"]}]};
     if(sql.includes("INSERT INTO staff_alerts"))return {rows:[{id:"new-alert"}]};
     return {rows:[]};
   });
@@ -72,9 +74,8 @@ describe("safety at accepted triad submission",()=>{
     setup("student");
     const answers=previewAnswers(childScale,"calm");
     answers.c15=1;
-    const result=await submitAssessment(actor("student"),assessmentId,{answers,acknowledged:true,revision:0});
+    await expect(submitAssessment(actor("student"),assessmentId,{answers,acknowledged:true,revision:0})).rejects.toMatchObject({status:422,code:"INVALID_ANSWERS"});
     expect(calls().some(([sql])=>sql.includes("INSERT INTO staff_alerts"))).toBe(false);
-    expect(result.safetyGuidance).toBe(false);
   });
   it("rejects a harm answer combined with an exclusive safety option before notifying",async()=>{
     setup("student");
@@ -82,6 +83,23 @@ describe("safety at accepted triad submission",()=>{
     answers.c14=[1,6];
     await expect(submitAssessment(actor("student"),assessmentId,{answers,acknowledged:true,revision:0})).rejects.toMatchObject({status:422});
     expect(calls().some(([sql])=>sql.includes("INSERT INTO staff_alerts"))).toBe(false);
+  });
+  it("rejects hidden safety answers before storing or creating an alert",async()=>{
+    setup("student");
+    const answers={...previewAnswers(childScale,"calm"),c14:[6],c15:1};
+    await expect(submitAssessment(actor("student"),assessmentId,{answers,acknowledged:true,revision:0})).rejects.toMatchObject({status:422,code:"INVALID_ANSWERS"});
+    expect(calls().some(([sql])=>sql.startsWith("UPDATE assessments")||sql.includes("INSERT INTO staff_alerts"))).toBe(false);
+  });
+  it("rejects hidden answers in drafts before persistence",async()=>{
+    setup("student");
+    const ownQuery=vi.mocked(query).getMockImplementation()!;
+    vi.mocked(query).mockImplementation(async(sql,values)=>{
+      if(sql.includes("AS scopes FROM consents")||sql.includes("SELECT id FROM consents"))return [{scopes:["assessment","sensitive_data","parent_report"]}];
+      if(sql.startsWith("UPDATE assessments SET draft_answers"))return [{id:assessmentId,draft_revision:1}];
+      return ownQuery(sql,values);
+    });
+    await expect(saveDraft(actor("student"),assessmentId,{answers:{c14:[6],c15:1},acknowledged:true,revision:0})).rejects.toMatchObject({status:422,code:"INVALID_ANSWERS"});
+    expect(vi.mocked(query).mock.calls.some(([sql])=>sql.startsWith("UPDATE assessments"))).toBe(false);
   });
   it("rejects an incomplete risk submission before notifying",async()=>{
     setup("student");
@@ -93,17 +111,38 @@ describe("safety at accepted triad submission",()=>{
     await submitAssessment(actor("student"),assessmentId,{answers:previewAnswers(childScale,"risk"),acknowledged:true,revision:0});
     expect(calls().some(([sql])=>sql.includes("staff_alerts"))).toBe(false);
   });
+  function readyRound(scopes: unknown[]){
+    client.query.mockImplementation(async sql=>{
+      if(sql.includes("AS scopes FROM consents WHERE family_id=$1"))return {rows:scopes.map(scope=>Array.isArray(scope)?{scopes:scope}:{scopes:[scope]})};
+      if(sql.startsWith("SELECT"))return {rows:["parent","student","teacher"].map((role,i)=>({id:`source-${i}`,respondent_role:role,snapshot:{score:{risk:true}}}))};
+      return {rows:[{id:"job"}]};
+    });
+  }
   it("does not notify again when the complete round is queued",async()=>{
-    client.query.mockImplementation(async sql=>({rows:sql.startsWith("SELECT")?["parent","student","teacher"].map((role,i)=>({id:`source-${i}`,respondent_role:role,snapshot:{score:{risk:true}}})):[{id:"job"}]}));
+    readyRound([["assessment","parent_report","sensitive_data"]]);
     await queueTriadReport(client as unknown as PoolClient,familyId,roundId);
     expect(calls().filter(([sql])=>sql.includes("INSERT INTO report_jobs"))).toHaveLength(1);
     expect(calls().some(([sql])=>sql.includes("staff_alerts")||sql.includes("safety_notified"))).toBe(false);
+  });
+  it("queues the parent report from separate consent rows",async()=>{
+    readyRound(["assessment","parent_report","sensitive_data"]);
+    await queueTriadReport(client as unknown as PoolClient,familyId,roundId);
+    expect(calls().filter(([sql])=>sql.includes("INSERT INTO report_jobs"))).toHaveLength(1);
+  });
+  it("does not queue a parent report when that consent is missing",async()=>{
+    readyRound(["assessment","sensitive_data"]);
+    await queueTriadReport(client as unknown as PoolClient,familyId,roundId);
+    expect(calls().some(([sql])=>sql.includes("INSERT INTO report_jobs"))).toBe(false);
   });
   it("keeps exactly one alert when the other roles later complete the round",async()=>{
     setup("student");
     await submitAssessment(actor("student"),assessmentId,{answers:previewAnswers(childScale,"risk"),acknowledged:true,revision:0});
     expect(calls().filter(([sql])=>sql.includes("INSERT INTO staff_alerts"))).toHaveLength(1);
-    client.query.mockImplementation(async sql=>({rows:sql.includes("SELECT id,respondent_role")?["parent","student","teacher"].map((role,i)=>({id:`source-${i}`,respondent_role:role})):[{id:"job"}]}));
+    client.query.mockImplementation(async sql=>{
+      if(sql.includes("AS scopes FROM consents"))return {rows:[{scopes:["assessment","parent_report","sensitive_data"]}]};
+      if(sql.includes("SELECT id,respondent_role"))return {rows:["parent","student","teacher"].map((role,i)=>({id:`source-${i}`,respondent_role:role}))};
+      return {rows:[{id:"job"}]};
+    });
     await queueTriadReport(client as unknown as PoolClient,familyId,roundId);
     expect(calls().filter(([sql])=>sql.includes("INSERT INTO staff_alerts"))).toHaveLength(1);
     expect(calls().filter(([sql])=>sql.includes("INSERT INTO report_jobs"))).toHaveLength(1);

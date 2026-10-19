@@ -1,4 +1,6 @@
+import type { PoolClient } from "pg";
 import type { Actor } from "../domain/types";
+import { ACTIVE_CONSENT_ROWS_SQL, PARTICIPATION_SCOPES, hasGranted } from "./consent";
 import { getConfig } from "./config";
 import { query } from "./db";
 import { HttpError, validateId } from "./http";
@@ -14,12 +16,15 @@ export function canInviteFamilyMembers(actor:Actor,family:Pick<FamilyRow,"region
 export function familyScope(actor:Actor,start=1):{sql:string;values:unknown[]}{
   const region=`f.region=$${start}`;
   if(actor.role==="admin")return {sql:region,values:[actor.region]};
-  if(actor.role==="staff")return {sql:`${region} AND (f.assigned_to=$${start+1} OR EXISTS(SELECT 1 FROM staff_alerts sa WHERE sa.family_id=f.id AND sa.region=$${start}))`,values:[actor.region,actor.id]};
+  // Assignee, or — only while the family has no assignee — regional staff during an unresolved alert.
+  // Acknowledgement does not end that fallback; resolving the alert does. An alert never opens an assigned family to other staff.
+  if(actor.role==="staff")return {sql:`${region} AND (f.assigned_to=$${start+1} OR (f.assigned_to IS NULL AND EXISTS(SELECT 1 FROM staff_alerts sa WHERE sa.family_id=f.id AND sa.region=$${start} AND sa.resolved_at IS NULL)))`,values:[actor.region,actor.id]};
   return {sql:`${region} AND EXISTS(SELECT 1 FROM memberships m WHERE m.family_id=f.id AND m.user_id=$${start+1} AND m.role=$${start+2})`,values:[actor.region,actor.id,actor.role]};
 }
-export async function familyFor(actor:Actor,id:string):Promise<FamilyRow>{
+export async function familyFor(actor:Actor,id:string,client?:PoolClient):Promise<FamilyRow>{
   validateId(id);const scope=familyScope(actor,2);
-  const rows=await query<FamilyRow>(`SELECT f.* FROM families f WHERE f.id=$1 AND ${scope.sql}`,[id,...scope.values]);
+  const sql=`SELECT f.* FROM families f WHERE f.id=$1 AND ${scope.sql}`,values=[id,...scope.values];
+  const rows=client?(await client.query<FamilyRow>(sql,values)).rows:await query<FamilyRow>(sql,values);
   if(!rows[0])throw new HttpError(404,"未找到该家庭或没有访问权限。","NOT_FOUND");return rows[0];
 }
 const SERVICE_ZONE={CN:"Asia/Shanghai",HK:"Asia/Hong_Kong"} as const;
@@ -40,6 +45,9 @@ export function ageAt(birthDate:string,at=new Date()):number{
   return age;
 }
 export const iso=(value:Date|string|null):string|null=>value===null?null:new Date(value).toISOString();
+// Answering stores the child's responses, so both participation and sensitive-data
+// consent are required. A legacy combined row still satisfies both.
 export async function consentFor(familyId:string):Promise<boolean>{
-  const rows=await query("SELECT id FROM consents WHERE family_id=$1 AND revoked_at IS NULL AND scopes @> '[\"assessment\",\"parent_report\",\"sensitive_data\"]'::jsonb LIMIT 1",[familyId]);return rows.length>0;
+  const rows=await query<{scopes:unknown}>(ACTIVE_CONSENT_ROWS_SQL,[familyId]);
+  return hasGranted(rows,PARTICIPATION_SCOPES);
 }

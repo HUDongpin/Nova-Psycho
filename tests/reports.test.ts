@@ -31,6 +31,7 @@ beforeEach(()=>{
   mockQuery.mockImplementation((async(sql:string)=>{
     if(String(sql).includes("FROM reports WHERE id=$1"))return [row];
     if(String(sql).includes("FROM families f WHERE f.id=$1"))return [{id:FAMILY_ID,region:"CN",family_name:"Synthetic",child_name:"Synthetic child",birth_date:"2013-04-12",grade:"S2",guardian_label:"Mother",assigned_to:null,created_at:new Date()}];
+    if(String(sql).includes("AS scopes FROM consents WHERE family_id=$1"))return [{scopes:["assessment","parent_report","sensitive_data"]}];
     return [];
   }) as never);
 });
@@ -58,6 +59,23 @@ describe("who may read a report",()=>{
     expect(String(sql)).toContain("region=$2");
     expect(values).toContain("CN");
   });
+  it("reads a staff report through assignment or the unresolved unassigned-alert fallback",async()=>{
+    await reportFor(actor("staff"),REPORT_ID);
+    const lookup=mockQuery.mock.calls.find(([sql])=>String(sql).includes("FROM families f WHERE f.id=$1"));
+    expect(String(lookup?.[0])).toContain("f.assigned_to IS NULL");
+    expect(String(lookup?.[0])).toContain("sa.resolved_at IS NULL");
+    expect(String(lookup?.[0])).not.toContain("viewed_at");
+  });
+  it("does not hand a staff member the report when the family is outside their detail scope",async()=>{
+    mockQuery.mockImplementation((async(sql:string)=>{
+      if(String(sql).includes("FROM reports WHERE id=$1"))return [row];
+      return [];
+    }) as never);
+    await expect(reportFor(actor("staff"),REPORT_ID)).rejects.toMatchObject({status:404,code:"NOT_FOUND"});
+    const lookup=mockQuery.mock.calls.find(([sql])=>String(sql).includes("FROM families f WHERE f.id=$1"));
+    expect(String(lookup?.[0])).toContain("f.assigned_to=$3");
+    expect(String(lookup?.[0])).toContain("sa.resolved_at IS NULL");
+  });
   it("still applies family scoping, so a parent cannot read another family's report",async()=>{
     mockQuery.mockImplementation((async(sql:string)=>{
       if(String(sql).includes("FROM reports WHERE id=$1"))return [row];
@@ -68,6 +86,22 @@ describe("who may read a report",()=>{
   it("reports a missing report as NOT_FOUND",async()=>{
     mockQuery.mockResolvedValueOnce([]);
     await expect(reportFor(actor("admin"),REPORT_ID)).rejects.toMatchObject({code:"NOT_FOUND"});
+  });
+  it("hides a report when parent-report consent is missing, and shows it for a separate or legacy grant",async()=>{
+    mockQuery.mockImplementation((async(sql:string)=>{
+      if(String(sql).includes("FROM reports WHERE id=$1"))return [row];
+      if(String(sql).includes("FROM families f WHERE f.id=$1"))return [{id:FAMILY_ID,region:"CN",family_name:"Synthetic",child_name:"Synthetic child",birth_date:"2013-04-12",grade:"S2",guardian_label:"Mother",assigned_to:null,created_at:new Date()}];
+      if(String(sql).includes("AS scopes FROM consents WHERE family_id=$1"))return [{scopes:["assessment"]},{scopes:["sensitive_data"]}];
+      return [];
+    }) as never);
+    await expect(reportFor(actor("parent"),REPORT_ID)).rejects.toMatchObject({code:"GUARDIAN_CONSENT_REQUIRED"});
+    mockQuery.mockImplementation((async(sql:string)=>{
+      if(String(sql).includes("FROM reports WHERE id=$1"))return [row];
+      if(String(sql).includes("FROM families f WHERE f.id=$1"))return [{id:FAMILY_ID,region:"CN",family_name:"Synthetic",child_name:"Synthetic child",birth_date:"2013-04-12",grade:"S2",guardian_label:"Mother",assigned_to:null,created_at:new Date()}];
+      if(String(sql).includes("AS scopes FROM consents WHERE family_id=$1"))return [{scopes:["parent_report"]}];
+      return [];
+    }) as never);
+    await expect(reportFor(actor("parent"),REPORT_ID)).resolves.toMatchObject({id:REPORT_ID});
   });
 });
 

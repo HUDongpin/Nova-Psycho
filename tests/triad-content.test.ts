@@ -3,7 +3,7 @@ import type { PoolClient } from "pg";
 import type { Actor } from "../src/domain/types";
 import { demoAdvice, demoScale, demoTemplate } from "../src/domain/demo";
 import { previewAnswers } from "../src/domain/triad-report";
-import { childScale } from "../src/domain/triad-scales";
+import { childScaleBirthAge as childScale } from "../src/domain/triad-scales";
 import { contentCanonical, nextContentPatch, TRIAD_LIBRARY_KEY, upsertSeededContent } from "../src/lib/content-seed";
 import { currentContent } from "../src/lib/content";
 import { triadAdvice, triadTemplate } from "../src/lib/triad";
@@ -112,9 +112,11 @@ describe("triad submission freezes the triad library", () => {
     client.query.mockImplementation(async (sql: string, values: unknown[] = []) => {
       if (sql.includes("library_key=$2")) return { rows: [{ id: `keyed-${values[0]}`, version: "1.0.0", content: values[0] === "advice" ? triadAdvice : triadTemplate }] };
       if (sql.includes("library_key IS NULL")) return { rows: [{ id: `general-${values[0]}`, version: "9.0.0", content: values[0] === "advice" ? demoAdvice : demoTemplate }] };
+      if (sql.includes("FROM users WHERE id=$1")) return { rows: [{ id: STUDENT, name: actor.name, role: actor.role, region: "CN", disabled: false, demo: false }] };
       if (sql.includes("SELECT id FROM families")) return { rows: [{ id: FAMILY }] };
+      if (sql.includes("FROM families")) return { rows: [{ id: FAMILY, region: "CN", child_name: "Synthetic child", birth_date: "2014-10-11", grade: "初中" }] };
       if (sql.includes("SELECT a.*,r.id AS report_id")) return { rows: [assessment] };
-      if (sql.includes("SELECT scopes FROM consents")) return { rows: [{ scopes: ["assessment", "parent_report", "sensitive_data"] }] };
+      if (sql.includes("FROM consents")) return { rows: [{ scopes: ["assessment", "parent_report", "sensitive_data"] }] };
       return { rows: [] };
     });
     const answers = previewAnswers(childScale);
@@ -140,9 +142,11 @@ describe("triad submission freezes the triad library", () => {
     vi.mocked(transaction).mockImplementation(fn => fn(client as unknown as PoolClient));
     client.query.mockImplementation(async (sql: string, values: unknown[] = []) => {
       if (sql.includes("library_key IS NULL")) return { rows: [{ id: `general-${values[0]}`, version: "2.0.0", content: values[0] === "advice" ? demoAdvice : demoTemplate }] };
+      if (sql.includes("FROM users WHERE id=$1")) return { rows: [{ id: STUDENT, name: actor.name, role: actor.role, region: "CN", disabled: false, demo: false }] };
       if (sql.includes("SELECT id FROM families")) return { rows: [{ id: FAMILY }] };
+      if (sql.includes("FROM families")) return { rows: [{ id: FAMILY, region: "CN", child_name: "Synthetic child", birth_date: "2014-10-11", grade: "初中" }] };
       if (sql.includes("SELECT a.*,r.id AS report_id")) return { rows: [assessment] };
-      if (sql.includes("SELECT scopes FROM consents")) return { rows: [{ scopes: ["assessment", "parent_report", "sensitive_data"] }] };
+      if (sql.includes("FROM consents")) return { rows: [{ scopes: ["assessment", "parent_report", "sensitive_data"] }] };
       if (sql.includes("FROM report_jobs")) return { rows: [] };
       return { rows: [] };
     });

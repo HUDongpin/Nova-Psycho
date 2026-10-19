@@ -2,7 +2,7 @@ import type { Comparison, DimensionScore, Region, RespondentRole, ScaleDefinitio
 export class ScoringError extends Error {}
 const kindOf=(item:ScaleItem)=>item.kind??"single";
 export function answerVisible(answers:Record<string,unknown>,item:ScaleItem,age?:number):boolean{
-  if(item.visibleFromAge!==undefined&&(!Number.isInteger(age)||(age as number)<item.visibleFromAge))return false;
+  if(item.visibleFromAge!==undefined&&Number.isInteger(age)&&(age as number)<item.visibleFromAge)return false;
   if(!item.showIf)return true;
   const current=answers[item.showIf.itemId];
   const values=typeof current==="number"?[current]:Array.isArray(current)?current.filter((value):value is number=>typeof value==="number"):[];
@@ -22,7 +22,7 @@ export function validateAnswers(scale: ScaleDefinition, answers: Record<string, 
   const items=new Map(scale.items.map(item=>[item.id,item]));
   for(const [id,value] of Object.entries(answers)) {
     const item=items.get(id);
-    if(!item) throw new ScoringError("Unknown item or invalid response value");
+    if(!item||!answerVisible(answers,item)) throw new ScoringError("Unknown item, hidden item or invalid response value");
     const kind=kindOf(item);
     const single=kind==="single"&&typeof value==="number"&&Number.isFinite(value)&&item.choices.some(choice=>choice.value===value);
     const exclusive=new Set(item.choices.filter(choice=>choice.exclusive).map(choice=>choice.value));

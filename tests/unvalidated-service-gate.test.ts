@@ -22,8 +22,8 @@ const LEGACY = "growth-child@1.0.0";
 
 const parentActor: Actor = { id: PARENT, name: "Synthetic parent", role: "parent", region: "CN" };
 const studentActor: Actor = { id: STUDENT, name: "Synthetic student", role: "student", region: "CN" };
-const parentBody = { parentName: "Synthetic parent", username: "synthetic.parent", password: "synthetic-password-1", relationship: "母亲" as const, childName: "Synthetic child", birthDate: "2014-06-01", grade: "初中" as const, accepted: true as const };
-const familyBody = { requestId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", relationship: "母亲" as const, childName: "Synthetic child", birthDate: "2014-06-01", grade: "初中" as const, accepted: true as const };
+const parentBody = { parentName: "Synthetic parent", username: "synthetic.parent", password: "synthetic-password-1", relationship: "母亲" as const, childName: "Synthetic child", birthDate: "2014-06-01", grade: "初中" as const, assessment: true as const, sensitiveData: true as const, parentReport: true };
+const familyBody = { requestId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", relationship: "母亲" as const, childName: "Synthetic child", birthDate: "2014-06-01", grade: "初中" as const, assessment: true as const, sensitiveData: true as const, parentReport: true };
 const familyRow = { id: FAMILY, region: "CN", family_name: "Synthetic family", child_name: "Synthetic child", birth_date: "2014-06-01", grade: "初中", guardian_label: "母亲", assigned_to: null, join_code: CODE, created_at: new Date("2026-10-01T00:00:00Z") };
 
 const statements: string[] = [];

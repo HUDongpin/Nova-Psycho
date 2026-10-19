@@ -1,4 +1,6 @@
 import fs from "node:fs/promises";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { randomUUID } from "node:crypto";
 import { demoAdvice,demoScale,demoTemplate } from "../src/domain/demo";
 import { scoreAssessment } from "../src/domain/scoring";
@@ -10,8 +12,8 @@ import type { AssessmentSnapshot,RespondentRole } from "../src/domain/types";
 import { noticeVersion } from "../src/lib/privacy";
 import {reportHtml} from "../src/domain/report-html";
 import { ensureTriadInstruments } from "../src/lib/triad";
+export async function prepareDatabase(): Promise<void> {
 const config=getConfig(),db=pool();
-try{
   const marker=await db.query("SELECT to_regclass('public.deployment_settings') AS marker");
   if(marker.rows[0].marker){const r=await db.query("SELECT to_jsonb(deployment_settings) AS settings FROM deployment_settings");if(r.rows[0]?.settings.region!==config.region)throw new Error("Refusing to migrate a different region");if(r.rows[0]?.settings.mode&&r.rows[0].settings.mode!==config.mode)throw new Error("Refusing to change a database data classification");}
   else{const r=await db.query("SELECT tablename FROM pg_tables WHERE schemaname='public'");if(r.rows.length)throw new Error("Refusing to migrate a non-empty unowned database");}
@@ -60,7 +62,7 @@ try{
           const members:[string,string][]=[[f.parent,"parent"],[f.student,"student"]];
           if(f.child==="林小禾")members.push([account("teacher").id,"teacher"]);
           for(const [uid,role] of members)await client.query("INSERT INTO memberships(family_id,user_id,role) VALUES($1,$2,$3)",[f.id,uid,role]);
-          await client.query("INSERT INTO consents(id,family_id,actor_id,guardian_name,method,reference,notice_version,scopes) VALUES($1,$2,$3,$4,'synthetic','SYNTHETIC-DEMO-ONLY',$5,$6)",[randomUUID(),f.id,f.parent,`${f.child}${hk?"家長":"家长"}`,noticeVersion,JSON.stringify(["assessment","parent_report","sensitive_data"])]);
+          for(const scope of ["assessment","parent_report","sensitive_data"])await client.query("INSERT INTO consents(id,family_id,actor_id,guardian_name,method,reference,notice_version,scopes) VALUES($1,$2,$3,$4,'synthetic','SYNTHETIC-DEMO-ONLY',$5,$6)",[randomUUID(),f.id,f.parent,`${f.child}${hk?"家長":"家长"}`,noticeVersion,JSON.stringify([scope])]);
         }
         const baseline={q1:3,q2:1,q3:2,q4:1,q5:3,q6:1,q7:2,q8:1,q9:0};
         const recent={q1:1,q2:2,q3:1,q4:2,q5:2,q6:2,q7:1,q8:2,q9:0};
@@ -86,4 +88,9 @@ try{
   }
   await ensureTriadInstruments();
   console.log("Growth triad questionnaires are available.");
-}finally{await closeDatabase();}
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+  try { await prepareDatabase(); }
+  finally { await closeDatabase(); }
+}

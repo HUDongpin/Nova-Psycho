@@ -4,7 +4,7 @@ const delays = [3500, 7000, 15_000, 30_000] as const;
 export const REPORT_REFRESH_WINDOW_MS = 120_000;
 
 export function hasGeneratingReports(assessments: readonly Pick<Assessment, "status" | "phase">[]): boolean {
-  return assessments.some(item => item.status === "queued" && item.phase !== "waiting");
+  return assessments.some(item => item.status === "queued" && item.phase !== "waiting" && item.phase !== "consent");
 }
 
 export function nextReportRefreshDelay(startedAt: number, attempts: number, now: number): number | null {

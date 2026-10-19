@@ -53,7 +53,7 @@ npm run worker:hk
 
 All listeners bind to loopback. The first run generates independent random database passwords and report encryption keys, stored in `work/local-cn.env` and `work/local-hk.env` with permissions `600`; keys are never printed. Re-running initialisation preserves existing data. Databases can be stopped with `docker stop nova-psycho-helper-cn-db nova-psycho-helper-hk-db`, which does not delete data volumes.
 
-The entry page offers clearly labelled synthetic accounts. A suggested walkthrough: view families and assignments as an administrator → complete a pending assessment as a student → view the new report and download the PDF as the matching parent. The two sites share neither logins nor data.
+In demo mode the entry page offers five one-click synthetic accounts, and those seeded users have no password. The buttons are the administrator (Nova 管理员 · 演示 / Nova 管理員 · 示範), the 林 family's staff member (陈老师 · 演示 / 陳老師 · 示範), the 林 parent, the 林 student (林小禾), and that family's teacher (许老师 · 演示 / 許老師 · 示範). A suggested walkthrough: sign in as the administrator to view families and assignments → sign in as 林小禾 to complete a pending assessment → sign in as the 林 parent to view the new report and download the PDF. Sign in as 陈老师 / 陳老師 to open that family's case workspace, including safety alerts. Service mode does not show these buttons, and `POST /api/auth/demo` is refused. The two sites share neither logins nor data.
 
 ## Scoring and automatic report conventions
 
@@ -84,7 +84,7 @@ node scripts/run-region.mjs CN recovery-checks
 
 Integration tests run only against explicitly classified demo environments. Concurrency and lifecycle checks use synthetic families, or an isolated test database that is created and then dropped; they do not delete a user's existing families. Evidence is written to `work/qa/`.
 
-The PDF renderer tests need a real Chromium and are skipped without one; the suite says so when it skips them rather than passing quietly. Run `npx playwright install chromium`, or point `NOVA_CHROMIUM_EXECUTABLE` at one, to include them.
+The PDF renderer tests need a real Chromium and are skipped without one; the suite says so when it skips them rather than passing quietly. Run `npx playwright install chromium`, or point `NOVA_CHROMIUM_EXECUTABLE` at one, to include them. GitHub Actions installs Playwright Chromium before the unit tests and fails the job if those tests are skipped.
 
 Live AI conformance against a real regional workspace is checked separately, using an in-memory synthetic snapshot and no database:
 

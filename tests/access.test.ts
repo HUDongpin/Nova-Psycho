@@ -41,11 +41,14 @@ describe("familyFor",()=>{
     await expect(rejection).rejects.toThrow(/家庭|权限/);
   });
 
-  it("binds assigned_to to the staff actor",async()=>{
+  it("binds assigned_to to the staff actor and keeps the unassigned alert fallback until resolve",async()=>{
     mockQuery.mockResolvedValueOnce([familyRow]);
     await familyFor(actor("staff"),FAMILY_ID);
     const [sql,values]=mockQuery.mock.calls[0];
     expect(String(sql)).toContain("f.assigned_to=");
+    expect(String(sql)).toContain("f.assigned_to IS NULL");
+    expect(String(sql)).toContain("sa.resolved_at IS NULL");
+    expect(String(sql)).not.toContain("viewed_at");
     expect(values).toContain(USER_ID);
   });
 
@@ -61,15 +64,22 @@ describe("familyFor",()=>{
 });
 
 describe("consentFor",()=>{
-  it("returns true when an active consent row exists",async()=>{
-    mockQuery.mockResolvedValueOnce([{id:"c1"}]);
+  it("requires both participation purposes, including when they are separate rows",async()=>{
+    mockQuery.mockResolvedValueOnce([{scopes:["assessment"]},{scopes:["sensitive_data"]}]);
     await expect(consentFor(FAMILY_ID)).resolves.toBe(true);
     const [sql]=mockQuery.mock.calls[0];
     expect(String(sql)).toContain("revoked_at IS NULL");
-    expect(String(sql)).toContain("assessment");
-    expect(String(sql)).toContain("parent_report");
-    expect(String(sql)).toContain("sensitive_data");
-    expect(String(sql)).toContain("@>");
+    expect(String(sql)).toContain("scopes");
+  });
+
+  it("accepts a legacy combined row that still lists both participation purposes",async()=>{
+    mockQuery.mockResolvedValueOnce([{scopes:["assessment","parent_report","sensitive_data"]}]);
+    await expect(consentFor(FAMILY_ID)).resolves.toBe(true);
+  });
+
+  it("returns false when sensitive-data consent is missing",async()=>{
+    mockQuery.mockResolvedValueOnce([{scopes:["assessment","parent_report"]}]);
+    await expect(consentFor(FAMILY_ID)).resolves.toBe(false);
   });
 
   it("returns false when no consent row exists",async()=>{

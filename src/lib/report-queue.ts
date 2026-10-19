@@ -15,6 +15,7 @@ export async function consumeReportMessage(message:unknown):Promise<void>{
   if(!parsed.success||parsed.data.region!==config.region)return;
   try{
     const result=await processReportJob(parsed.data.jobId);
+    if(result.status==="paused")return;
     if(result.status==="retry_at")throw new ReportRetryAt(result.retryAt);
   }catch(error){
     if(error instanceof ReportRetryAt)throw error;

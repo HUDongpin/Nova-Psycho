@@ -26,7 +26,7 @@ async function call(c:BrowserContext,path:string,data?:unknown){const r=await c.
 try{
  const contexts={parent:await context(),student:await context(),teacher:await context()};
  const suffix=randomUUID().slice(0,8),password=randomUUID()+'aA9';
- const started=await call(contexts.parent,'/api/triad/parent',{parentName:'合成刷新家长',username:`refresh-${suffix}-parent`,password,relationship:'母亲',childName:'合成刷新孩子',birthDate:'2013-06-15',grade:'小学四至六年级',accepted:true});
+ const started=await call(contexts.parent,'/api/triad/parent',{parentName:'合成刷新家长',username:`refresh-${suffix}-parent`,password,relationship:'母亲',childName:'合成刷新孩子',birthDate:'2013-06-15',grade:'小学四至六年级',assessment:true,sensitiveData:true,parentReport:true});
  for(const role of ['student','teacher'] as const)await call(contexts[role],'/api/triad/join',{code:started.joinCode,role,name:'合成刷新'+role,username:`refresh-${suffix}-${role}`,password});
  const ids:Record<string,string>={};const pages:any={};const scales={parent:parentScale,student:childScale,teacher:teacherScale};
  for(const role of ['parent','student','teacher'] as const){ids[role]=(await call(contexts[role],'/api/workspace')).assessments.find((a:any)=>a.canRespond).id;pages[role]=await contexts[role].newPage();pages[role].on('pageerror',(e:Error)=>result.browserErrors.push(e.name));}

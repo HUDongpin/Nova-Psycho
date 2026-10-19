@@ -30,7 +30,7 @@ async function fixture(singleLineLegacyRecord = false) {
   await context.route("**/*", route => new URL(route.request().url()).origin === base ? route.continue() : route.abort());
   const started = await call(context, "/api/triad/parent", {
     parentName: "合成文字草稿家长", username: "text-draft-" + randomUUID(), password: randomUUID() + "aA9",
-    relationship: "母亲", childName: "合成文字孩子", birthDate: "2014-01-01", grade: "小学四至六年级", accepted: true,
+    relationship: "母亲", childName: "合成文字孩子", birthDate: "2014-01-01", grade: "小学四至六年级", assessment: true, sensitiveData: true, parentReport: true,
   });
   const workspace = await call(context, "/api/workspace"), id = workspace.assessments.find((a: { familyId: string }) => a.familyId === started.familyId).id;
   const prefill: Record<string, unknown> = {};

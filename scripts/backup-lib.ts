@@ -84,7 +84,8 @@ export async function encryptFile(source: string, destination: string, key: Buff
   await appendFile(destination, cipher.getAuthTag());
 }
 
-export async function decryptFile(source: string, destination: string, key: Buffer): Promise<void> {
+export async function decryptFile(source: string, destination: string, key: Buffer, signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
   const { size } = await stat(source);
   if (size < HEADER_BYTES) throw new Error("Backup file is too short to be valid");
   const handle = await open(source, "r");
@@ -97,12 +98,14 @@ export async function decryptFile(source: string, destination: string, key: Buff
     await handle.close();
   }
   if (front.subarray(0, MAGIC.length).toString() !== MAGIC) throw new Error("Backup file is not in the expected encrypted format");
+  signal?.throwIfAborted();
   const decipher = createDecipheriv("aes-256-gcm", key, front.subarray(MAGIC.length, FRONT_BYTES));
   decipher.setAuthTag(tag);
   try {
-    await pipeline(createReadStream(source, { start: FRONT_BYTES, end: size - TAG_BYTES - 1 }), decipher, createWriteStream(destination, { mode: 0o600 }));
+    await pipeline(createReadStream(source, { start: FRONT_BYTES, end: size - TAG_BYTES - 1 }), decipher, createWriteStream(destination, { mode: 0o600 }), { signal });
   } catch (error) {
     await rm(destination, { force: true });
+    if (signal?.aborted) throw signal.reason;
     // A wrong key surfaces as an authentication failure, not as readable output.
     throw new Error(`Could not decrypt ${source}. The backup key does not match, or the file is damaged. (${(error as Error).message})`);
   }
@@ -126,7 +129,7 @@ export function timestampSlug(date = new Date()): string {
 }
 
 export const COUNTED_TABLES = [
-  "users","families","memberships","consents","invitations","scales","content_versions",
+  "users","families","memberships","consents","consent_scope_revocations","invitations","scales","content_versions",
   "assessments","reports","report_jobs","goals","observations","audit_events","file_deletion_jobs"
 ] as const;
 export type CountedTable = typeof COUNTED_TABLES[number];
