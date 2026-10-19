@@ -2,7 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
 import type { Actor, Locale, RespondentRole, Role } from "../domain/types";
 import { z } from "zod";
-import { childScale, childScaleBirthAge, currentTriadScaleIds, teacherScale, triadScales } from "../domain/triad-scales";
+import { childScale, childScaleStaffNotes, currentTriadScaleIds, teacherScale, teacherScaleStaffNotes, triadScales } from "../domain/triad-scales";
 import { TRIAD_BUNDLE, triadRolesReady } from "../domain/triad-report";
 import { pair } from "../domain/zh-pair";
 import { parseAdvice, parseStoredScale, parseTemplate } from "../domain/validation";
@@ -192,12 +192,14 @@ export async function ensureTriadInstruments(): Promise<void> {
     const id = `${parsed.id}@${parsed.version}`;
     // Insert only. scales_immutable rejects definition rewrites, and an open assessment scores the row it was opened with.
     await query("INSERT INTO scales(id,scale_id,version,definition) VALUES($1,$2,$3,$4) ON CONFLICT(id) DO NOTHING", [id, parsed.id, parsed.version, JSON.stringify(parsed)]);
-    // Teacher 1.0.0 stays stored for open forms. Parent 1.0.0 and 1.1.0 remain active so an explicit historical choice is still accepted.
-    // The birth-date child revision retires earlier child rows for new assignment. Tasks already opened keep their versions.
-    if (parsed.id === "growth-teacher" && parsed.version !== "1.0.0") {
+    // Teacher 1.0.0 stays stored for open forms. Parent versions remain active so an explicit historical choice is still accepted.
+    // The current child and teacher revisions retire earlier rows for new assignment. Tasks already opened keep their versions.
+    const currentChildId = `${childScaleStaffNotes.id}@${childScaleStaffNotes.version}`;
+    const currentTeacherId = `${teacherScaleStaffNotes.id}@${teacherScaleStaffNotes.version}`;
+    if (parsed.id === "growth-teacher" && parsed.version !== "1.0.0" && id !== currentTeacherId) {
       await query("UPDATE scales SET status='retired' WHERE id=$1 AND status='active'", [`${parsed.id}@1.0.0`]);
     }
-    if (parsed.id === "growth-child" && parsed.version === childScaleBirthAge.version) {
+    if (id === currentChildId || id === currentTeacherId) {
       await query("UPDATE scales SET status='retired' WHERE scale_id=$1 AND id<>$2 AND status='active'", [parsed.id, id]);
     }
   }

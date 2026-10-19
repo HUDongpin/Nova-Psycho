@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { demoAdvice, demoTemplate } from "../src/domain/demo";
 import { reportHtml } from "../src/domain/report-html";
 import { scoreAssessment } from "../src/domain/scoring";
-import { composeTriad, previewAnswers, type TriadSource } from "../src/domain/triad-report";
-import { childScale, parentScale, parentScaleV1, teacherScale } from "../src/domain/triad-scales";
+import { composeTriad, previewAnswers, staffOnlyText, type TriadSource } from "../src/domain/triad-report";
+import { childScale, childScaleStaffNotes, parentScale, parentScaleStaffNotes, parentScaleV1, teacherScale, teacherScaleStaffNotes } from "../src/domain/triad-scales";
 import type { Locale, ReportPayload, ScaleDefinition, TriadReport } from "../src/domain/types";
 
 const locales: Locale[] = ["zh-CN", "zh-HK"];
@@ -204,6 +204,33 @@ describe("portrait, safety and privacy boundaries", () => {
       expect(html).toContain("parent-words-SYNTHETIC_PRIVATE");
       expect(html).toContain("teacher-words-SYNTHETIC_PRIVATE");
       for (const message of report.safety) expect(html).toContain(message[locale]);
+    }
+  });
+
+  it("keeps service-team and child-hope writing out of the parent report on the current scales", () => {
+    const sources = [source(childScaleStaffNotes), source(parentScaleStaffNotes), source(teacherScaleStaffNotes)];
+    for (const from of sources) for (const item of from.scale.items) {
+      if (item.kind === "text" && from.answers[item.id] !== undefined) from.answers[item.id] = `${from.role}-${item.report}-SYNTHETIC_PRIVATE`;
+    }
+    expect(sources.map(item => item.scale.version)).toEqual(["1.3.0", "1.3.0", "1.2.0"]);
+    expect(sources.every(item => item.scale.demo === false && item.scale.norm.validated === false)).toBe(true);
+    for (const id of ["q32", "q33", "q34", "q35", "q36", "q37", "q38"]) expect(parentScaleStaffNotes.items.find(item => item.id === id)?.report).toBe("staff");
+    expect(teacherScaleStaffNotes.items.find(item => item.id === "t23")?.report).toBe("staff");
+    for (const id of ["c19", "c20", "c21", "c22"]) expect(childScaleStaffNotes.items.find(item => item.id === id)?.report).toBe("staff");
+    expect(parentScaleStaffNotes.items.find(item => item.id === "p_worry")?.report).toBe("words");
+    expect(teacherScaleStaffNotes.items.find(item => item.id === "t20")?.report).toBe("words");
+    const notes = sources.flatMap(entry => staffOnlyText(entry.scale, entry.answers).map(note => note.value));
+    expect(notes).toEqual(expect.arrayContaining(["parent-staff-SYNTHETIC_PRIVATE", "teacher-staff-SYNTHETIC_PRIVATE", "student-staff-SYNTHETIC_PRIVATE"]));
+    const report = composeTriad(sources);
+    expect(JSON.stringify(report)).not.toContain("staff-SYNTHETIC_PRIVATE");
+    expect(JSON.stringify(report)).toContain("parent-words-SYNTHETIC_PRIVATE");
+    expect(report.words.every(item => item.role !== "student")).toBe(true);
+    for (const locale of locales) {
+      const html = reportHtml(payload(sources), locale);
+      expect(html).not.toContain("staff-SYNTHETIC_PRIVATE");
+      expect(html).not.toContain("student-words-SYNTHETIC_PRIVATE");
+      expect(html).toContain("parent-words-SYNTHETIC_PRIVATE");
+      expect(html).toContain("teacher-words-SYNTHETIC_PRIVATE");
     }
   });
 });

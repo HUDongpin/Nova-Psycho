@@ -4,6 +4,7 @@ vi.mock("../src/lib/db",()=>({query:vi.fn()}));
 import { query } from "../src/lib/db";
 import { workspaceFor } from "../src/lib/workspace";
 import { demoScale } from "../src/domain/demo";
+import { childScaleBirthAge, childScaleStaffNotes, teacherScale } from "../src/domain/triad-scales";
 import { childScale as oldChild } from "./fixtures/triad-scales-ed66f27";
 import type { Actor,Role } from "../src/domain/types";
 
@@ -299,6 +300,30 @@ describe("administrator extras",()=>{
   });
 });
 
+describe("reassessment staff notes",()=>{
+  it("keeps both notes when a later round repeats the item stem",async()=>{
+    const rounds=[
+      {id:"assess-1",family_id:FAMILY_ID,answers:{t16:"第一次客观记录"},definition:teacherScale},
+      {id:"assess-2",family_id:FAMILY_ID,answers:{t16:"第二次客观记录"},definition:teacherScale}
+    ];
+    mockQuery.mockImplementation((async(sql:string)=>{
+      const text=String(sql);
+      if(text.includes("FROM families f WHERE"))return [familyRow];
+      if(text.includes("definition->>'bundle'"))return rounds;
+      return [];
+    }) as never);
+    const workspace=await workspaceFor(actor("staff"),"zh-CN");
+    expect(workspace.staffNotes).toHaveLength(2);
+    expect(new Set(workspace.staffNotes.map(note=>note.label)).size).toBe(1);
+    expect(workspace.staffNotes.map(note=>({assessmentId:note.assessmentId,itemId:note.itemId,value:note.value}))).toEqual([
+      {assessmentId:"assess-1",itemId:"t16",value:"第一次客观记录"},
+      {assessmentId:"assess-2",itemId:"t16",value:"第二次客观记录"}
+    ]);
+    const parent=await workspaceFor(actor("parent"),"zh-CN");
+    expect(parent.staffNotes).toEqual([]);
+  });
+});
+
 describe("safety alerts on the workbench",()=>{
   it("asks for unresolved alerts and does not drop them when they have been acknowledged",async()=>{
     await workspaceFor(actor("staff"),"zh-CN");
@@ -447,6 +472,36 @@ describe("triad reports with fixed round sources",()=>{
       row({id:"t1",respondent_role:"teacher",report_id:"r1"})
     ]);
     for(const item of workspace.assessments)expect(item.reportId).toBe(item.id.endsWith("1")?"r1":"r2");
+  });
+});
+
+describe("child hopes staff notes",()=>{
+  const HOPES_ASSESSMENT="aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa";
+  const hopes={c17:"CHILD_SCENE_WORDS_SENTINEL",c19:"STAFF_ONLY_c19",c20:"STAFF_ONLY_c20",c21:"STAFF_ONLY_c21",c22:"STAFF_ONLY_c22"};
+  function load(definition:typeof childScaleStaffNotes){
+    mockQuery.mockImplementation((async(sql:string)=>{
+      const text=String(sql);
+      if(text.includes("FROM families f WHERE"))return [familyRow];
+      if(text.includes("definition->>'bundle'"))return [{id:HOPES_ASSESSMENT,family_id:FAMILY_ID,answers:hopes,definition}];
+      return [];
+    }) as never);
+  }
+  it("shows 1.3.0 hopes writing on the staff workbench and withholds it from parents",async()=>{
+    load(childScaleStaffNotes);
+    const staff=await workspaceFor(actor("staff"),"zh-CN");
+    expect(staff.staffNotes).toEqual(["c19","c20","c21","c22"].map(id=>({familyId:FAMILY_ID,assessmentId:HOPES_ASSESSMENT,itemId:id,label:childScaleStaffNotes.items.find(item=>item.id===id)!.label["zh-CN"],value:`STAFF_ONLY_${id}`})));
+    expect(JSON.stringify(staff)).not.toContain("CHILD_SCENE_WORDS_SENTINEL");
+    stub();
+    const parent=await workspaceFor(actor("parent"),"zh-CN");
+    expect(parent.staffNotes).toEqual([]);
+    expect(sqls().some(sql=>sql.includes("definition->>'bundle'"))).toBe(false);
+    expect(JSON.stringify(parent)).not.toContain("STAFF_ONLY_");
+  });
+  it("does not reclassify hopes writing stored on growth-child@1.2.0",async()=>{
+    load(childScaleBirthAge);
+    const staff=await workspaceFor(actor("staff"),"zh-HK");
+    expect(staff.staffNotes).toEqual([]);
+    expect(JSON.stringify(staff)).not.toContain("STAFF_ONLY_");
   });
 });
 

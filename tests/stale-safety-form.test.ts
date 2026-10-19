@@ -5,7 +5,7 @@ import type { Actor } from "../src/domain/types";
 import { scoreAssessment } from "../src/domain/scoring";
 import { surveyDefinition } from "../src/domain/survey";
 import { previewAnswers } from "../src/domain/triad-report";
-import { childScale, childScaleBirthAge, childScaleSafety, parentScale, parentScaleSafety, parentScaleV1, teacherScale, teacherScaleSafety } from "../src/domain/triad-scales";
+import { childScale, childScaleBirthAge, childScaleSafety, childScaleStaffNotes, parentScale, parentScaleSafety, parentScaleStaffNotes, parentScaleV1, teacherScale, teacherScaleSafety, teacherScaleStaffNotes } from "../src/domain/triad-scales";
 import { parseScale, parseStoredScale } from "../src/domain/validation";
 import { demoAdvice, demoTemplate } from "../src/domain/demo";
 import { childScaleAt1_0_0 } from "./fixtures/child-scale-v1";
@@ -116,29 +116,38 @@ describe("assessments opened on growth-child@1.0.0", () => {
 });
 
 describe("new triad assessments use the published definition", () => {
-  it("inserts frozen versions and the birth-date child revision without rewriting a stored definition", async () => {
+  it("inserts frozen versions and the staff-note revisions without rewriting a stored definition", async () => {
     expect(`${childScale.id}@${childScale.version}`).toBe("growth-child@1.0.0");
     expect(`${childScaleSafety.id}@${childScaleSafety.version}`).toBe("growth-child@1.1.0");
     expect(`${childScaleBirthAge.id}@${childScaleBirthAge.version}`).toBe("growth-child@1.2.0");
+    expect(`${childScaleStaffNotes.id}@${childScaleStaffNotes.version}`).toBe("growth-child@1.3.0");
     expect(`${parentScaleSafety.id}@${parentScaleSafety.version}`).toBe("growth-parent@1.2.0");
+    expect(`${parentScaleStaffNotes.id}@${parentScaleStaffNotes.version}`).toBe("growth-parent@1.3.0");
     expect(`${teacherScaleSafety.id}@${teacherScaleSafety.version}`).toBe("growth-teacher@1.1.0");
+    expect(`${teacherScaleStaffNotes.id}@${teacherScaleStaffNotes.version}`).toBe("growth-teacher@1.2.0");
     expect(childScaleSafety.demo).toBe(false);
     expect(childScaleBirthAge.demo).toBe(false);
+    expect(childScaleStaffNotes.demo).toBe(false);
     expect(childScaleSafety.norm.validated).toBe(false);
     expect(() => parseScale(childScaleSafety)).toThrow(/Unvalidated instruments must be labelled demo/);
     expect(() => parseScale(childScaleBirthAge)).toThrow(/Unvalidated instruments must be labelled demo/);
+    expect(() => parseScale(childScaleStaffNotes)).toThrow(/Unvalidated instruments must be labelled demo/);
     expect(childScaleSafety.items.find(item => item.id === "c15")?.showIf?.anyOf).toEqual([1, 2, 3, 4, 5, 7, 8]);
     expect(childScaleSafety.items.find(item => item.id === "c18_1")?.showIf).toEqual({ itemId: "c_age", anyOf: [12, 13, 14, 15, 16, 17] });
     expect(childScaleSafety.items.find(item => item.id === "c18_1")?.visibleFromAge).toBeUndefined();
     expect(childScaleBirthAge.items.find(item => item.id === "c18_1")?.visibleFromAge).toBe(12);
     expect(childScaleBirthAge.items.find(item => item.id === "c18_1")?.showIf).toBeUndefined();
+    for (const id of ["c19", "c20", "c21", "c22"]) {
+      expect(childScaleBirthAge.items.find(item => item.id === id)?.report).toBe("words");
+      expect(childScaleStaffNotes.items.find(item => item.id === id)?.report).toBe("staff");
+    }
     vi.mocked(query).mockResolvedValue([]);
     await ensureTriadInstruments();
     const sql = vi.mocked(query).mock.calls.map(([text]) => String(text));
     expect(sql.some(text => text.includes("DO UPDATE SET definition"))).toBe(false);
     expect(sql.some(text => text.includes("UPDATE content_versions"))).toBe(false);
     const inserts = vi.mocked(query).mock.calls.filter(([text]) => String(text).includes("INSERT INTO scales"));
-    const published = [childScale, childScaleSafety, childScaleBirthAge, parentScaleV1, parentScale, parentScaleSafety, teacherScale, teacherScaleSafety];
+    const published = [childScale, childScaleSafety, childScaleBirthAge, childScaleStaffNotes, parentScaleV1, parentScale, parentScaleSafety, parentScaleStaffNotes, teacherScale, teacherScaleSafety, teacherScaleStaffNotes];
     expect(inserts.map(([, values]) => values?.[0])).toEqual(published.map(scale => `${scale.id}@${scale.version}`));
     expect(inserts.every(([text]) => String(text).includes("ON CONFLICT(id) DO NOTHING"))).toBe(true);
     inserts.forEach(([, values], index) => {
@@ -156,10 +165,28 @@ describe("new triad assessments use the published definition", () => {
     expect(storedBirth.items.find((item: { id: string; showIf: { anyOf: number[] } }) => item.id === "c15").showIf.anyOf).toEqual([1, 2, 3, 4, 5, 7, 8]);
     expect(storedBirth.items.find((item: { id: string; visibleFromAge?: number }) => item.id === "c18_1").visibleFromAge).toBe(12);
     expect(storedBirth.items.find((item: { id: string; showIf?: unknown }) => item.id === "c18_1").showIf).toBeUndefined();
+    for (const id of ["c19", "c20", "c21", "c22"]) expect(storedBirth.items.find((item: { id: string; report?: string }) => item.id === id).report).toBe("words");
+    const storedChild = JSON.parse(String(inserts[3][1]?.[3]));
+    expect(storedChild.version).toBe("1.3.0");
+    expect(storedChild.demo).toBe(false);
+    for (const id of ["c19", "c20", "c21", "c22"]) expect(storedChild.items.find((item: { id: string; report?: string }) => item.id === id).report).toBe("staff");
+    const storedParent = JSON.parse(String(inserts.find(([, values]) => values?.[0] === "growth-parent@1.3.0")?.[1]?.[3]));
+    const storedPreviousParent = JSON.parse(String(inserts.find(([, values]) => values?.[0] === "growth-parent@1.2.0")?.[1]?.[3]));
+    const storedTeacher = JSON.parse(String(inserts.find(([, values]) => values?.[0] === "growth-teacher@1.2.0")?.[1]?.[3]));
+    const storedPreviousTeacher = JSON.parse(String(inserts.find(([, values]) => values?.[0] === "growth-teacher@1.1.0")?.[1]?.[3]));
+    for (const id of ["q32", "q33", "q34", "q35", "q36", "q37", "q38"]) {
+      expect(storedPreviousParent.items.find((item: { id: string; report?: string }) => item.id === id).report).toBe("words");
+      expect(storedParent.items.find((item: { id: string; report?: string }) => item.id === id).report).toBe("staff");
+    }
+    expect(storedPreviousTeacher.items.find((item: { id: string; report?: string }) => item.id === "t23").report).toBe("words");
+    expect(storedTeacher.items.find((item: { id: string; report?: string }) => item.id === "t23").report).toBe("staff");
+    expect(storedParent.items.find((item: { id: string; report?: string }) => item.id === "q40").report).toBe("staff");
+    expect(storedTeacher.items.find((item: { id: string; report?: string }) => item.id === "t16").report).toBe("staff");
     const retired = vi.mocked(query).mock.calls.filter(([text]) => String(text).includes("UPDATE scales SET status='retired'"));
     expect(retired.map(([, values]) => values)).toEqual([
-      ["growth-child", "growth-child@1.2.0"],
-      ["growth-teacher@1.0.0"]
+      ["growth-child", "growth-child@1.3.0"],
+      ["growth-teacher@1.0.0"],
+      ["growth-teacher", "growth-teacher@1.2.0"]
     ]);
     expect(retired.some(([, values]) => String(values?.[0]).startsWith("growth-parent@"))).toBe(false);
   });

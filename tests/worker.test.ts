@@ -152,8 +152,11 @@ describe("orphan report cleanup",()=>{
 describe("processing one job",()=>{
   const job={id:"job1",assessment_id:ASSESSMENT_ID,attempts:1};
   it("returns false when there is nothing to claim",async()=>{
-    mockQuery.mockResolvedValueOnce([]);
+    mockQuery.mockResolvedValue([]);
     await expect(processOneJob()).resolves.toBe(false);
+    expect(mockQuery.mock.calls.some(([sql])=>String(sql).includes("WITH candidate"))).toBe(true);
+    expect(mockQuery.mock.calls.some(([sql])=>String(sql).includes("ORDER BY a.family_id,j.id LIMIT 25"))).toBe(true);
+    expect(mockTransaction).not.toHaveBeenCalled();
   });
   it("claims a job with a lease and skip-locked semantics",async()=>{
     mockQuery.mockResolvedValueOnce([job]).mockResolvedValue([]);

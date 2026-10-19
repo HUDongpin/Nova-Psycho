@@ -1,5 +1,5 @@
 import type { DimensionScore, Locale, RespondentRole, ScaleDefinition, ScaleDimension, ScaleItem, StoredAnswer, TextPair, TriadReport } from "./types";
-import { scoreAssessment } from "./scoring";
+import { answerVisible, scoreAssessment } from "./scoring";
 import { pair } from "./zh-pair";
 
 export const TRIAD_BUNDLE = "growth-triad";
@@ -109,7 +109,7 @@ export function composeTriad(sources: TriadSource[]): TriadReport {
   const domains = DOMAINS.flatMap(([key, label]) => {
     const views = ordered.flatMap(source => source.scale.dimensions.filter(dimension => dimension.domain === key).flatMap(dimension => {
       const dimensionItems = dimension.items.map(id => source.scale.items.find(item => item.id === id)).filter(item => item !== undefined);
-      if (dimensionItems.length > 0 && dimensionItems.every(item => item.visibleFromAge !== undefined && source.score.age < item.visibleFromAge)) return [];
+      if (dimensionItems.length > 0 && dimensionItems.every(item => !answerVisible(source.answers, item, source.score.age))) return [];
       const scored = source.score.dimensions.find(item => item.key === dimension.key);
       const raw = scored?.raw ?? null;
       return [{
@@ -182,9 +182,9 @@ export function previewAnswers(scale: ScaleDefinition, mode: "calm" | "risk" = "
   return answers;
 }
 
-export function staffOnlyText(scale: ScaleDefinition, answers: Record<string, StoredAnswer>): { label: TextPair; value: string }[] {
+export function staffOnlyText(scale: ScaleDefinition, answers: Record<string, StoredAnswer>): { itemId: string; label: TextPair; value: string }[] {
   return scale.items.filter(item => item.report === "staff").flatMap(item => {
     const value = answers[item.id];
-    return typeof value === "string" && value.trim() ? [{ label: item.label, value: value.trim() }] : [];
+    return typeof value === "string" && value.trim() ? [{ itemId: item.id, label: item.label, value: value.trim() }] : [];
   });
 }

@@ -59,7 +59,7 @@ async function fixture(target: string, otherSaved = false) {
   const created = await response.json();
   const w = await (await api("/api/workspace")).json();
   const task = w.assessments.find((a: { familyId: string; respondentRole: string }) => a.familyId === created.familyId && a.respondentRole === "parent");
-  assert.equal(task.scaleVersionId, "growth-parent@1.2.0");
+  assert.equal(task.scaleVersionId, "growth-parent@1.3.0");
   fixtures.push({ familyId: created.familyId, assessmentId: task.id });
   const path = `/api/assessments/${task.id}`;
   const answers = answersBefore(target);

@@ -6,7 +6,7 @@ import type {Assessment,Locale,Report,Session,SurveyRecord,Workspace} from "../s
 import {demoScale} from "../src/domain/demo";
 import {scoreAssessment} from "../src/domain/scoring";
 import {previewAnswers} from "../src/domain/triad-report";
-import {childScaleBirthAge,parentScaleSafety,teacherScaleSafety} from "../src/domain/triad-scales";
+import {childScaleStaffNotes,parentScaleStaffNotes,teacherScaleStaffNotes} from "../src/domain/triad-scales";
 import type {AdviceLibrary,ContentSnapshot,ReportTemplate,RespondentRole,ScaleDefinition,StoredAnswer} from "../src/domain/types";
 
 type Client={base:string;cookie:string};
@@ -18,7 +18,7 @@ const runId=`${new Date().toISOString().replace(/[:.]/g,"-")}-${randomBytes(4).t
 const nonce=randomBytes(6).toString("hex");
 const demoId="nova-family-demo@1.0.0";
 const roles=["parent","student","teacher"] as const;
-const definitions={parent:parentScaleSafety,student:childScaleBirthAge,teacher:teacherScaleSafety};
+const definitions={parent:parentScaleStaffNotes,student:childScaleStaffNotes,teacher:teacherScaleStaffNotes};
 const outputDir=path.resolve(process.env.NOVA_INTEGRATION_OUTPUT_DIR??`work/qa/integration-${runId}`);
 const outputRelative=path.relative(path.resolve("work"),outputDir);
 assert.ok(outputRelative&&!outputRelative.startsWith("..")&&!path.isAbsolute(outputRelative),"Integration evidence must be stored inside work/");

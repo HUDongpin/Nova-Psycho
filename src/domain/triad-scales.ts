@@ -321,9 +321,34 @@ export const parentScaleSafety = checklistSafetyRevision(parentScale, "1.2.0", "
   [[9], "家长没有回答需要及时关注的情况。请工作人员先查看，不要把未回答当成没有危险。如有眼前危险，请联系当地紧急服务。"]
 ]);
 export const childScaleBirthAge = childBirthAgeRevision(childScaleSafety);
-export const triadScales = [childScale, childScaleSafety, childScaleBirthAge, parentScaleV1, parentScale, parentScaleSafety, teacherScale, teacherScaleSafety];
+
+const CHILD_STAFF_NOTES_VERSION = "1.3.0";
+const PARENT_STAFF_NOTES_VERSION = "1.3.0";
+const TEACHER_STAFF_NOTES_VERSION = "1.2.0";
+const CHILD_HOPE_IDS = ["c19", "c20", "c21", "c22"] as const;
+const PARENT_SERVICE_IDS = ["q32", "q33", "q34", "q35", "q36", "q37", "q38"] as const;
+
+/** Staff-only writing for new assignments. Published earlier versions stay byte-identical. */
+function staffNotesRevision(original: ScaleDefinition, version: string, itemIds: readonly string[]): ScaleDefinition {
+  const revised = structuredClone(original);
+  revised.version = version;
+  const pending = new Set<string>(itemIds);
+  for (const item of revised.items) {
+    if (!pending.has(item.id)) continue;
+    if (item.kind !== "text" || item.report !== "words") throw new Error(`Expected parent-report writing at ${original.id}@${original.version} ${item.id}`);
+    item.report = "staff";
+    pending.delete(item.id);
+  }
+  if (pending.size > 0) throw new Error(`Missing staff-note items on ${original.id}@${original.version}: ${[...pending].join(",")}`);
+  return revised;
+}
+
+export const childScaleStaffNotes = staffNotesRevision(childScaleBirthAge, CHILD_STAFF_NOTES_VERSION, CHILD_HOPE_IDS);
+export const parentScaleStaffNotes = staffNotesRevision(parentScaleSafety, PARENT_STAFF_NOTES_VERSION, PARENT_SERVICE_IDS);
+export const teacherScaleStaffNotes = staffNotesRevision(teacherScaleSafety, TEACHER_STAFF_NOTES_VERSION, ["t23"]);
+export const triadScales = [childScale, childScaleSafety, childScaleBirthAge, childScaleStaffNotes, parentScaleV1, parentScale, parentScaleSafety, parentScaleStaffNotes, teacherScale, teacherScaleSafety, teacherScaleStaffNotes];
 export const currentTriadScaleIds = {
-  parent: `${parentScaleSafety.id}@${parentScaleSafety.version}`,
-  student: `${childScaleBirthAge.id}@${childScaleBirthAge.version}`,
-  teacher: `${teacherScaleSafety.id}@${teacherScaleSafety.version}`
+  parent: `${parentScaleStaffNotes.id}@${parentScaleStaffNotes.version}`,
+  student: `${childScaleStaffNotes.id}@${childScaleStaffNotes.version}`,
+  teacher: `${teacherScaleStaffNotes.id}@${teacherScaleStaffNotes.version}`
 } as const;

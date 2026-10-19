@@ -70,7 +70,7 @@ GET `/api/workspace?locale=...` returns `{user,region,mode,families,assessments,
 | report | `{id,familyId,childName,title,respondentRole,scaleTitle,combined?,createdAt,generationMode:'template'\|'ai',risk,demo,dimensions:[{key,label,raw,max,band}],assessmentId,comparison:{available,previousDate?,changes?,reason?}}` |
 | scale | `{id,scaleId,version,title,description,demo,minAge,maxAge,roles,retakeDays,source,rights,status:'active'\|'retired',isDefaultVersion?}` |
 | alert | `{id,familyId,childName,createdAt,viewedAt}` for an unresolved safety signal |
-| staff note | `{familyId,label,value}`; only available to authorised staff/admin, never to the parent report or AI |
+| staff note | `{familyId,assessmentId,itemId,label,value}`; only available to authorised staff/admin, never to the parent report or AI |
 | goal / observation | Goals have `{id,familyId,title,detail,status,createdAt}`. Observations have `{id,familyId,body,createdAt,authorName}` and are staff/admin-only. |
 | staff / contentVersions | `{id,name}[]` and `{id,kind,version,libraryKey?,createdAt}[]`; administrator fields are not exposed to other roles. |
 

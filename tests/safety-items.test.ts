@@ -7,7 +7,7 @@ import { SubmissionPanel } from "../src/components/documents";
 import { scoreAssessment, ScoringError } from "../src/domain/scoring";
 import { surveyDefinition } from "../src/domain/survey";
 import { previewAnswers } from "../src/domain/triad-report";
-import { childScaleBirthAge, childScaleSafety as childScale, currentTriadScaleIds, parentScaleSafety as parentScale, teacherScaleSafety as teacherScale } from "../src/domain/triad-scales";
+import { childScaleBirthAge, childScaleSafety as childScale, childScaleStaffNotes, currentTriadScaleIds, parentScaleSafety as parentScale, parentScaleStaffNotes, teacherScaleSafety as teacherScale, teacherScaleStaffNotes } from "../src/domain/triad-scales";
 
 const student = { age: 12, region: "CN" as const, role: "student" as const };
 const parent = { age: 12, region: "CN" as const, role: "parent" as const };
@@ -18,14 +18,17 @@ function choice(scale: typeof childScale, itemId: string, label: string) {
 }
 
 describe("safety items stay early and exclusive", () => {
-  it("publishes parent and teacher safety revisions, and the birth-date child revision, for new assignments", () => {
+  it("publishes staff-note revisions for new assignments and keeps the birth-date safety items", () => {
     expect(currentTriadScaleIds).toEqual({
-      parent: `${parentScale.id}@${parentScale.version}`,
-      student: `${childScaleBirthAge.id}@${childScaleBirthAge.version}`,
-      teacher: `${teacherScale.id}@${teacherScale.version}`
+      parent: `${parentScaleStaffNotes.id}@${parentScaleStaffNotes.version}`,
+      student: `${childScaleStaffNotes.id}@${childScaleStaffNotes.version}`,
+      teacher: `${teacherScaleStaffNotes.id}@${teacherScaleStaffNotes.version}`
     });
+    expect(currentTriadScaleIds).toEqual({ parent: "growth-parent@1.3.0", student: "growth-child@1.3.0", teacher: "growth-teacher@1.2.0" });
     expect(childScaleBirthAge.items.find(item => item.id === "c15")?.showIf?.anyOf).toEqual([1, 2, 3, 4, 5, 7, 8]);
     expect(childScaleBirthAge.items.find(item => item.id === "c14")?.noAutoAdvance).toBe(true);
+    expect(parentScale.version).toBe("1.2.0");
+    expect(teacherScale.version).toBe("1.1.0");
   });
 
   it("asks c14–c16 before the long matrices and keeps them off the auto-advance timer", () => {
