@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PoolClient } from "pg";
-import type { Actor } from "../src/domain/types";
+import type { Actor, ScaleDefinition } from "../src/domain/types";
 import { statedAgeMismatch } from "../src/domain/age-review";
 import { scoreAssessment } from "../src/domain/scoring";
 import { surveyDefinition } from "../src/domain/survey";
@@ -95,6 +95,40 @@ describe("birth-date age is the only age used for the youth block", () => {
     };
     expect(composeTriad([source(11)]).domains.some(domain => domain.key === "autonomy")).toBe(false);
     expect(composeTriad([source(12)]).domains.some(domain => domain.key === "autonomy")).toBe(true);
+  });
+});
+
+describe("showIf does not turn a hidden dimension into missing answers", () => {
+  function source(scale: ScaleDefinition, age: number, answers = previewAnswers(scale)): TriadSource {
+    return { role: "student", scale, answers, score: scoreAssessment(scale, answers, { ...context, age }), submittedAt: "2026-10-11T00:00:00.000Z" };
+  }
+
+  it("leaves growth-child 1.2.0 autonomy unscored and out of the report for an under-12 child", () => {
+    const answers = previewAnswers(v12Child);
+    answers.c_age = 11;
+    const row = source(v12Child, 11, answers);
+    expect(row.score.dimensions.find(item => item.key === "c18")).toMatchObject({ raw: null, totalItems: 0, missing: [] });
+    expect(row.score.reasons).not.toContain("dimension_items_missing");
+    const report = composeTriad([row]);
+    expect(report.domains.some(domain => domain.key === "autonomy")).toBe(false);
+    expect(JSON.stringify(report)).not.toContain("不到四分之三");
+  });
+
+  it("keeps growth-child 1.3.0 youth items out under 12 and scores them from 12", () => {
+    const young = source(childScale, 11);
+    expect(young.score.status).toBe("valid");
+    expect(young.score.dimensions.find(item => item.key === "c18")).toMatchObject({ raw: null, totalItems: 0, missing: [] });
+    expect(composeTriad([young]).domains.some(domain => domain.key === "autonomy")).toBe(false);
+    expect(JSON.stringify(composeTriad([young]))).not.toContain("不到四分之三");
+
+    const older = source(childScale, 12);
+    const autonomy = older.score.dimensions.find(item => item.key === "c18");
+    expect(older.score.status).toBe("valid");
+    expect(autonomy).toMatchObject({ totalItems: 6, answered: 6, missing: [] });
+    expect(autonomy?.raw).not.toBeNull();
+    const olderReport = composeTriad([older]);
+    expect(olderReport.domains.some(domain => domain.key === "autonomy")).toBe(true);
+    expect(JSON.stringify(olderReport.domains.find(domain => domain.key === "autonomy"))).not.toContain("不到四分之三");
   });
 });
 

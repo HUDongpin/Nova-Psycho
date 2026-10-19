@@ -49,7 +49,7 @@ export function scoreAssessment(scale: ScaleDefinition, answers: Record<string, 
   const base={scaleId:scale.id,scaleVersion:scale.version,respondentRole:context.role,region:context.region,age:context.age,demo:scale.demo,norm:structuredClone(scale.norm),risk:riskMessages.length>0,riskMessages};
   if(reasons.length) return {...base,status:"ineligible",reasons,dimensions:[]};
   const dimensions:DimensionScore[]=scale.dimensions.map(d=>{
-    const selected=d.items.map(id=>items.get(id)!).filter(item=>item.visibleFromAge===undefined||answerVisible(answers,item,context.age));
+    const selected=d.items.map(id=>items.get(id)!).filter(item=>answerVisible(answers,item,context.age));
     if(selected.length===0)return {key:d.key,label:d.label,raw:null,min:0,max:0,answered:0,totalItems:0,missing:[],prorated:false,band:null,higherMeans:d.higherMeans};
     const missing=selected.filter(i=>numericScore(i,answers)===undefined).map(i=>i.id);
     const answered=selected.filter(i=>numericScore(i,answers)!==undefined);
@@ -77,7 +77,7 @@ export function scoreAssessment(scale: ScaleDefinition, answers: Record<string, 
     return typeof value!=="number";
   });
   if(requiredMissing.length) reasons.push("required_items_missing");
-  if(dimensions.some(d=>d.raw===null&&!scale.dimensions.find(source=>source.key===d.key)?.optional)) reasons.push("dimension_items_missing");
+  if(dimensions.some(d=>d.raw===null&&d.totalItems>0&&!scale.dimensions.find(source=>source.key===d.key)?.optional)) reasons.push("dimension_items_missing");
   return {...base,status:reasons.length?"incomplete":"valid",reasons,dimensions};
 }
 export function compareResults(current: ScoreResult, previous: ScoreResult | null, previousDate?:string, sameRespondent = true): Comparison {
