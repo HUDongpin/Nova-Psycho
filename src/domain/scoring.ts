@@ -1,7 +1,8 @@
 import type { Comparison, DimensionScore, Region, RespondentRole, ScaleDefinition, ScaleItem, ScoreResult, StoredAnswer } from "./types";
 export class ScoringError extends Error {}
 const kindOf=(item:ScaleItem)=>item.kind??"single";
-export function answerVisible(answers:Record<string,unknown>,item:ScaleItem):boolean{
+export function answerVisible(answers:Record<string,unknown>,item:ScaleItem,age?:number):boolean{
+  if(item.visibleFromAge!==undefined&&Number.isInteger(age)&&(age as number)<item.visibleFromAge)return false;
   if(!item.showIf)return true;
   const current=answers[item.showIf.itemId];
   const values=typeof current==="number"?[current]:Array.isArray(current)?current.filter((value):value is number=>typeof value==="number"):[];
@@ -40,7 +41,7 @@ export function scoreAssessment(scale: ScaleDefinition, answers: Record<string, 
   const items=new Map(scale.items.map(item=>[item.id,item]));
   const riskMessages=scale.riskRules.filter(rule=>{
     const item=items.get(rule.itemId);
-    if(item&&!answerVisible(answers,item))return false;
+    if(item&&!answerVisible(answers,item,context.age))return false;
     const value=answers[rule.itemId];
     const selected=typeof value==="number"?[value]:Array.isArray(value)?value.filter((entry):entry is number=>typeof entry==="number"):[];
     return selected.some(entry=>rule.values.includes(entry));
@@ -48,7 +49,8 @@ export function scoreAssessment(scale: ScaleDefinition, answers: Record<string, 
   const base={scaleId:scale.id,scaleVersion:scale.version,respondentRole:context.role,region:context.region,age:context.age,demo:scale.demo,norm:structuredClone(scale.norm),risk:riskMessages.length>0,riskMessages};
   if(reasons.length) return {...base,status:"ineligible",reasons,dimensions:[]};
   const dimensions:DimensionScore[]=scale.dimensions.map(d=>{
-    const selected=d.items.map(id=>items.get(id)!);
+    const selected=d.items.map(id=>items.get(id)!).filter(item=>item.visibleFromAge===undefined||answerVisible(answers,item,context.age));
+    if(selected.length===0)return {key:d.key,label:d.label,raw:null,min:0,max:0,answered:0,totalItems:0,missing:[],prorated:false,band:null,higherMeans:d.higherMeans};
     const missing=selected.filter(i=>numericScore(i,answers)===undefined).map(i=>i.id);
     const answered=selected.filter(i=>numericScore(i,answers)!==undefined);
     const min=selected.reduce((n,i)=>n+usableRange(i)[0],0)/(d.aggregation==="mean"?selected.length:1);
@@ -68,7 +70,7 @@ export function scoreAssessment(scale: ScaleDefinition, answers: Record<string, 
     return {key:d.key,label:d.label,raw,min,max,answered:answered.length,totalItems:selected.length,missing,prorated:raw!==null&&missing.length>0&&d.prorate,band,higherMeans:d.higherMeans};
   });
   const requiredMissing=scale.items.filter(i=>{
-    if(!i.required||!answerVisible(answers,i))return false;
+    if(!i.required||!answerVisible(answers,i,context.age))return false;
     const value=answers[i.id];
     if(kindOf(i)==="text")return typeof value!=="string"||value.trim().length===0;
     if(kindOf(i)==="multi")return !Array.isArray(value)||value.length===0;

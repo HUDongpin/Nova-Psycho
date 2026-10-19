@@ -41,9 +41,9 @@ describe("versioned parent questionnaire", () => {
     expect(instruments.childScaleSafety.version).toBe("1.1.0");
     expect(instruments.teacherScaleSafety.version).toBe("1.1.0");
     expect(instruments.triadScales.map(scale => `${scale.id}@${scale.version}`).sort()).toEqual([
-      "growth-child@1.0.0", "growth-child@1.1.0", "growth-parent@1.0.0", "growth-parent@1.1.0", "growth-parent@1.2.0", "growth-teacher@1.0.0", "growth-teacher@1.1.0"
+      "growth-child@1.0.0", "growth-child@1.1.0", "growth-child@1.2.0", "growth-parent@1.0.0", "growth-parent@1.1.0", "growth-parent@1.2.0", "growth-teacher@1.0.0", "growth-teacher@1.1.0"
     ]);
-    expect(instruments.currentTriadScaleIds).toEqual({ parent: "growth-parent@1.2.0", student: "growth-child@1.1.0", teacher: "growth-teacher@1.1.0" });
+    expect(instruments.currentTriadScaleIds).toEqual({ parent: "growth-parent@1.2.0", student: "growth-child@1.2.0", teacher: "growth-teacher@1.1.0" });
   });
 
   it("changes only the approved old-item wording and adds seven independent optional staff fields", () => {

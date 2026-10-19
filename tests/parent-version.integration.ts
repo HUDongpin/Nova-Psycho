@@ -10,7 +10,7 @@ import { modelInput } from "../src/domain/narrative";
 import { scoreAssessment } from "../src/domain/scoring";
 import { surveyDefinition } from "../src/domain/survey";
 import { previewAnswers } from "../src/domain/triad-report";
-import { childScaleSafety, parentScale, parentScaleSafety, parentScaleV1, teacherScaleSafety } from "../src/domain/triad-scales";
+import { childScaleBirthAge, parentScale, parentScaleSafety, parentScaleV1, teacherScaleSafety } from "../src/domain/triad-scales";
 import type { AssessmentSnapshot, Region, RespondentRole, ScaleDefinition, ScaleItem, StoredAnswer } from "../src/domain/types";
 
 type Client = { base: string; cookie: string };
@@ -31,8 +31,8 @@ const runId = `${new Date().toISOString().replace(/[:.]/g, "-")}-${randomBytes(4
 const outputDir = path.resolve(process.env.NOVA_PARENT_VERSION_OUTPUT_DIR ?? path.join(evidenceRoot, runId));
 const nonce = randomBytes(6).toString("hex");
 const roles = ["parent", "student", "teacher"] as const;
-const definitions = { parent: parentScaleSafety, student: childScaleSafety, teacher: teacherScaleSafety };
-const versions = { parent: "growth-parent@1.2.0", student: "growth-child@1.1.0", teacher: "growth-teacher@1.1.0" };
+const definitions = { parent: parentScaleSafety, student: childScaleBirthAge, teacher: teacherScaleSafety };
+const versions = { parent: "growth-parent@1.2.0", student: "growth-child@1.2.0", teacher: "growth-teacher@1.1.0" };
 const results: Result[] = [];
 const created: Array<{ region: Region; scenario: string; familyId: string; assessmentId: string; reportId?: string }> = [];
 const connections: pg.Client[] = [];

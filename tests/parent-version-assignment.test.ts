@@ -150,12 +150,15 @@ describe("new defaults without replacing historical records", () => {
     await ensureTriadInstruments();
     const inserts = vi.mocked(query).mock.calls.filter(([sql]) => sql.startsWith("INSERT INTO scales"));
     expect(inserts.map(([, values]) => values?.[0]).sort()).toEqual([
-      "growth-child@1.0.0", "growth-child@1.1.0", "growth-parent@1.0.0", "growth-parent@1.1.0", "growth-parent@1.2.0", "growth-teacher@1.0.0", "growth-teacher@1.1.0"
+      "growth-child@1.0.0", "growth-child@1.1.0", "growth-child@1.2.0", "growth-parent@1.0.0", "growth-parent@1.1.0", "growth-parent@1.2.0", "growth-teacher@1.0.0", "growth-teacher@1.1.0"
     ]);
     expect(inserts.every(([sql]) => sql.includes("ON CONFLICT(id) DO NOTHING"))).toBe(true);
     expect(vi.mocked(query).mock.calls.some(([sql]) => sql.includes("DO UPDATE SET definition"))).toBe(false);
     const retired = vi.mocked(query).mock.calls.filter(([sql]) => sql.startsWith("UPDATE scales"));
-    expect(retired.map(([, values]) => values?.[0]).sort()).toEqual(["growth-child@1.0.0", "growth-teacher@1.0.0"]);
+    expect(retired.map(([, values]) => values)).toEqual([
+      ["growth-child", "growth-child@1.2.0"],
+      ["growth-teacher@1.0.0"]
+    ]);
     expect(retired.every(([sql]) => sql.includes("status='retired'"))).toBe(true);
   });
 

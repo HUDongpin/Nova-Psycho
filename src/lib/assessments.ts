@@ -3,6 +3,7 @@ import type { PoolClient } from "pg";
 import { z } from "zod";
 import type { Actor,AdviceLibrary,AssessmentSnapshot,Locale,ReportTemplate,RespondentRole,ScaleDefinition } from "../domain/types";
 import { text } from "../domain/types";
+import { statedAgeMismatch } from "../domain/age-review";
 import { scoreAssessment,ScoringError,validateAnswers } from "../domain/scoring";
 import { completionIssues,completionRules } from "../domain/completion";
 import { surveyDefinition } from "../domain/survey";
@@ -16,6 +17,7 @@ import { ageAt,canManageFamilyReports,consentFor,familyFor } from "./access";
 import { ACTIVE_CONSENT_ROWS_SQL, PARENT_REPORT_SCOPE, PARTICIPATION_SCOPES, grantedScopes, hasGranted } from "./consent";
 import { audit } from "./auth";
 import { getConfig, isDemoMode } from "./config";
+import { TRIAD_LIBRARY_KEY } from "./content-seed";
 import { currentContent,getScale,lockContent } from "./content";
 import { query,transaction } from "./db";
 import { HttpError,requireRole,validateId } from "./http";
@@ -128,7 +130,7 @@ export async function assessmentDetail(actor:Actor,id:string,locale:Locale){
   const safetyGuidance=a.status!=="pending"&&safetyGuidanceFor(a.snapshot);
   const emphasis=titleEmphasis(s,a.respondent_role,locale);
   const supplements=surveySupplements(s,locale);
-  return {id,status:a.status,childName:a.child_name,scaleTitle:text(s.title,locale),demo:effectiveDemo(s),description:text(s.description,locale),surveyJson:surveyDefinition(s,a.respondent_role,locale),...(s.bundle===TRIAD_BUNDLE?{completionRules:completionRules(s)}:{}),...(emphasis.length?{titleEmphasis:emphasis}:{}),...(supplements.length?{supplements}:{}),draftAnswers:a.status==="pending"?a.draft_answers:{},draftRevision:a.draft_revision,consentRequired:!await consentFor(a.family_id),phase,safetyGuidance};
+  return {id,status:a.status,childName:a.child_name,scaleTitle:text(s.title,locale),demo:effectiveDemo(s),description:text(s.description,locale),surveyJson:surveyDefinition(s,a.respondent_role,locale,{age:ageAt(String(a.birth_date).slice(0,10))}),...(s.bundle===TRIAD_BUNDLE?{completionRules:completionRules(s)}:{}),...(emphasis.length?{titleEmphasis:emphasis}:{}),...(supplements.length?{supplements}:{}),draftAnswers:a.status==="pending"?a.draft_answers:{},draftRevision:a.draft_revision,consentRequired:!await consentFor(a.family_id),phase,safetyGuidance};
 }
 export async function saveDraft(actor:Actor,id:string,input:unknown){
   const {answers,revision}=z.object({answers:answerSchema,acknowledged:z.literal(true),revision:z.number().int().nonnegative()}).strict().parse(input),a=await ownAssessment(actor,id);
@@ -160,14 +162,17 @@ export async function submitAssessment(actor:Actor,id:string,input:unknown){
     const consent=await client.query(ACTIVE_CONSENT_ROWS_SQL,[a.family_id]);
     if(!hasGranted(consent.rows,PARTICIPATION_SCOPES))throw new HttpError(409,"请先完成测评与敏感资料的监护人授权。","GUARDIAN_CONSENT_REQUIRED");
     const scopes=grantedScopes(consent.rows);
-    let score;try{score=scoreAssessment(scale,d.answers,{age:ageAt(family.birth_date),region:actor.region,role:a.respondent_role});}catch(e){if(e instanceof ScoringError)throw new HttpError(422,"答案格式不符合量表要求。","INVALID_ANSWERS");throw e;}
+    const age=ageAt(String(family.birth_date).slice(0,10));
+    let score;try{score=scoreAssessment(scale,d.answers,{age,region:actor.region,role:a.respondent_role});}catch(e){if(e instanceof ScoringError)throw new HttpError(422,"答案格式不符合量表要求。","INVALID_ANSWERS");throw e;}
     if(score.status==="ineligible")throw new HttpError(422,"当前量表不适用于此孩子。","INELIGIBLE");
+    if(statedAgeMismatch(scale,d.answers,age))score={...score,reviewFlags:["age_mismatch" as const]};
     if(scale.items.some(item=>item.gate!==undefined&&d.answers[item.id]!==item.gate))throw new HttpError(422,"需要先同意参加这次了解，才能提交。","ENTRY_GATE");
     if(scale.bundle===TRIAD_BUNDLE&&score.status!=="valid")throw new HttpError(422,"请查看未完成的题目或资料不足的部分。","INCOMPLETE_TRIAD",undefined,completionIssues(completionRules(scale),d.answers));
     // Only a new submission depends on current content. Replays above retain the
     // accepted snapshot even when its retired scale's advice is later removed.
     await lockContent(client);
-    const advice=await currentContent<AdviceLibrary>("advice",client),template=await currentContent<ReportTemplate>("template",client);
+    const libraryKey=scale.bundle===TRIAD_BUNDLE?TRIAD_LIBRARY_KEY:null;
+    const advice=await currentContent<AdviceLibrary>("advice",client,libraryKey),template=await currentContent<ReportTemplate>("template",client,libraryKey);
     try{ensureAdviceReferences(scale,advice.content);}catch{throw new HttpError(409,"量表的报告建议配置需要更新。","ADVICE_MISMATCH");}
     const roundId=scale.bundle===TRIAD_BUNDLE?(a.triad_round_id??await triadRoundFor(client,a.family_id,a.respondent_role)):null;
     const submittedAt=new Date().toISOString();
@@ -178,6 +183,7 @@ export async function submitAssessment(actor:Actor,id:string,input:unknown){
         const alert=await client.query("INSERT INTO staff_alerts(id,family_id,region,assessment_id) VALUES($1,$2,$3,$4) ON CONFLICT(assessment_id) WHERE assessment_id IS NOT NULL DO NOTHING RETURNING id",[randomUUID(),a.family_id,actor.region,id]);
         if(alert.rows[0])await client.query("INSERT INTO audit_events(region,action,entity_id) VALUES($1,'triad.safety_notified',$2)",[actor.region,id]);
       }
+      if(score.reviewFlags?.includes("age_mismatch"))await client.query("INSERT INTO audit_events(region,action,entity_id) VALUES($1,'triad.age_mismatch',$2)",[actor.region,id]);
       await queueTriadReport(client,a.family_id,roundId);
       return {id,status:"queued",reportId:null,phase:await submissionPhase(clientPhaseReader(client),id,a.family_id,roundId,"queued",scale),safetyGuidance:score.risk===true};
     }

@@ -286,6 +286,27 @@ function checklistSafetyRevision(original: ScaleDefinition, version: string, ite
   return revised;
 }
 
+const CHILD_BIRTH_AGE_VERSION = "1.2.0";
+const CHILD_BIRTH_AGE_DESCRIPTION = "这份问卷想了解你在学习、家里、学校和同伴中的真实体验。没有标准答案，也不会因为一次回答给你贴标签。建议 8 至 17 岁自己填写；出生日期满 12 岁会多几题。你填写的年龄如果和出生日期不一致，工作人员会核对。香港繁体是便于阅读的字形转换，不是另行验证的译本。";
+
+/** 12+ items follow the family birth-date age. growth-child@1.0.0 and @1.1.0 stay byte-identical. */
+function childBirthAgeRevision(original: ScaleDefinition): ScaleDefinition {
+  const revised = structuredClone(original);
+  revised.version = CHILD_BIRTH_AGE_VERSION;
+  revised.description = pair(CHILD_BIRTH_AGE_DESCRIPTION);
+  const pageTitle = pair("按出生日期满 12 岁才会看到");
+  let youth = 0;
+  for (const item of revised.items) {
+    if (!item.id.startsWith("c18_")) continue;
+    youth += 1;
+    delete item.showIf;
+    item.visibleFromAge = 12;
+    item.pageTitle = pageTitle;
+  }
+  if (youth !== 6) throw new Error(`Expected 6 youth items, found ${youth}`);
+  return revised;
+}
+
 export const childScale = child();
 export const parentScaleV1 = parent();
 export const parentScale = revisedParent(parentScaleV1);
@@ -299,9 +320,10 @@ export const parentScaleSafety = checklistSafetyRevision(parentScale, "1.2.0", "
   [[8], "家长对需要及时关注的情况选择了“不确定”。请工作人员先确认孩子是否安全。如有眼前危险，请联系当地紧急服务。"],
   [[9], "家长没有回答需要及时关注的情况。请工作人员先查看，不要把未回答当成没有危险。如有眼前危险，请联系当地紧急服务。"]
 ]);
-export const triadScales = [childScale, childScaleSafety, parentScaleV1, parentScale, parentScaleSafety, teacherScale, teacherScaleSafety];
+export const childScaleBirthAge = childBirthAgeRevision(childScaleSafety);
+export const triadScales = [childScale, childScaleSafety, childScaleBirthAge, parentScaleV1, parentScale, parentScaleSafety, teacherScale, teacherScaleSafety];
 export const currentTriadScaleIds = {
   parent: `${parentScaleSafety.id}@${parentScaleSafety.version}`,
-  student: `${childScaleSafety.id}@${childScaleSafety.version}`,
+  student: `${childScaleBirthAge.id}@${childScaleBirthAge.version}`,
   teacher: `${teacherScaleSafety.id}@${teacherScaleSafety.version}`
 } as const;

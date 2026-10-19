@@ -20,6 +20,8 @@ export interface ScaleItem {
   /** Single-choice safety items must not advance on a timer. */
   noAutoAdvance?: boolean;
   showIf?: { itemId: string; anyOf: number[] };
+  /** Show this item only when the family birth-date age is at least this many years. */
+  visibleFromAge?: number;
   supplementFor?: string;
   page?: string;
   pageTitle?: TextPair;
@@ -108,6 +110,8 @@ export interface ScoreResult {
   dimensions: DimensionScore[];
   risk: boolean;
   riskMessages: TextPair[];
+  /** Stable review codes. No stated age, birth date, or free text. */
+  reviewFlags?: ("age_mismatch")[];
 }
 export interface AdviceBlock {
   id: string;

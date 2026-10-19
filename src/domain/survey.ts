@@ -45,15 +45,16 @@ function panels(items: ScaleItem[], scale: ScaleDefinition, role: RespondentRole
   return elements;
 }
 
-export function surveyDefinition(scale: ScaleDefinition, role: RespondentRole, locale: Locale) {
+export function surveyDefinition(scale: ScaleDefinition, role: RespondentRole, locale: Locale, context: { age?: number } = {}) {
   const traditional = locale === "zh-HK";
+  const age = context.age;
+  const items = scale.items.filter(item => !item.supplementFor && (item.visibleFromAge === undefined || (Number.isInteger(age) && (age as number) >= item.visibleFromAge)));
   const pages: { name: string; title?: string; elements: Record<string, unknown>[] }[] = [];
-  const mainItems = scale.items.filter(item => !item.supplementFor);
-  for (const item of mainItems) {
+  for (const item of items) {
     const name = item.page ?? "assessment";
     const current = pages.find(page => page.name === name);
     if (current) continue;
-    const grouped = mainItems.filter(candidate => (candidate.page ?? "assessment") === name);
+    const grouped = items.filter(candidate => (candidate.page ?? "assessment") === name);
     pages.push({ name, title: item.pageTitle ? text(item.pageTitle, locale) : undefined, elements: panels(grouped, scale, role, locale) });
   }
   return {

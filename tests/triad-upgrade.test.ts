@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PoolClient } from "pg";
 import type { Actor, ScaleDefinition } from "../src/domain/types";
 import { previewAnswers } from "../src/domain/triad-report";
-import { childScaleSafety, parentScaleSafety, teacherScaleSafety } from "../src/domain/triad-scales";
+import { childScaleBirthAge, childScaleSafety, parentScaleSafety, teacherScaleSafety } from "../src/domain/triad-scales";
 import { effectiveDemo, parseStoredScale } from "../src/domain/validation";
 import { demoAdvice, demoTemplate } from "../src/domain/demo";
 import { childScale as oldChild, parentScale as oldParent, teacherScale as oldTeacher } from "./fixtures/triad-scales-ed66f27";
@@ -74,8 +74,12 @@ function apply(sql: string, values: unknown[] = []): Record<string, unknown>[] {
     return [];
   }
   if (sql.includes("UPDATE scales SET status='retired'")) {
-    const row = scales.find(item => item.id === values[0] && item.status === "active");
-    if (row) row.status = "retired";
+    if (sql.includes("scale_id=$1")) {
+      for (const row of scales) if (row.scale_id === values[0] && row.id !== values[1] && row.status === "active") row.status = "retired";
+    } else {
+      const row = scales.find(item => item.id === values[0] && item.status === "active");
+      if (row) row.status = "retired";
+    }
     return [];
   }
   if (sql.includes("FROM families WHERE join_code=$1")) return families.filter(item => item.join_code === values[0] && item.region === values[1]);
@@ -221,7 +225,8 @@ describe("ed66f27 triad upgrade", () => {
     expect(scales.find(row => row.id === "growth-child@1.0.0")?.status).toBe("retired");
     expect(scales.find(row => row.id === "growth-teacher@1.0.0")?.status).toBe("retired");
     expect(scales.find(row => row.id === "growth-parent@1.0.0")?.status).toBe("active");
-    for (const current of [childScaleSafety, parentScaleSafety, teacherScaleSafety]) {
+    expect(scales.find(row => row.id === "growth-parent@1.1.0")?.status).toBe("active");
+    for (const current of [parentScaleSafety, teacherScaleSafety, childScaleBirthAge]) {
       const row = scales.find(item => item.id === `${current.id}@${current.version}`);
       expect(row?.status).toBe("active");
       expect(JSON.stringify(row?.definition)).toBe(JSON.stringify(parseStoredScale(current)));
@@ -229,9 +234,16 @@ describe("ed66f27 triad upgrade", () => {
       expect(row?.definition.norm.validated).toBe(false);
       expect(effectiveDemo(row?.definition)).toBe(true);
     }
-    expect(scales.find(row => row.id === "growth-child@1.1.0")?.status).toBe("active");
-    expect(scales.find(row => row.id === "growth-child@1.1.0")?.definition.demo).toBe(false);
-    expect(scales.find(row => row.id === "growth-child@1.1.0")?.definition.items.find(item => item.id === "c15")?.showIf?.anyOf).toEqual([1, 2, 3, 4, 5, 7, 8]);
+    const keptChild = scales.find(row => row.id === "growth-child@1.1.0");
+    expect(keptChild?.status).toBe("retired");
+    expect(JSON.stringify(keptChild?.definition)).toBe(JSON.stringify(parseStoredScale(childScaleSafety)));
+    expect(keptChild?.definition.demo).toBe(false);
+    expect(keptChild?.definition.items.find(item => item.id === "c15")?.showIf?.anyOf).toEqual([1, 2, 3, 4, 5, 7, 8]);
+    expect(keptChild?.definition.items.find(item => item.id === "c18_1")?.showIf).toEqual({ itemId: "c_age", anyOf: [12, 13, 14, 15, 16, 17] });
+    expect(keptChild?.definition.items.find(item => item.id === "c18_1")?.visibleFromAge).toBeUndefined();
+    const birthAge = scales.find(row => row.id === "growth-child@1.2.0");
+    expect(birthAge?.definition.items.find(item => item.id === "c18_1")?.visibleFromAge).toBe(12);
+    expect(birthAge?.definition.items.find(item => item.id === "c18_1")?.showIf).toBeUndefined();
     expect(scales.find(row => row.id === "growth-parent@1.2.0")?.definition.demo).toBe(false);
     expect(scales.find(row => row.id === "growth-parent@1.2.0")?.definition.items.find(item => item.id === "q22")?.choices.some(choice => choice.exclusive)).toBe(true);
     expect(scales.find(row => row.id === "growth-parent@1.1.0")?.definition.items.find(item => item.id === "q22")?.choices.some(choice => choice.exclusive)).not.toBe(true);
@@ -261,22 +273,33 @@ describe("ed66f27 triad upgrade", () => {
     }
 
     await expect(createAssessment(admin, { familyId: FRESH, respondentId: FRESH_STUDENT, scaleVersionId: "growth-child@1.0.0", locale: "zh-CN" })).rejects.toMatchObject({ code: "SCALE_RETIRED" });
+    await expect(createAssessment(admin, { familyId: FRESH, respondentId: FRESH_STUDENT, scaleVersionId: "growth-child@1.1.0", locale: "zh-CN" })).rejects.toMatchObject({ code: "SCALE_RETIRED" });
     const created = {
       parent: await createAssessment(admin, { familyId: FRESH, respondentId: FRESH_PARENT, scaleVersionId: "growth-parent@1.2.0", locale: "zh-CN" }),
-      student: await createAssessment(admin, { familyId: FRESH, respondentId: FRESH_STUDENT, scaleVersionId: "growth-child@1.1.0", locale: "zh-CN" }),
+      student: await createAssessment(admin, { familyId: FRESH, respondentId: FRESH_STUDENT, scaleVersionId: "growth-child@1.2.0", locale: "zh-CN" }),
       teacher: await createAssessment(admin, { familyId: FRESH, respondentId: FRESH_TEACHER, scaleVersionId: "growth-teacher@1.1.0", locale: "zh-CN" })
     };
     expect(assessments.find(row => row.id === created.parent.id)?.scale_version_id).toBe("growth-parent@1.2.0");
-    expect(assessments.find(row => row.id === created.student.id)?.scale_version_id).toBe("growth-child@1.1.0");
+    expect(assessments.find(row => row.id === created.student.id)?.scale_version_id).toBe("growth-child@1.2.0");
     expect(assessments.find(row => row.id === created.teacher.id)?.scale_version_id).toBe("growth-teacher@1.1.0");
     expect(new Set(Object.values(created).map(item => assessments.find(row => row.id === item.id)?.triad_round_id)).size).toBe(1);
-    const published = await submitAssessment(freshStudent, created.student.id, { answers: previewAnswers(parseStoredScale(childScaleSafety), "calm"), acknowledged: true, revision: 0 });
+    const openedOnSafety = "18181818-1818-4818-8818-181818181818";
+    seedTask(openedOnSafety, FRESH, FRESH_STUDENT, "student", "growth-child@1.1.0", ROUND);
+    const keptSafety = await submitAssessment(freshStudent, openedOnSafety, { answers: previewAnswers(parseStoredScale(childScaleSafety), "calm"), acknowledged: true, revision: 0 });
+    expect(keptSafety).toMatchObject({ status: "queued" });
+    const safetyRow = assessments.find(row => row.id === openedOnSafety);
+    expect(safetyRow?.scale_version_id).toBe("growth-child@1.1.0");
+    expect((safetyRow?.snapshot as { scale: { version: string; items: { id: string; showIf?: { itemId: string }; visibleFromAge?: number }[] } }).scale.items.find(item => item.id === "c18_1")).toMatchObject({ showIf: { itemId: "c_age" } });
+    expect((safetyRow?.snapshot as { scale: { items: { id: string; visibleFromAge?: number }[] } }).scale.items.find(item => item.id === "c18_1")?.visibleFromAge).toBeUndefined();
+    const published = await submitAssessment(freshStudent, created.student.id, { answers: previewAnswers(parseStoredScale(childScaleBirthAge), "calm"), acknowledged: true, revision: 0 });
     expect(published).toMatchObject({ status: "queued" });
     const freshRow = assessments.find(row => row.id === created.student.id);
-    const freshScale = (freshRow?.snapshot as { scale: { version: string; demo: boolean; norm: { validated: boolean } }; score: { demo: boolean; status: string } }).scale;
-    expect(freshScale).toMatchObject({ version: "1.1.0", demo: false });
+    const freshScale = (freshRow?.snapshot as { scale: { version: string; demo: boolean; norm: { validated: boolean }; items: { id: string; visibleFromAge?: number; showIf?: unknown }[] }; score: { demo: boolean; status: string; age: number; reviewFlags?: string[] } }).scale;
+    expect(freshScale).toMatchObject({ version: "1.2.0", demo: false });
     expect(freshScale.norm.validated).toBe(false);
     expect(effectiveDemo(freshScale)).toBe(true);
-    expect((freshRow?.snapshot as { score: { demo: boolean; status: string } }).score).toMatchObject({ demo: false, status: "valid" });
+    expect(freshScale.items.find(item => item.id === "c18_1")).toMatchObject({ visibleFromAge: 12 });
+    expect(freshScale.items.find(item => item.id === "c18_1")?.showIf).toBeUndefined();
+    expect((freshRow?.snapshot as { score: { demo: boolean; status: string; age: number; reviewFlags?: string[] } }).score).toMatchObject({ demo: false, status: "valid", age: 12, reviewFlags: ["age_mismatch"] });
   });
 });
