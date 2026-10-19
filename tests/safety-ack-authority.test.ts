@@ -14,7 +14,7 @@ beforeEach(()=>{
  const execute=async(sql:string,values:unknown[]=[],locked=false)=>{
   if(sql.includes("FROM users WHERE id=$1"))return[current];
   if(sql.includes("FROM families"))return !locked||present?[{id:familyId,region:"CN",assigned_to:null}]:[];
-  if(sql.includes("FROM staff_alerts WHERE id=$1"))return locked&&!alertPresent?[]:[{id:alertId,family_id:familyId,viewed_at:viewed?new Date():null}];
+  if(sql.includes("FROM staff_alerts WHERE id=$1"))return locked&&!alertPresent?[]:[{id:alertId,family_id:familyId,resolved_at:null,viewed_at:viewed?new Date():null}];
   if(sql.startsWith("UPDATE staff_alerts")){if(viewed)return[];viewed=true;viewer=String(values[0]);return[{id:alertId}];}
   if(sql.includes("INSERT INTO audit_events")){if(failAudit)throw new Error("Synthetic audit failure");audits++;return[];}
   throw new Error(`Unexpected synthetic query ${sql}`);

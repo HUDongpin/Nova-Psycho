@@ -81,6 +81,28 @@ describe("case observations",()=>{
   });
   it("refuses a family the caller cannot reach",async()=>{
     mockQuery.mockImplementation((async()=>[]) as never);
-    await expect(addObservation(actor("staff"),{familyId:FAMILY_ID,body:"note"})).rejects.toMatchObject({code:"NOT_FOUND"});
+    await expect(addObservation(actor("staff"),{familyId:FAMILY_ID,body:"note"})).rejects.toMatchObject({status:404,code:"NOT_FOUND"});
+    expect(mockQuery.mock.calls.some(([sql])=>String(sql).includes("INSERT INTO observations"))).toBe(false);
+  });
+  it("checks detail scope, so other regional staff cannot edit notes for an assigned family",async()=>{
+    mockQuery.mockImplementation((async(sql:string)=>{
+      const text=String(sql);
+      if(text.includes("FROM families f WHERE f.id=$1"))return [];
+      if(text.includes("FOR UPDATE"))return [{id:FAMILY_ID}];
+      return [];
+    }) as never);
+    await expect(addObservation(actor("staff"),{familyId:FAMILY_ID,body:"Synthetic note"})).rejects.toMatchObject({status:404,code:"NOT_FOUND"});
+    const lookup=mockQuery.mock.calls.find(([sql])=>String(sql).includes("FROM families f WHERE f.id=$1"));
+    expect(String(lookup?.[0])).toContain("f.assigned_to=$3");
+    expect(String(lookup?.[0])).toContain("f.assigned_to IS NULL");
+    expect(String(lookup?.[0])).toContain("sa.resolved_at IS NULL");
+    expect(String(lookup?.[0])).not.toContain("viewed_at");
+    expect(mockQuery.mock.calls.some(([sql])=>String(sql).includes("INSERT INTO observations"))).toBe(false);
+  });
+  it("lets an administrator record a note through the same detail gate",async()=>{
+    await addObservation(actor("admin"),{familyId:FAMILY_ID,body:"Synthetic note"});
+    const lookup=mockQuery.mock.calls.find(([sql])=>String(sql).includes("FROM families f WHERE f.id=$1"));
+    expect(String(lookup?.[0])).toBe("SELECT f.* FROM families f WHERE f.id=$1 AND f.region=$2");
+    expect(mockQuery.mock.calls.some(([sql])=>String(sql).includes("INSERT INTO observations"))).toBe(true);
   });
 });
