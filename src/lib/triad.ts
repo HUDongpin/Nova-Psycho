@@ -5,10 +5,10 @@ import { z } from "zod";
 import { childScale, currentTriadScaleIds, teacherScale, triadScales } from "../domain/triad-scales";
 import { TRIAD_BUNDLE, triadRolesReady } from "../domain/triad-report";
 import { pair } from "../domain/zh-pair";
-import { parseAdvice, parseScale, parseTemplate } from "../domain/validation";
+import { parseAdvice, parseStoredScale, parseTemplate } from "../domain/validation";
 import { ageAt } from "./access";
 import { hashPassword, limitLogin } from "./auth";
-import { getConfig } from "./config";
+import { getConfig, isDemoMode } from "./config";
 import { query, transaction } from "./db";
 import { HttpError, requireRole, validateId } from "./http";
 import { noticeVersion } from "./privacy";
@@ -80,6 +80,16 @@ async function familyByJoinCode(client: PoolClient, code: string): Promise<Regis
 
 export interface FamilyJoinResult { userId: string; familyId: string; assessmentId: string; alreadyMember: boolean }
 
+// Demo mode can open the unvalidated triad. Service mode refuses while any
+// version these routes assign still has norm.validated !== true.
+export function assertPublicTriadOpen(): void {
+  if (isDemoMode()) return;
+  const assignedIds = new Set<string>(Object.values(currentTriadScaleIds));
+  const assigned = triadScales.filter(scale => assignedIds.has(`${scale.id}@${scale.version}`));
+  if (assigned.length !== assignedIds.size || assigned.some(scale => scale.norm.validated !== true)) throw new HttpError(409, "正式服务尚未提供已验证常模的三方问卷，暂时不能创建或加入家庭。", "UNVALIDATED_INSTRUMENT");
+  if (assigned.some(scale => scale.demo)) throw new HttpError(409, "正式服务环境不能使用演示问卷创建或加入家庭。", "DEMO_INSTRUMENT");
+}
+
 // The caller holds the family lock and has validated the current account and consent.
 export async function joinTriadFamilyInTransaction(client: PoolClient, actor: Actor, family: RegistrationFamily, locale: Locale): Promise<FamilyJoinResult> {
   requireRole(actor.role, ["student", "teacher"]);
@@ -90,8 +100,8 @@ export async function joinTriadFamilyInTransaction(client: PoolClient, actor: Ac
   if (own && own.role !== role) throw new HttpError(409, "这个账号在家庭中的角色不一致，请联系服务人员。", "ROLE_CONFLICT");
   if (members.rows.some(member => member.role === role && member.user_id !== actor.id)) throw new HttpError(409, role === "student" ? "这个家庭已经有孩子进入了。" : "这个家庭已经有老师进入了。", "ROLE_TAKEN");
   if (own) {
-    // Any version of this role's triad scale. After 1.1.0 is published, a member who
-    // already has a 1.0.0 task must get that task back instead of opening a second one.
+    // Any version of this role's triad scale. A member who already has a task gets
+    // that task back instead of opening the version now assigned to new members.
     const scaleFamily = role === "student" ? childScale.id : teacherScale.id;
     const existing = await client.query<{ id: string }>("SELECT a.id FROM assessments a JOIN scales s ON s.id=a.scale_version_id WHERE a.family_id=$1 AND a.respondent_id=$2 AND a.respondent_role=$3 AND a.region=$4 AND s.scale_id=$5 ORDER BY a.created_at DESC,a.id DESC LIMIT 1", [family.id, actor.id, role, actor.region, scaleFamily]);
     if (existing.rows[0]) return { userId: actor.id, familyId: family.id, assessmentId: existing.rows[0].id, alreadyMember: true };
@@ -107,6 +117,7 @@ export async function joinTriadFamilyInTransaction(client: PoolClient, actor: Ac
 }
 
 export async function joinFamily(actor: Actor, input: unknown, locale: Locale): Promise<FamilyJoinResult> {
+  assertPublicTriadOpen();
   requireRole(actor.role, ["student", "teacher"]);
   const authenticatedInput = z.object({ code: z.string() }).strict();
   // A lost onboarding response can be retried after Clerk resolves the new student.
@@ -121,6 +132,7 @@ export async function joinFamily(actor: Actor, input: unknown, locale: Locale): 
 }
 
 export async function joinClerkStudent(principal: VerifiedClerkIdentity, input: unknown, locale: Locale): Promise<FamilyJoinResult> {
+  assertPublicTriadOpen();
   const data = clerkStudentJoinInput.parse(input);
   const code = normalizeCode(data.code);
   if (principal.region !== getConfig().region) throw new HttpError(403, "请使用账号所属地区的入口。", "REGION_MISMATCH");
@@ -135,6 +147,7 @@ export async function joinClerkStudent(principal: VerifiedClerkIdentity, input: 
 }
 
 export async function createParentFamily(actor: Actor, input: unknown, locale: Locale): Promise<{ userId: string; familyId: string; joinCode: string }> {
+  assertPublicTriadOpen();
   requireRole(actor.role, ["parent"]);
   const data = z.object({ requestId: z.string().uuid(), relationship: z.enum(relationships), childName: short, birthDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), grade: z.enum(grades), accepted: z.literal(true) }).strict().parse(input);
   assertChildAge(data.birthDate);
@@ -170,7 +183,7 @@ export async function ensureTriadInstruments(): Promise<void> {
   await query("ALTER TABLE staff_alerts ADD COLUMN IF NOT EXISTS resolved_by uuid");
   await query("CREATE UNIQUE INDEX IF NOT EXISTS staff_alerts_assessment ON staff_alerts(assessment_id) WHERE assessment_id IS NOT NULL");
   for (const scale of triadScales) {
-    const parsed = parseScale(scale);
+    const parsed = parseStoredScale(scale);
     const id = `${parsed.id}@${parsed.version}`;
     // Insert only. scales_immutable rejects definition rewrites, and an open assessment scores the row it was opened with.
     await query("INSERT INTO scales(id,scale_id,version,definition) VALUES($1,$2,$3,$4) ON CONFLICT(id) DO NOTHING", [id, parsed.id, parsed.version, JSON.stringify(parsed)]);
@@ -217,6 +230,7 @@ export async function triadRoundFor(client: PoolClient, familyId: string, role: 
 }
 
 export async function startParentCase(input: unknown, locale: "zh-CN" | "zh-HK"): Promise<{ userId: string; familyId: string; joinCode: string }> {
+  assertPublicTriadOpen();
   const data = z.object({ parentName: short, username, password, relationship: z.enum(relationships), childName: short, birthDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), grade: z.enum(grades), accepted: z.literal(true) }).strict().parse(input);
   assertChildAge(data.birthDate);
   await limitLogin(data.username);
@@ -245,6 +259,7 @@ export async function startParentCase(input: unknown, locale: "zh-CN" | "zh-HK")
 }
 
 export async function joinWithCode(input: unknown, locale: "zh-CN" | "zh-HK"): Promise<{ userId: string }> {
+  assertPublicTriadOpen();
   const data = z.object({ code: z.string(), role: z.enum(["student", "teacher"]), name: short, username, password }).strict().parse(input);
   const code = normalizeCode(data.code);
   await limitLogin(data.username);

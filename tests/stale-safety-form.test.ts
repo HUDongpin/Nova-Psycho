@@ -66,7 +66,9 @@ function setup(definition: typeof opened) {
 
 describe("assessments opened on growth-child@1.0.0", () => {
   it("keeps the ed66f27 child safety contract", () => {
-    parseScale(opened);
+    expect(opened.demo).toBe(false);
+    expect(opened.norm.validated).toBe(false);
+    expect(() => parseScale(opened)).toThrow(/Unvalidated instruments must be labelled demo/);
     expect(opened.version).toBe("1.0.0");
     expect(opened.id).toBe("growth-child");
     const ids = opened.items.map(item => item.id);
@@ -118,6 +120,9 @@ describe("new triad assessments use the published definition", () => {
     expect(`${childScaleSafety.id}@${childScaleSafety.version}`).toBe("growth-child@1.1.0");
     expect(`${parentScaleSafety.id}@${parentScaleSafety.version}`).toBe("growth-parent@1.2.0");
     expect(`${teacherScaleSafety.id}@${teacherScaleSafety.version}`).toBe("growth-teacher@1.1.0");
+    expect(childScaleSafety.demo).toBe(false);
+    expect(childScaleSafety.norm.validated).toBe(false);
+    expect(() => parseScale(childScaleSafety)).toThrow(/Unvalidated instruments must be labelled demo/);
     expect(childScaleSafety.items.find(item => item.id === "c15")?.showIf?.anyOf).toEqual([1, 2, 3, 4, 5, 7, 8]);
     vi.mocked(query).mockResolvedValue([]);
     await ensureTriadInstruments();
@@ -132,6 +137,8 @@ describe("new triad assessments use the published definition", () => {
     expect(inserts.every(([text]) => String(text).includes("ON CONFLICT(id) DO NOTHING"))).toBe(true);
     const stored = JSON.parse(String(inserts[1][1]?.[3]));
     expect(stored.version).toBe("1.1.0");
+    expect(stored.demo).toBe(false);
+    expect(stored.norm.validated).toBe(false);
     expect(stored.items.find((item: { id: string }) => item.id === "c15").showIf.anyOf).toEqual([1, 2, 3, 4, 5, 7, 8]);
     const retired = vi.mocked(query).mock.calls.filter(([text]) => String(text).includes("UPDATE scales SET status='retired'"));
     expect(retired.map(([, values]) => values?.[0])).toEqual(["growth-child@1.0.0", "growth-teacher@1.0.0"]);

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../src/lib/db", () => ({ query: vi.fn(), transaction: vi.fn() }));
 vi.mock("../src/lib/auth", () => ({ audit: vi.fn(), hashPassword: vi.fn(async () => "synthetic-hash"), limitLogin: vi.fn(async () => undefined) }));
-vi.mock("../src/lib/config", () => ({ getConfig: () => ({ region: "HK" }) }));
+vi.mock("../src/lib/config", () => ({ getConfig: () => ({ region: "HK", mode: "demo" }), isDemoMode: () => true }));
 import { transaction } from "../src/lib/db";
 import { hashPassword, limitLogin } from "../src/lib/auth";
 import { startParentCase, joinWithCode } from "../src/lib/triad";
@@ -100,7 +100,7 @@ describe("P27/P36/P42 correct family, role, locale and consent binding", () => {
     const family = sql.mock.calls.find(([text]) => text.startsWith("SELECT id,birth_date"))!;
     expect(family[0]).toContain("region=$2 FOR UPDATE"); expect(family[1]).toEqual([joining.code, "HK"]);
     const task = sql.mock.calls.find(([text]) => text.startsWith("INSERT INTO assessments"))![1]!;
-    expect(task.slice(1, 7)).toEqual(["synthetic-family", "HK", result.userId, role, role === "student" ? "growth-child@1.1.0" : "growth-teacher@1.1.0", "zh-HK"]);
+    expect(task.slice(1, 7)).toEqual(["synthetic-family", "HK", result.userId, role, currentTriadScaleIds[role], "zh-HK"]);
   });
   it("rejects reuse of an occupied role before creating another user or task", async () => {
     roleTaken = true;

@@ -3,10 +3,10 @@ import { pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import pg, { type PoolClient } from "pg";
 import { childScale, parentScale, parentScaleV1, teacherScale } from "../../src/domain/triad-scales";
-import { parseScale } from "../../src/domain/validation";
+import { parseStoredScale } from "../../src/domain/validation";
 
 const id = "growth-parent@1.1.0";
-const canonical = (value: unknown): unknown => JSON.parse(JSON.stringify(parseScale(value)));
+const canonical = (value: unknown): unknown => JSON.parse(JSON.stringify(parseStoredScale(value)));
 
 /** Adds one immutable content version without rewriting existing assignments. */
 export async function registerParentQuestionnaire(client: Pick<PoolClient, "query">, apply = false) {

@@ -3,7 +3,7 @@ import type { PoolClient } from "pg";
 import type { Actor, ScaleDefinition } from "../src/domain/types";
 import { previewAnswers } from "../src/domain/triad-report";
 import { childScaleSafety, parentScaleSafety, teacherScaleSafety } from "../src/domain/triad-scales";
-import { parseScale } from "../src/domain/validation";
+import { effectiveDemo, parseStoredScale } from "../src/domain/validation";
 import { demoAdvice, demoTemplate } from "../src/domain/demo";
 import { childScale as oldChild, parentScale as oldParent, teacherScale as oldTeacher } from "./fixtures/triad-scales-ed66f27";
 
@@ -55,7 +55,7 @@ function family(id: string, join: string | null): FamilyRow {
   return { id, region: "CN", family_name: "Synthetic family", child_name: "Synthetic child", birth_date: "2014-06-01", grade: "初中", guardian_label: "母亲", assigned_to: null, join_code: join };
 }
 function seedScale(definition: ScaleDefinition) {
-  const parsed = JSON.parse(JSON.stringify(parseScale(definition))) as ScaleDefinition;
+  const parsed = structuredClone(definition);
   scales.push({ id: `${parsed.id}@${parsed.version}`, scale_id: parsed.id, version: parsed.version, definition: parsed, status: "active" });
 }
 function seedTask(id: string, familyId: string, userId: string, role: string, scaleId: string, roundId: string) {
@@ -146,11 +146,12 @@ function apply(sql: string, values: unknown[] = []): Record<string, unknown>[] {
     return row ? [{ ...row, report_id: null }] : [];
   }
   if (sql.includes("FROM report_jobs")) return [];
+  if (sql.includes("definition->>'demo'")) return [];
   throw new Error(`Unhandled SQL: ${sql}`);
 }
 
 function oldAnswers(selected: 7 | 8) {
-  const answers: Record<string, number | number[] | string> = { ...previewAnswers(parseScale(oldChild), "calm"), c14: [selected] };
+  const answers: Record<string, number | number[] | string> = { ...previewAnswers(structuredClone(oldChild), "calm"), c14: [selected] };
   delete answers.c15;
   delete answers.c16;
   return answers;
@@ -203,6 +204,7 @@ const admin: Actor = { id: ADMIN, name: "Synthetic admin", role: "admin", region
 const student: Actor = { id: STUDENT, name: "Synthetic student", role: "student", region: "CN" };
 const teacher: Actor = { id: TEACHER, name: "Synthetic teacher", role: "teacher", region: "CN" };
 const assignedStudent: Actor = { id: ASSIGNED_STUDENT, name: "Synthetic assigned", role: "student", region: "CN" };
+const freshStudent: Actor = { id: FRESH_STUDENT, name: "Synthetic fresh student", role: "student", region: "CN" };
 
 describe("ed66f27 triad upgrade", () => {
   it("keeps old tasks and joins, and opens new child, parent and teacher tasks on the safety revisions", async () => {
@@ -222,12 +224,19 @@ describe("ed66f27 triad upgrade", () => {
     for (const current of [childScaleSafety, parentScaleSafety, teacherScaleSafety]) {
       const row = scales.find(item => item.id === `${current.id}@${current.version}`);
       expect(row?.status).toBe("active");
-      expect(JSON.stringify(row?.definition)).toBe(JSON.stringify(parseScale(current)));
+      expect(JSON.stringify(row?.definition)).toBe(JSON.stringify(parseStoredScale(current)));
+      expect(row?.definition.demo).toBe(false);
+      expect(row?.definition.norm.validated).toBe(false);
+      expect(effectiveDemo(row?.definition)).toBe(true);
     }
+    expect(scales.find(row => row.id === "growth-child@1.1.0")?.status).toBe("active");
+    expect(scales.find(row => row.id === "growth-child@1.1.0")?.definition.demo).toBe(false);
     expect(scales.find(row => row.id === "growth-child@1.1.0")?.definition.items.find(item => item.id === "c15")?.showIf?.anyOf).toEqual([1, 2, 3, 4, 5, 7, 8]);
+    expect(scales.find(row => row.id === "growth-parent@1.2.0")?.definition.demo).toBe(false);
     expect(scales.find(row => row.id === "growth-parent@1.2.0")?.definition.items.find(item => item.id === "q22")?.choices.some(choice => choice.exclusive)).toBe(true);
     expect(scales.find(row => row.id === "growth-parent@1.1.0")?.definition.items.find(item => item.id === "q22")?.choices.some(choice => choice.exclusive)).not.toBe(true);
     expect(scales.find(row => row.id === "growth-teacher@1.1.0")?.definition.items.find(item => item.id === "t15")?.choices.some(choice => choice.exclusive)).toBe(true);
+    expect(scales.find(row => row.id === "growth-child@1.0.0")?.definition.demo).toBe(false);
     expect(scales.find(row => row.id === "growth-child@1.0.0")?.definition.items.find(item => item.id === "c15")?.showIf?.anyOf).toEqual([1, 2, 3, 4, 5]);
 
     const beforeJoins = assessments.length;
@@ -247,7 +256,7 @@ describe("ed66f27 triad upgrade", () => {
       const row = assessments.find(item => item.id === task);
       expect(row?.scale_version_id).toBe("growth-child@1.0.0");
       expect(row?.status).toBe("queued");
-      expect((row?.snapshot as { scale: { version: string }; score: { status: string } }).scale.version).toBe("1.0.0");
+      expect((row?.snapshot as { scale: { version: string; demo: boolean }; score: { status: string } }).scale).toMatchObject({ version: "1.0.0", demo: false });
       expect((row?.snapshot as { score: { status: string } }).score.status).toBe("valid");
     }
 
@@ -261,5 +270,13 @@ describe("ed66f27 triad upgrade", () => {
     expect(assessments.find(row => row.id === created.student.id)?.scale_version_id).toBe("growth-child@1.1.0");
     expect(assessments.find(row => row.id === created.teacher.id)?.scale_version_id).toBe("growth-teacher@1.1.0");
     expect(new Set(Object.values(created).map(item => assessments.find(row => row.id === item.id)?.triad_round_id)).size).toBe(1);
+    const published = await submitAssessment(freshStudent, created.student.id, { answers: previewAnswers(parseStoredScale(childScaleSafety), "calm"), acknowledged: true, revision: 0 });
+    expect(published).toMatchObject({ status: "queued" });
+    const freshRow = assessments.find(row => row.id === created.student.id);
+    const freshScale = (freshRow?.snapshot as { scale: { version: string; demo: boolean; norm: { validated: boolean } }; score: { demo: boolean; status: string } }).scale;
+    expect(freshScale).toMatchObject({ version: "1.1.0", demo: false });
+    expect(freshScale.norm.validated).toBe(false);
+    expect(effectiveDemo(freshScale)).toBe(true);
+    expect((freshRow?.snapshot as { score: { demo: boolean; status: string } }).score).toMatchObject({ demo: false, status: "valid" });
   });
 });

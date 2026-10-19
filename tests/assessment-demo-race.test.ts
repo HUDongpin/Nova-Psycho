@@ -5,7 +5,7 @@ import { demoAdvice, demoScale } from "../src/domain/demo";
 
 vi.mock("../src/lib/db", () => ({ query: vi.fn(), transaction: vi.fn() }));
 vi.mock("../src/lib/auth", () => ({ audit: vi.fn(), hashPassword: vi.fn(), limitLogin: vi.fn() }));
-vi.mock("../src/lib/config", () => ({ getConfig: () => ({ region: "CN", mode: "demo" }) }));
+vi.mock("../src/lib/config", () => ({ getConfig: () => ({ region: "CN", mode: "demo" }), isDemoMode: () => true }));
 import { query, transaction } from "../src/lib/db";
 import { createAssessment } from "../src/lib/assessments";
 import { setScaleStatus } from "../src/lib/content";

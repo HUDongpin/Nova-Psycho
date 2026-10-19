@@ -108,7 +108,7 @@ async function registerTriad(base:string,locale:Locale):Promise<Triad>{
   for(const role of ["student","teacher"] as const){const joined=await request(visitor,`/api/triad/join?locale=${locale}`,"POST",{code:created.joinCode,role,name:`合成三方${role}`,username:`qa_triad_${region}_${role}_${nonce}`,password:randomBytes(18).toString("base64url")});assert.equal(joined.status,201);clients[role]=sessionClient(base,joined);}
   const w=await workspace(clients.parent,locale);assert.equal(w.families.find(f=>f.id===created.familyId)?.age,12);
   const tasks={} as Record<RespondentRole,Assessment>;
-  for(const role of roles){tasks[role]=familyTask(w,created.familyId,role,`${definitions[role].id}@${definitions[role].version}`);assert.equal(tasks[role].status,"pending");assert.equal(tasks[role].canRetryReport,false);assert.equal((await ok<SurveyRecord>(clients[role],`/api/assessments/${tasks[role].id}`)).demo,false);}
+  for(const role of roles){tasks[role]=familyTask(w,created.familyId,role,`${definitions[role].id}@${definitions[role].version}`);assert.equal(tasks[role].status,"pending");assert.equal(tasks[role].canRetryReport,false);assert.equal((await ok<SurveyRecord>(clients[role],`/api/assessments/${tasks[role].id}`)).demo,true);}
   return {familyId:created.familyId,clients,tasks};
 }
 
@@ -120,8 +120,8 @@ async function main(){
     const adminW=await workspace(admin),parentW=await workspace(parent),hkW=await workspace(hkAdmin,"zh-HK");
     for(const w of [adminW,hkW]){
       const demo=w.scales.find(scale=>scale.id===demoId);assert.ok(demo);assert.equal(demo.demo,true);assert.equal(demo.status,"active");assert.ok(demo.minAge<=7&&demo.maxAge>=7);assert.deepEqual([...demo.roles].sort(),["parent","student","teacher"]);
-      for(const definition of Object.values(definitions)){const scale=w.scales.find(s=>s.id===`${definition.id}@${definition.version}`);assert.ok(scale);assert.equal(scale.demo,false);assert.equal(scale.status,"active");assert.deepEqual(scale.roles,definition.roles);assert.ok(scale.minAge<=12&&scale.maxAge>=12);}
-      const legacyParent=w.scales.find(scale=>scale.id==="growth-parent@1.0.0");assert.ok(legacyParent);assert.equal(legacyParent.version,"1.0.0");assert.equal(legacyParent.status,"active");
+      for(const definition of Object.values(definitions)){const scale=w.scales.find(s=>s.id===`${definition.id}@${definition.version}`);assert.ok(scale);assert.equal(scale.demo,true);assert.equal(scale.status,"active");assert.deepEqual(scale.roles,definition.roles);assert.ok(scale.minAge<=12&&scale.maxAge>=12);}
+      const legacyParent=w.scales.find(scale=>scale.id==="growth-parent@1.0.0");assert.ok(legacyParent);assert.equal(legacyParent.version,"1.0.0");assert.equal(legacyParent.status,"active");assert.equal(legacyParent.demo,true);
       assert.ok(!w.scales.some(scale=>!scale.demo&&scale.status==="active"&&scale.minAge<=7&&scale.maxAge>=7),"Seven-year-old demo scenario must remain outside active official instrument ages");
     }
     return {cn,hk,admin,parent,student,teacher,staff,otherStaff,hkAdmin,adminW,parentW,hkW};
@@ -248,7 +248,10 @@ async function main(){
   await check("official role/age gates reject inappropriate assignments and demo fallback",async()=>{
     await rejected(admin,"/api/assessments","POST",{familyId:triad.familyId,respondentId:triad.tasks.student.respondentId,scaleVersionId:`${definitions.parent.id}@${definitions.parent.version}`,locale:"zh-CN"},422,"INELIGIBLE");
     await rejected(admin,"/api/assessments","POST",{familyId:demoFamily.id,respondentId:acceptedIds.student,scaleVersionId:`${definitions.student.id}@${definitions.student.version}`,locale:"zh-CN"},422,"INELIGIBLE");
-    for(const role of roles)await rejected(admin,"/api/assessments","POST",{familyId:triad.familyId,respondentId:triad.tasks[role].respondentId,scaleVersionId:demoId,locale:"zh-CN"},409,"DEMO_NOT_ASSIGNABLE");
+    for(const role of roles){
+      const assigned=await ok<{id:string}>(admin,"/api/assessments","POST",{familyId:triad.familyId,respondentId:triad.tasks[role].respondentId,scaleVersionId:demoId,locale:"zh-CN"});
+      assert.equal((await ok<SurveyRecord>(triad.clients[role],`/api/assessments/${assigned.id}`)).demo,true);
+    }
   });
   await check("admin assignment controls staff report-management scope",async()=>{
     assert.ok(!(await workspace(staff)).families.some(f=>f.id===triad.familyId));
@@ -280,7 +283,7 @@ async function main(){
     await ok(client,`/api/assessments/${task.id}/submit`,"POST",payload);assert.equal((await workspace(admin)).alerts.filter(alert=>alert.familyId===triad.familyId).length,index+1);await rejected(otherStaff,`/api/assessments/${task.id}/retry-report`,"POST",{},404,"NOT_FOUND");
   });
   const combined=await check("three submissions publish one shared combined report with bounded retry capability",async()=>{
-    const report=await waitReport(triad.clients.parent,r=>r.familyId===triad.familyId&&r.assessmentId===triad.tasks.parent.id);assert.equal(report.combined,true);assert.equal(report.demo,false);assert.equal(report.generationMode,"template");assert.equal(report.risk,true);
+    const report=await waitReport(triad.clients.parent,r=>r.familyId===triad.familyId&&r.assessmentId===triad.tasks.parent.id);assert.equal(report.combined,true);assert.equal(report.demo,true);assert.equal(report.generationMode,"template");assert.equal(report.risk,true);
     for(const client of [admin,staff,triad.clients.parent]){const w=await workspace(client);assert.equal(w.reports.filter(r=>r.familyId===triad.familyId).length,1);for(const task of Object.values(triad.tasks)){const current=w.assessments.find(a=>a.id===task.id);assert.ok(current);assert.equal(current.status,"published");assert.equal(current.reportId,report.id);assert.equal(current.canRetryReport,false);}}
     for(const role of ["student","teacher"] as const){const w=await workspace(triad.clients[role]);assert.equal(w.reports.length,0);assert.ok(w.assessments.every(a=>a.respondentId===w.user.id&&a.reportId===null&&!a.canRetryReport));for(const suffix of ["","/document","/pdf"])await rejected(triad.clients[role],`/api/reports/${report.id}${suffix}`,"GET",undefined,403,"ROLE_DENIED");}
     await rejected(parent,`/api/reports/${report.id}`,"GET",undefined,404,"NOT_FOUND");await rejected(hkAdmin,`/api/reports/${report.id}`,"GET",undefined,404,"NOT_FOUND");await rejected(staff,`/api/assessments/${triad.tasks.parent.id}/retry-report`,"POST",{},409,"REPORT_NOT_FAILED");return report;
@@ -295,7 +298,7 @@ async function main(){
     assert.ok(silent.length>0,"Mutually exclusive child safety messages must not all fire for one answer set");
     for(const locale of ["zh-CN","zh-HK"] as const){
       const html=saved[locale].html,serialized=JSON.stringify(await ok<object>(triad.clients.parent,`/api/reports/${combined.id}?locale=${locale}`));
-      assert.ok(!serialized.includes(`STUDENT_PRIVATE_student_${nonce}`));assert.ok(!serialized.includes("STAFF_PRIVATE_"));assert.ok(!html.includes('"answers"'));assert.ok(html.includes(`ADULT_WORDS_parent_${nonce}`));assert.ok(html.includes(`ADULT_WORDS_teacher_${nonce}`));
+      assert.ok(!serialized.includes(`STUDENT_PRIVATE_student_${nonce}`));assert.ok(!serialized.includes("STAFF_PRIVATE_"));assert.ok(!html.includes('"answers"'));assert.ok(html.includes(locale==="zh-CN"?"演示报告":"示範報告"));assert.ok(html.includes(`ADULT_WORDS_parent_${nonce}`));assert.ok(html.includes(`ADULT_WORDS_teacher_${nonce}`));
       const aggregate=definitions.student.dimensions.find(d=>d.key==="c7");assert.ok(aggregate);assert.ok(html.includes(aggregate.label[locale]));assert.ok(html.includes("孩子自己"));assert.ok(html.includes("原始平均分 4"));
       for(const message of triggered)assert.ok(html.includes(message[locale]),"Triggered approved child safety template must remain visible");
       for(const rule of silent)assert.ok(!html.includes(rule.message[locale]),"Untriggered child safety template must not appear");
@@ -318,11 +321,11 @@ async function main(){
       await ok(triad.clients[role],`/api/assessments/${triad.tasks[role].id}/submit`,"POST",{answers:answers[role],acknowledged:true,revision:0});
       if(index<2){const w=await workspace(triad.clients.parent,"zh-HK");assert.equal(w.reports.length,0);assert.equal(w.assessments.find(a=>a.id===triad.tasks[role].id)?.phase,"waiting");}
     }
-    const report=await waitReport(triad.clients.parent,r=>r.familyId===triad.familyId&&r.assessmentId===triad.tasks.parent.id,"zh-HK");assert.equal(report.combined,true);assert.equal(report.generationMode,"template");assert.equal(report.demo,false);
+    const report=await waitReport(triad.clients.parent,r=>r.familyId===triad.familyId&&r.assessmentId===triad.tasks.parent.id,"zh-HK");assert.equal(report.combined,true);assert.equal(report.generationMode,"template");assert.equal(report.demo,true);
     const w=await workspace(triad.clients.parent,"zh-HK");assert.equal(w.reports.length,1);assert.ok(w.assessments.every(a=>a.status==="published"&&a.reportId===report.id));
     for(const role of ["student","teacher"] as const){assert.equal((await workspace(triad.clients[role],"zh-HK")).reports.length,0);await rejected(triad.clients[role],`/api/reports/${report.id}/pdf?locale=zh-HK`,"GET",undefined,403,"ROLE_DENIED");}
     await rejected(admin,`/api/reports/${report.id}`,"GET",undefined,404,"NOT_FOUND");
-    const saved=await documents(triad.clients.parent,report.id,"hong-kong-triad-report");assert.ok(saved["zh-HK"].html.includes("三方看到的情況"));assert.ok(!saved["zh-HK"].html.includes(`STUDENT_PRIVATE_student_${nonce}`));assert.ok(!saved["zh-HK"].html.includes("STAFF_PRIVATE_"));
+    const saved=await documents(triad.clients.parent,report.id,"hong-kong-triad-report");assert.ok(saved["zh-HK"].html.includes("三方看到的情況"));assert.ok(saved["zh-HK"].html.includes("示範報告"));assert.ok(!saved["zh-HK"].html.includes(`STUDENT_PRIVATE_student_${nonce}`));assert.ok(!saved["zh-HK"].html.includes("STAFF_PRIVATE_"));
     return {...triad,reportId:report.id};
   });
   await check("family deletion removes family access while preserving independent accounts",async()=>{

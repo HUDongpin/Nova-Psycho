@@ -86,7 +86,17 @@ export const adviceSchema=z.object({title:localized,blocks:z.array(z.object({id:
   if(new Set(s.blocks.map(b=>b.id)).size!==s.blocks.length)ctx.addIssue({code:"custom",message:"Advice IDs must be unique"});
 });
 export const templateSchema=z.object({title:localized,introduction:localized,limitation:localized,nextStep:localized}).strict();
-export function parseScale(value:unknown):ScaleDefinition{return scaleSchema.parse(value);}
+export function normValidated(norm:{validated?:boolean}|null|undefined):boolean{return norm?.validated===true;}
+export function effectiveDemo(scale:{demo?:boolean;norm?:{validated?:boolean}|null}|null|undefined):boolean{
+  return scale?.demo===true||!normValidated(scale?.norm);
+}
+// Frozen scale_id@version rows stay byte-identical, including legacy non-demo instruments whose norm is not validated.
+export function parseStoredScale(value:unknown):ScaleDefinition{return scaleSchema.parse(value);}
+export function parseScale(value:unknown):ScaleDefinition{
+  const scale=parseStoredScale(value);
+  if(!scale.demo&&!normValidated(scale.norm))throw new Error("Unvalidated instruments must be labelled demo");
+  return scale;
+}
 export function parseAdvice(value:unknown):AdviceLibrary{return adviceSchema.parse(value);}
 export function parseTemplate(value:unknown):ReportTemplate{return templateSchema.parse(value);}
 export function ensureAdviceReferences(scale:ScaleDefinition,library:AdviceLibrary):void{

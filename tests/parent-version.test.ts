@@ -7,7 +7,7 @@ import { compareResults, scoreAssessment } from "../src/domain/scoring";
 import { titleEmphasis, questionDescription } from "../src/domain/survey-presentation";
 import { composeTriad, previewAnswers, staffOnlyText } from "../src/domain/triad-report";
 import { demoAdvice, demoTemplate } from "../src/domain/demo";
-import { parseScale } from "../src/domain/validation";
+import { parseScale, parseStoredScale } from "../src/domain/validation";
 import { pair } from "../src/domain/zh-pair";
 import type { AssessmentSnapshot, ScaleDefinition, ScaleItem, StoredAnswer } from "../src/domain/types";
 
@@ -122,7 +122,7 @@ function withSupplement(): ScaleDefinition {
 
 describe("supplement schema boundary", () => {
   it("accepts explicit optional staff-only text paired to a valid choice", () => {
-    expect(parseScale(withSupplement()).items.at(-1)).toMatchObject({ supplementFor: "p_curriculum", required: false, report: "staff" });
+    expect(parseStoredScale(withSupplement()).items.at(-1)).toMatchObject({ supplementFor: "p_curriculum", required: false, report: "staff" });
   });
   it.each([
     ["required", (item: ScaleItem) => { item.required = true; }],

@@ -4,7 +4,7 @@ import type { Actor } from "../src/domain/types";
 
 vi.mock("../src/lib/db", () => ({ query: vi.fn(), transaction: vi.fn() }));
 vi.mock("../src/lib/auth", () => ({ audit: vi.fn(), hashPassword: vi.fn(), limitLogin: vi.fn() }));
-vi.mock("../src/lib/config", () => ({ getConfig: () => ({ region: "CN", mode: "demo" }) }));
+vi.mock("../src/lib/config", () => ({ getConfig: () => ({ region: "CN", mode: "demo" }), isDemoMode: () => true }));
 vi.mock("../src/lib/clerk-auth", () => ({ createClerkUserInTransaction: vi.fn() }));
 
 import { transaction } from "../src/lib/db";

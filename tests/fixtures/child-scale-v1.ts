@@ -8,6 +8,8 @@ const SAFETY = ["c14", "c15", "c16"] as const;
 export function childScaleAt1_0_0(): ScaleDefinition {
   const scale = structuredClone(childScale);
   scale.version = "1.0.0";
+  // 1.0.0 was published as a non-demo instrument. Do not inherit a later demo label.
+  scale.demo = false;
   const safetyItems = SAFETY.map(id => {
     const item = scale.items.find(entry => entry.id === id);
     if (!item) throw new Error(`Missing ${id}`);
