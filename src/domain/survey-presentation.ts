@@ -1,4 +1,4 @@
-import { parentScale, parentScaleV1 } from "./triad-scales";
+import { parentScale, parentScaleSafety, parentScaleV1 } from "./triad-scales";
 import { text, type Locale, type RespondentRole, type ScaleDefinition, type ScaleItem, type TextPair } from "./types";
 
 export interface TitleEmphasis {
@@ -13,7 +13,7 @@ const sameText = (left?: TextPair, right?: TextPair) => left === undefined || ri
 
 function isCanonicalParentItem(scale: ScaleDefinition, role: RespondentRole, item: ScaleItem): boolean {
   if (role !== "parent" || scale.roles.length !== 1 || scale.roles[0] !== "parent") return false;
-  const canonical = [parentScaleV1, parentScale].find(candidate => candidate.id === scale.id && candidate.version === scale.version);
+  const canonical = [parentScaleV1, parentScale, parentScaleSafety].find(candidate => candidate.id === scale.id && candidate.version === scale.version);
   const original = canonical?.items.find(candidate => candidate.id === item.id);
   return !!original && item.page === original.page && (item.kind ?? "single") === (original.kind ?? "single")
     && sameText(item.label, original.label) && sameText(item.observerLabel, original.observerLabel) && sameText(item.pageTitle, original.pageTitle);

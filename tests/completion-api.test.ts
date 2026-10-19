@@ -125,7 +125,7 @@ describe("assessment completion API", () => {
     status = "published";
     const response = await submit({});
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ id: assessmentId, status: "published", reportId: "existing-report" });
+    expect(await response.json()).toEqual({ id: assessmentId, status: "published", reportId: "existing-report", phase: null, safetyGuidance: false });
   });
 
   it("continues accepting incomplete non-triad instruments under their existing scoring policy", async () => {

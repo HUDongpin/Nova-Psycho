@@ -232,13 +232,76 @@ function revisedParent(original: ScaleDefinition): ScaleDefinition {
   return revised;
 }
 
+const CHILD_SAFETY_IDS = ["c14", "c15", "c16"] as const;
+
+function isChildSafetyId(id: string): id is (typeof CHILD_SAFETY_IDS)[number] {
+  return (CHILD_SAFETY_IDS as readonly string[]).includes(id);
+}
+
+function markExclusive(scale: ScaleDefinition, itemId: string, labels: readonly string[]): void {
+  const item = scale.items.find(entry => entry.id === itemId);
+  if (!item) throw new Error(`Missing ${itemId}`);
+  for (const label of labels) {
+    const choice = item.choices.find(entry => entry.label["zh-CN"] === label);
+    if (!choice) throw new Error(`Missing ${itemId} choice ${label}`);
+    choice.exclusive = true;
+  }
+}
+
+function addRisk(scale: ScaleDefinition, itemId: string, values: number[], message: string): void {
+  scale.riskRules.push({ itemId, values, message: pair(message) });
+}
+
+/** Safety follow-up for new child assignments. The 1.0.0 row stays unchanged. */
+function childSafetyRevision(original: ScaleDefinition): ScaleDefinition {
+  const revised = structuredClone(original);
+  revised.version = "1.1.0";
+  const safetyItems = CHILD_SAFETY_IDS.map(id => {
+    const item = revised.items.find(entry => entry.id === id);
+    if (!item) throw new Error(`Missing ${id}`);
+    return item;
+  });
+  revised.items = revised.items.filter(item => !isChildSafetyId(item.id));
+  const insertAt = revised.items.findIndex(item => item.id === "c7_1");
+  if (insertAt < 0) throw new Error("Missing c7_1");
+  for (const item of safetyItems) {
+    item.page = "safety";
+    item.pageTitle = pair("先确认安全");
+    item.noAutoAdvance = true;
+    if (item.id === "c15" || item.id === "c16") item.showIf = { itemId: "c14", anyOf: [1, 2, 3, 4, 5, 7, 8] };
+  }
+  revised.items.splice(insertAt, 0, ...safetyItems);
+  markExclusive(revised, "c14", ["以上均没有", "不确定", "不愿回答"]);
+  addRisk(revised, "c14", [7], "孩子对安全情况选择了“不确定”。请工作人员先查看，并确认孩子是否安全。如有眼前危险，请联系当地紧急服务。");
+  addRisk(revised, "c14", [8], "孩子没有回答安全情况。请工作人员先查看，不要把未回答当成没有危险。如有眼前危险，请联系当地紧急服务。");
+  return revised;
+}
+
+/** Unsure and declined checklist answers alert staff. Stored earlier versions are not rewritten. */
+function checklistSafetyRevision(original: ScaleDefinition, version: string, itemId: string, labels: readonly string[], rules: readonly (readonly [number[], string])[]): ScaleDefinition {
+  const revised = structuredClone(original);
+  revised.version = version;
+  markExclusive(revised, itemId, labels);
+  for (const [values, message] of rules) addRisk(revised, itemId, values, message);
+  return revised;
+}
+
 export const childScale = child();
 export const parentScaleV1 = parent();
 export const parentScale = revisedParent(parentScaleV1);
 export const teacherScale = teacher();
-export const triadScales = [childScale, parentScaleV1, parentScale, teacherScale];
+export const childScaleSafety = childSafetyRevision(childScale);
+export const teacherScaleSafety = checklistSafetyRevision(teacherScale, "1.1.0", "t15", ["以上均没有", "不确定", "不便在本问卷中说明"], [
+  [[7], "教师对需要及时处理的情况选择了“不确定”。请先按学校现有的保护流程核实，不要只等这份报告。"],
+  [[8], "教师没有在问卷中说明需要及时处理的情况。请先按学校现有的保护流程核实，不要把未说明当成没有危险。"]
+]);
+export const parentScaleSafety = checklistSafetyRevision(parentScale, "1.2.0", "q22", ["以上均没有", "不确定", "不愿回答"], [
+  [[8], "家长对需要及时关注的情况选择了“不确定”。请工作人员先确认孩子是否安全。如有眼前危险，请联系当地紧急服务。"],
+  [[9], "家长没有回答需要及时关注的情况。请工作人员先查看，不要把未回答当成没有危险。如有眼前危险，请联系当地紧急服务。"]
+]);
+export const triadScales = [childScale, childScaleSafety, parentScaleV1, parentScale, parentScaleSafety, teacherScale, teacherScaleSafety];
 export const currentTriadScaleIds = {
-  parent: `${parentScale.id}@${parentScale.version}`,
-  student: `${childScale.id}@${childScale.version}`,
-  teacher: `${teacherScale.id}@${teacherScale.version}`
+  parent: `${parentScaleSafety.id}@${parentScaleSafety.version}`,
+  student: `${childScaleSafety.id}@${childScaleSafety.version}`,
+  teacher: `${teacherScaleSafety.id}@${teacherScaleSafety.version}`
 } as const;

@@ -334,6 +334,9 @@ input:-webkit-autofill {
 .report-frame { width: 100%; height: 80dvh; min-height: 640px; display: block; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); }
 .submitted-panel { padding: 36px 24px 40px; }
 .submitted-panel > .muted { margin-bottom: 20px; font-size: 14px; }
+.safety-guidance { max-width: 62ch; margin: 0 auto 20px; padding: 16px 18px; text-align: left; background: #f8ebe7; border: 1px solid #e7cfc8; border-radius: 12px; }
+.safety-guidance strong { display: block; margin-bottom: 6px; color: var(--danger); }
+.safety-guidance p { margin: 0; line-height: 1.7; color: var(--ink); }
 .survey-container { border-radius: 16px; border: 1px solid var(--line); background: var(--paper); overflow: hidden; --sjs-font-family: var(--sans); }
 .survey-save-status { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 24px; font-size: 13px; color: var(--ok); border-bottom: 1px solid var(--line); }
 .survey-save-status[hidden] { display: none; }

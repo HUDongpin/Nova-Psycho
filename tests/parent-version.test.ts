@@ -35,12 +35,15 @@ describe("versioned parent questionnaire", () => {
     expect(digest(instruments.teacherScale)).toBe("03ef49144eac9e2e5dbe138afa4f8ef5e6c642ac78a949bfdd33382e64bf21f8");
   });
 
-  it("seeds both parent versions while making only 1.1.0 the new parent default", () => {
+  it("keeps the wording revision and publishes safety defaults without replacing frozen baselines", () => {
     expect(instruments.parentScale.version).toBe("1.1.0");
+    expect(instruments.parentScaleSafety.version).toBe("1.2.0");
+    expect(instruments.childScaleSafety.version).toBe("1.1.0");
+    expect(instruments.teacherScaleSafety.version).toBe("1.1.0");
     expect(instruments.triadScales.map(scale => `${scale.id}@${scale.version}`).sort()).toEqual([
-      "growth-child@1.0.0", "growth-parent@1.0.0", "growth-parent@1.1.0", "growth-teacher@1.0.0"
+      "growth-child@1.0.0", "growth-child@1.1.0", "growth-parent@1.0.0", "growth-parent@1.1.0", "growth-parent@1.2.0", "growth-teacher@1.0.0", "growth-teacher@1.1.0"
     ]);
-    expect(instruments.currentTriadScaleIds).toEqual({ parent: "growth-parent@1.1.0", student: "growth-child@1.0.0", teacher: "growth-teacher@1.0.0" });
+    expect(instruments.currentTriadScaleIds).toEqual({ parent: "growth-parent@1.2.0", student: "growth-child@1.1.0", teacher: "growth-teacher@1.1.0" });
   });
 
   it("changes only the approved old-item wording and adds seven independent optional staff fields", () => {
@@ -82,7 +85,7 @@ describe("versioned parent questionnaire", () => {
 
   it("keeps both canonical versions' presentation while excluding unknown versions", () => {
     expect(instruments.parentScaleV1).toBeDefined();
-    for (const scale of [instruments.parentScaleV1, instruments.parentScale]) for (const locale of ["zh-CN", "zh-HK"] as const) {
+    for (const scale of [instruments.parentScaleV1, instruments.parentScale, instruments.parentScaleSafety]) for (const locale of ["zh-CN", "zh-HK"] as const) {
       expect(titleEmphasis(scale, "parent", locale)).toHaveLength(1);
       expect(questionDescription(scale, "parent", scale.items.find(item => item.id === "q20_1")!, locale)).toContain(locale === "zh-CN" ? "孩子" : "孩子");
       expect(titleEmphasis({ ...scale, version: "9.9.9" }, "parent", locale)).toEqual([]);

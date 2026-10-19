@@ -8,7 +8,7 @@ import { ArrowClockwise, CheckCircle, CircleNotch, Copy, FloppyDisk, Warning } f
 import { ApiError, errorMessage, type Locale, type SurveyRecord } from "./api";
 import { AssessmentDraftSession } from "./draft-session";
 import { copy } from "./copy";
-import { bindChoiceAutoAdvance, bindCompletionNavigation, CHOICE_AUTO_ADVANCE_MS, configureQuestionProgress, focusFirstUnanswered, type AutoAdvanceController } from "./survey-navigation";
+import { bindChoiceAutoAdvance, bindCompletionNavigation, CHOICE_AUTO_ADVANCE_MS, configureQuestionProgress, focusFirstUnanswered, questionSkipsAutoAdvance, type AutoAdvanceController } from "./survey-navigation";
 import { CompletionSummary, surveyCompletionIssues } from "./survey-completion";
 import { configureTitleEmphasis } from "./survey-presentation";
 import { SurveyNotice } from "./survey-notice";
@@ -20,7 +20,7 @@ export default function SurveyRunner({ record, draft, locale, onSubmitted, onRel
   record: SurveyRecord;
   draft: AssessmentDraftSession;
   locale: Locale;
-  onSubmitted: () => Promise<void>;
+  onSubmitted: (result: { phase: "waiting" | "reporting" | null; safetyGuidance: boolean }) => Promise<void>;
   onReloadLatest: () => Promise<void>;
   openPrivacy: () => void;
   privacyOpen?: boolean;
@@ -34,6 +34,7 @@ export default function SurveyRunner({ record, draft, locale, onSubmitted, onRel
   const [copied, setCopied] = useState(false);
   const [reloading, setReloading] = useState(false);
   const [advancePending, setAdvancePending] = useState(false);
+  const [advanceHeld, setAdvanceHeld] = useState(false);
   const [advanceToken, setAdvanceToken] = useState(0);
   const advanceSeconds = String(CHOICE_AUTO_ADVANCE_MS / 1000);
   const submitRef = useRef<() => void>(() => undefined);
@@ -112,6 +113,9 @@ export default function SurveyRunner({ record, draft, locale, onSubmitted, onRel
       setAdvancePending(false);
       return;
     }
+    const syncHold = () => setAdvanceHeld(questionSkipsAutoAdvance(model.currentSingleQuestion ?? undefined));
+    syncHold();
+    model.onCurrentPageChanged.add(syncHold);
     const controller = bindChoiceAutoAdvance(model, {
       isSuspended: () => privacyOpenRef.current || supplementController.hasCurrentSupplement(),
       onPending: () => {
@@ -121,7 +125,11 @@ export default function SurveyRunner({ record, draft, locale, onSubmitted, onRel
       onClear: () => setAdvancePending(false)
     });
     advanceRef.current = controller;
-    return () => { controller(); if (advanceRef.current === controller) advanceRef.current = null; };
+    return () => {
+      model.onCurrentPageChanged.remove(syncHold);
+      controller();
+      if (advanceRef.current === controller) advanceRef.current = null;
+    };
   }, [model, locked, supplementController]);
   useEffect(() => {
     draft.setAcknowledged(false, locale);
@@ -157,9 +165,9 @@ export default function SurveyRunner({ record, draft, locale, onSubmitted, onRel
     model.mode = "display";
     draft.update(supplementController.readAnswers(), locale);
     try {
-      await draft.submit(locale);
+      const result = await draft.submit(locale);
       if (draft.getSnapshot().authenticationPaused) return;
-      await onSubmitted();
+      await onSubmitted({ phase: result.phase ?? null, safetyGuidance: result.safetyGuidance === true });
     } catch (err) {
       if (err instanceof ApiError && err.code === "INCOMPLETE_TRIAD" && err.completionIssues?.length) {
         setError("");
@@ -188,7 +196,7 @@ export default function SurveyRunner({ record, draft, locale, onSubmitted, onRel
       {snapshot.status === "failed" && <button className="text-link" disabled={sessionLocked} onClick={() => void draft.save(locale).catch(() => undefined)}>{t("saveDraft")}</button>}
     </div>
     <CompletionSummary model={model} rules={record.completionRules} issues={issues} locale={locale} disabled={locked} headingRef={completionHeadingRef} onJump={itemId => { completionNavigation.jump(itemId); }} />
-    <p className="survey-nav-hint" aria-live="polite">{(advancePending ? t("autoAdvanceSoon") : t("autoAdvanceHint")).replaceAll("{seconds}", advanceSeconds)}</p>
+    <p className="survey-nav-hint" aria-live="polite">{(advancePending ? t("autoAdvanceSoon") : advanceHeld ? t("safetyNoAutoAdvance") : t("autoAdvanceHint")).replaceAll("{seconds}", advanceSeconds)}</p>
     {advancePending && <div key={advanceToken} className="survey-advance-track" aria-hidden="true"><span style={{ animationDuration: `${CHOICE_AUTO_ADVANCE_MS}ms` }} /></div>}
     <fieldset ref={questionsRef} className="survey-questions" disabled={locked}><Survey model={model} /><SurveySupplements controller={supplementController} locale={locale} locked={locked} /></fieldset>
     {submitError && <div className="survey-submit-panel"><ErrorNotice locale={locale} message={submitError} /></div>}

@@ -4,8 +4,9 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type {Assessment,Locale,Report,Session,SurveyRecord,Workspace} from "../src/components/api";
 import {demoScale} from "../src/domain/demo";
+import {scoreAssessment} from "../src/domain/scoring";
 import {previewAnswers} from "../src/domain/triad-report";
-import {childScale,parentScale,teacherScale} from "../src/domain/triad-scales";
+import {childScaleSafety,parentScaleSafety,teacherScaleSafety} from "../src/domain/triad-scales";
 import type {AdviceLibrary,ContentSnapshot,ReportTemplate,RespondentRole,ScaleDefinition,StoredAnswer} from "../src/domain/types";
 
 type Client={base:string;cookie:string};
@@ -17,7 +18,7 @@ const runId=`${new Date().toISOString().replace(/[:.]/g,"-")}-${randomBytes(4).t
 const nonce=randomBytes(6).toString("hex");
 const demoId="nova-family-demo@1.0.0";
 const roles=["parent","student","teacher"] as const;
-const definitions={parent:parentScale,student:childScale,teacher:teacherScale};
+const definitions={parent:parentScaleSafety,student:childScaleSafety,teacher:teacherScaleSafety};
 const outputDir=path.resolve(process.env.NOVA_INTEGRATION_OUTPUT_DIR??`work/qa/integration-${runId}`);
 const outputRelative=path.relative(path.resolve("work"),outputDir);
 assert.ok(outputRelative&&!outputRelative.startsWith("..")&&!path.isAbsolute(outputRelative),"Integration evidence must be stored inside work/");
@@ -245,8 +246,8 @@ async function main(){
 
   const triad=await check("independent three-party registration creates fixed role instruments",()=>registerTriad(cn,"zh-CN"));
   await check("official role/age gates reject inappropriate assignments and demo fallback",async()=>{
-    await rejected(admin,"/api/assessments","POST",{familyId:triad.familyId,respondentId:triad.tasks.student.respondentId,scaleVersionId:"growth-parent@1.0.0",locale:"zh-CN"},422,"INELIGIBLE");
-    await rejected(admin,"/api/assessments","POST",{familyId:demoFamily.id,respondentId:acceptedIds.student,scaleVersionId:"growth-child@1.0.0",locale:"zh-CN"},422,"INELIGIBLE");
+    await rejected(admin,"/api/assessments","POST",{familyId:triad.familyId,respondentId:triad.tasks.student.respondentId,scaleVersionId:`${definitions.parent.id}@${definitions.parent.version}`,locale:"zh-CN"},422,"INELIGIBLE");
+    await rejected(admin,"/api/assessments","POST",{familyId:demoFamily.id,respondentId:acceptedIds.student,scaleVersionId:`${definitions.student.id}@${definitions.student.version}`,locale:"zh-CN"},422,"INELIGIBLE");
     for(const role of roles)await rejected(admin,"/api/assessments","POST",{familyId:triad.familyId,respondentId:triad.tasks[role].respondentId,scaleVersionId:demoId,locale:"zh-CN"},409,"DEMO_NOT_ASSIGNABLE");
   });
   await check("admin assignment controls staff report-management scope",async()=>{
@@ -257,7 +258,7 @@ async function main(){
     await ok(admin,`/api/families/${triad.familyId}/assignment`,"PATCH",{assignedTo:otherStaffId});assert.ok(!(await workspace(staff)).families.some(f=>f.id===triad.familyId));await rejected(staff,`/api/assessments/${triad.tasks.parent.id}/retry-report`,"POST",{},404,"NOT_FOUND");
     await ok(admin,`/api/families/${triad.familyId}/assignment`,"PATCH",{assignedTo:staffId});await rejected(staff,`/api/assessments/${triad.tasks.parent.id}/retry-report`,"POST",{},409,"REPORT_NOT_FAILED");await rejected(triad.clients.parent,`/api/assessments/${triad.tasks.parent.id}/retry-report`,"POST",{},403,"ROLE_DENIED");
   });
-  const answers={parent:triadAnswers(parentScale,"parent"),student:triadAnswers(childScale,"student"),teacher:triadAnswers(teacherScale,"teacher")};
+  const answers={parent:triadAnswers(definitions.parent,"parent"),student:triadAnswers(definitions.student,"student"),teacher:triadAnswers(definitions.teacher,"teacher")};
   await check("three-party entry gates and required coverage reject incomplete risk submissions",async()=>{
     for(const role of roles){
       const scale=definitions[role],gate=scale.items.find(item=>item.gate!==undefined),required=scale.items.find(item=>item.required&&item.kind==="text"&&!item.showIf);assert.ok(gate&&required);
@@ -286,12 +287,19 @@ async function main(){
   });
   await check("combined bilingual documents preserve aggregates/safety and exclude student raw disclosures",async()=>{
     const saved=await documents(triad.clients.parent,combined.id,"triad-parent-report");
+    // c14's harm, unsure, and decline rules cannot fire together. Require the lines these answers actually score, and keep the others out.
+    const triggered=scoreAssessment(definitions.student,answers.student,{age:12,region:"CN",role:"student"}).riskMessages;
+    assert.ok(triggered.length>0,"Fixture answers must trigger at least one approved child safety message");
+    const triggeredCn=new Set(triggered.map(message=>message["zh-CN"]));
+    const silent=definitions.student.riskRules.filter(rule=>!triggeredCn.has(rule.message["zh-CN"]));
+    assert.ok(silent.length>0,"Mutually exclusive child safety messages must not all fire for one answer set");
     for(const locale of ["zh-CN","zh-HK"] as const){
       const html=saved[locale].html,serialized=JSON.stringify(await ok<object>(triad.clients.parent,`/api/reports/${combined.id}?locale=${locale}`));
       assert.ok(!serialized.includes(`STUDENT_PRIVATE_student_${nonce}`));assert.ok(!serialized.includes("STAFF_PRIVATE_"));assert.ok(!html.includes('"answers"'));assert.ok(html.includes(`ADULT_WORDS_parent_${nonce}`));assert.ok(html.includes(`ADULT_WORDS_teacher_${nonce}`));
-      const aggregate=childScale.dimensions.find(d=>d.key==="c7");assert.ok(aggregate);assert.ok(html.includes(aggregate.label[locale]));assert.ok(html.includes("孩子自己"));assert.ok(html.includes("原始平均分 4"));
-      for(const rule of childScale.riskRules)assert.ok(html.includes(rule.message[locale]),"Approved child safety templates must remain visible");
-      for(const item of childScale.items.filter(item=>item.report==="situation"||item.report==="priorities"||item.report==="words"))assert.ok(!html.includes(item.label[locale]),`Student raw prompt ${item.id} must be excluded`);
+      const aggregate=definitions.student.dimensions.find(d=>d.key==="c7");assert.ok(aggregate);assert.ok(html.includes(aggregate.label[locale]));assert.ok(html.includes("孩子自己"));assert.ok(html.includes("原始平均分 4"));
+      for(const message of triggered)assert.ok(html.includes(message[locale]),"Triggered approved child safety template must remain visible");
+      for(const rule of silent)assert.ok(!html.includes(rule.message[locale]),"Untriggered child safety template must not appear");
+      for(const item of definitions.student.items.filter(item=>item.report==="situation"||item.report==="priorities"||item.report==="words"))assert.ok(!html.includes(item.label[locale]),`Student raw prompt ${item.id} must be excluded`);
       for(const section of ["situations","priorities","words"]){const match=html.match(new RegExp(`<section class="${section}">([\\s\\S]*?)</section>`));assert.ok(match);assert.ok(!match[1].includes("<strong>孩子"),"Raw response sections must contain adults only");}
       const safety=html.indexOf(locale==="zh-CN"?"请先关注安全":"請先關注安全"),observations=html.indexOf(locale==="zh-CN"?"三方看到的情况":"三方看到的情況");assert.ok(safety>=0&&observations>safety);
     }

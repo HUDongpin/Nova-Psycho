@@ -2,7 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
 import type { Actor, Locale, RespondentRole } from "../domain/types";
 import { z } from "zod";
-import { currentTriadScaleIds, triadScales } from "../domain/triad-scales";
+import { childScale, currentTriadScaleIds, teacherScale, triadScales } from "../domain/triad-scales";
 import { TRIAD_BUNDLE, triadRolesReady } from "../domain/triad-report";
 import { pair } from "../domain/zh-pair";
 import { parseAdvice, parseScale, parseTemplate } from "../domain/validation";
@@ -90,7 +90,10 @@ export async function joinTriadFamilyInTransaction(client: PoolClient, actor: Ac
   if (own && own.role !== role) throw new HttpError(409, "这个账号在家庭中的角色不一致，请联系服务人员。", "ROLE_CONFLICT");
   if (members.rows.some(member => member.role === role && member.user_id !== actor.id)) throw new HttpError(409, role === "student" ? "这个家庭已经有孩子进入了。" : "这个家庭已经有老师进入了。", "ROLE_TAKEN");
   if (own) {
-    const existing = await client.query<{ id: string }>("SELECT id FROM assessments WHERE family_id=$1 AND respondent_id=$2 AND respondent_role=$3 AND scale_version_id=$4 AND region=$5 ORDER BY created_at DESC,id DESC LIMIT 1", [family.id, actor.id, role, SCALE_ID[role], actor.region]);
+    // Any version of this role's triad scale. After 1.1.0 is published, a member who
+    // already has a 1.0.0 task must get that task back instead of opening a second one.
+    const scaleFamily = role === "student" ? childScale.id : teacherScale.id;
+    const existing = await client.query<{ id: string }>("SELECT a.id FROM assessments a JOIN scales s ON s.id=a.scale_version_id WHERE a.family_id=$1 AND a.respondent_id=$2 AND a.respondent_role=$3 AND a.region=$4 AND s.scale_id=$5 ORDER BY a.created_at DESC,a.id DESC LIMIT 1", [family.id, actor.id, role, actor.region, scaleFamily]);
     if (existing.rows[0]) return { userId: actor.id, familyId: family.id, assessmentId: existing.rows[0].id, alreadyMember: true };
   }
   const scale = await client.query("SELECT id FROM scales WHERE id=$1 AND status='active'", [SCALE_ID[role]]);
@@ -166,7 +169,14 @@ export async function ensureTriadInstruments(): Promise<void> {
   await query("CREATE UNIQUE INDEX IF NOT EXISTS staff_alerts_assessment ON staff_alerts(assessment_id) WHERE assessment_id IS NOT NULL");
   for (const scale of triadScales) {
     const parsed = parseScale(scale);
-    await query("INSERT INTO scales(id,scale_id,version,definition) VALUES($1,$2,$3,$4) ON CONFLICT(id) DO NOTHING", [`${parsed.id}@${parsed.version}`, parsed.id, parsed.version, JSON.stringify(parsed)]);
+    const id = `${parsed.id}@${parsed.version}`;
+    // Insert only. scales_immutable rejects definition rewrites, and an open assessment scores the row it was opened with.
+    await query("INSERT INTO scales(id,scale_id,version,definition) VALUES($1,$2,$3,$4) ON CONFLICT(id) DO NOTHING", [id, parsed.id, parsed.version, JSON.stringify(parsed)]);
+    // Child and teacher 1.0.0 stay stored for open forms, but new assignments use the safety revision.
+    // Parent 1.0.0 and 1.1.0 remain active so an explicit historical choice is still accepted.
+    if ((parsed.id === "growth-child" || parsed.id === "growth-teacher") && parsed.version !== "1.0.0") {
+      await query("UPDATE scales SET status='retired' WHERE id=$1 AND status='active'", [`${parsed.id}@1.0.0`]);
+    }
   }
   const advice = parseAdvice({ title: pair("三方了解说明"), blocks: [{ id: "triad_context", title: pair("先看具体情境"), body: pair("这份报告把孩子、家长和老师的观察放在一起，不合成一个总分，也不做诊断。"), source: "Nova growth triad intake, 2026-10", dimensionKeys: ["cognition"] }] });
   const template = parseTemplate({ title: pair("孩子的成长了解"), introduction: pair("这份报告给家长阅读。它把孩子、家长和老师各自看到的情况放在一起。"), limitation: pair("这不是诊断，也没有临床常模。三方说法不同时，不代表有人说了谎。香港繁体文本是便于阅读的字形转换，不是另行验证的译本。"), nextStep: pair("可以挑一个小变化，和孩子一起试四周。如果报告开头有安全提示，请先处理安全。") });

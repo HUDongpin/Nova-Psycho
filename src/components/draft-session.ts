@@ -293,7 +293,7 @@ export class AssessmentDraftSession {
         if (this.conflict) throw this.conflictError();
         const controller = new AbortController();
         this.requests.add(controller);
-        let result: { id: string; status: "queued" | "published"; reportId: string | null };
+        let result: { id: string; status: "queued" | "published"; reportId: string | null; phase?: "waiting" | "reporting" | null; safetyGuidance?: boolean };
         const previouslyUncertain = this.uncertainSubmission;
         this.uncertainSubmission = true;
         this.publish();

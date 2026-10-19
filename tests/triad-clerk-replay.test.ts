@@ -25,7 +25,7 @@ const sql = vi.fn(async (text: string, values: unknown[] = []) => {
   if (text.includes("FROM users WHERE id=$1")) return { rows: user ? [{ ...user }] : [] };
   if (text.includes("FROM consents WHERE family_id=$1")) return { rows: [{ id: "synthetic-consent" }] };
   if (text.includes("FROM memberships WHERE family_id=$1")) return { rows: members };
-  if (text.startsWith("SELECT id FROM assessments WHERE family_id=$1")) return { rows: tasks.filter(task => task.respondent_id === values[1] && task.respondent_role === values[2]) };
+  if (text.includes("s.scale_id=$5")) return { rows: tasks.filter(task => task.respondent_id === values[1] && task.respondent_role === values[2]) };
   if (text.startsWith("SELECT id FROM scales")) return { rows: [{ id: "growth-child@1.0.0" }] };
   if (text.startsWith("INSERT INTO memberships")) members.push({ user_id: String(values[1]), role: String(values[2]) });
   if (text.startsWith("INSERT INTO assessments")) tasks.push({ id: String(values[0]), respondent_id: String(values[3]), respondent_role: String(values[4]) });

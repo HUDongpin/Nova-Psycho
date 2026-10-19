@@ -47,7 +47,7 @@ const sql = vi.fn(async (text: string, values: unknown[] = []): Promise<{ rows: 
     members.push({ family_id: String(values[0]), user_id: String(values[1]), role: (values[2] ?? "parent") as Role });
     return { rows: [] };
   }
-  if (text.startsWith("SELECT id FROM assessments WHERE family_id=$1")) return { rows: tasks.filter(row => row.family_id === values[0] && row.respondent_id === values[1] && row.respondent_role === values[2]) };
+  if (text.includes("s.scale_id=$5")) return { rows: tasks.filter(row => row.family_id === values[0] && row.respondent_id === values[1] && row.respondent_role === values[2]) };
   if (text.startsWith("INSERT INTO assessments")) {
     tasks.push({ id: String(values[0]), family_id: String(values[1]), respondent_id: String(values[3]), respondent_role: (text.includes("'parent'") ? "parent" : values[4]) as Role });
     return { rows: [] };
