@@ -22,6 +22,7 @@ export interface ScaleItem {
   showIf?: { itemId: string; anyOf: number[] };
   /** Show this item only when the family birth-date age is at least this many years. */
   visibleFromAge?: number;
+  supplementFor?: string;
   page?: string;
   pageTitle?: TextPair;
   panel?: TextPair;

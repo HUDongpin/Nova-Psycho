@@ -5,8 +5,8 @@ import type { Actor } from "../src/domain/types";
 import { scoreAssessment } from "../src/domain/scoring";
 import { surveyDefinition } from "../src/domain/survey";
 import { previewAnswers } from "../src/domain/triad-report";
-import { childScale, parentScale, teacherScale } from "../src/domain/triad-scales";
-import { parseScale } from "../src/domain/validation";
+import { childScale, childScaleBirthAge, childScaleSafety, parentScale, parentScaleSafety, parentScaleV1, teacherScale, teacherScaleSafety } from "../src/domain/triad-scales";
+import { parseScale, parseStoredScale } from "../src/domain/validation";
 import { demoAdvice, demoTemplate } from "../src/domain/demo";
 import { childScaleAt1_0_0 } from "./fixtures/child-scale-v1";
 
@@ -55,9 +55,10 @@ function setup(definition: typeof opened) {
     return [];
   });
   client.query.mockImplementation(async (sql: string) => {
+    if (sql.includes("FROM users WHERE id=$1")) return { rows: [{ id: userId, name: "Synthetic", role: "student", region: "CN", disabled: false, demo: false }] };
     if (sql.includes("SELECT id FROM families")) return { rows: [{ id: familyId }] };
     if (sql.includes("SELECT a.*,r.id AS report_id")) return { rows: [assessment] };
-    if (sql.includes("AS scopes FROM consents WHERE family_id=$1")) return { rows: [{ scopes: ["assessment", "parent_report", "sensitive_data"] }] };
+    if (sql.includes("AS scopes FROM consents") || sql.includes("SELECT scopes FROM consents")) return { rows: [{ scopes: ["assessment", "parent_report", "sensitive_data"] }] };
     if (sql.includes("INSERT INTO staff_alerts")) return { rows: [{ id: "new-alert" }] };
     return { rows: [] };
   });
@@ -95,10 +96,10 @@ describe("assessments opened on growth-child@1.0.0", () => {
     expect(score.reasons).toEqual([]);
     expect(score.scaleVersion).toBe("1.0.0");
 
-    const sameFormNow = new Model(surveyDefinition(childScale, "student", "zh-CN"));
+    const sameFormNow = new Model(surveyDefinition(childScaleSafety, "student", "zh-CN"));
     sameFormNow.data = answers;
     expect(sameFormNow.getQuestionByName("c15")?.isVisible).toBe(true);
-    expect(scoreAssessment(childScale, answers, context)).toMatchObject({ status: "incomplete", reasons: ["required_items_missing"] });
+    expect(scoreAssessment(childScaleSafety, answers, context)).toMatchObject({ status: "incomplete", reasons: ["required_items_missing"] });
 
     setup(opened);
     const result = await submitAssessment(actor, assessmentId, { answers, acknowledged: true, revision: 0 });
@@ -109,41 +110,57 @@ describe("assessments opened on growth-child@1.0.0", () => {
     expect(snapshot.score.status).toBe("valid");
     expect(client.query.mock.calls.some(([sql]) => sql.includes("INSERT INTO staff_alerts"))).toBe(false);
 
-    setup(childScale);
+    setup(childScaleSafety);
     await expect(submitAssessment(actor, assessmentId, { answers, acknowledged: true, revision: 0 })).rejects.toMatchObject({ status: 422, code: "INCOMPLETE_TRIAD" });
   });
 });
 
 describe("new triad assessments use the published definition", () => {
-  it("inserts child 1.3.0 and parent and teacher 1.2.0 without rewriting a stored definition", async () => {
-    expect(`${childScale.id}@${childScale.version}`).toBe("growth-child@1.3.0");
-    expect(`${parentScale.id}@${parentScale.version}`).toBe("growth-parent@1.2.0");
-    expect(`${teacherScale.id}@${teacherScale.version}`).toBe("growth-teacher@1.2.0");
-    expect(childScale.demo).toBe(true);
-    expect(childScale.norm.validated).toBe(false);
-    expect(childScale.items.find(item => item.id === "c15")?.showIf?.anyOf).toEqual([1, 2, 3, 4, 5, 7, 8]);
-    expect(childScale.items.find(item => item.id === "c18_1")?.visibleFromAge).toBe(12);
-    expect(childScale.items.find(item => item.id === "c18_1")?.showIf).toBeUndefined();
+  it("inserts frozen versions and the birth-date child revision without rewriting a stored definition", async () => {
+    expect(`${childScale.id}@${childScale.version}`).toBe("growth-child@1.0.0");
+    expect(`${childScaleSafety.id}@${childScaleSafety.version}`).toBe("growth-child@1.1.0");
+    expect(`${childScaleBirthAge.id}@${childScaleBirthAge.version}`).toBe("growth-child@1.2.0");
+    expect(`${parentScaleSafety.id}@${parentScaleSafety.version}`).toBe("growth-parent@1.2.0");
+    expect(`${teacherScaleSafety.id}@${teacherScaleSafety.version}`).toBe("growth-teacher@1.1.0");
+    expect(childScaleSafety.demo).toBe(false);
+    expect(childScaleBirthAge.demo).toBe(false);
+    expect(childScaleSafety.norm.validated).toBe(false);
+    expect(() => parseScale(childScaleSafety)).toThrow(/Unvalidated instruments must be labelled demo/);
+    expect(() => parseScale(childScaleBirthAge)).toThrow(/Unvalidated instruments must be labelled demo/);
+    expect(childScaleSafety.items.find(item => item.id === "c15")?.showIf?.anyOf).toEqual([1, 2, 3, 4, 5, 7, 8]);
+    expect(childScaleSafety.items.find(item => item.id === "c18_1")?.showIf).toEqual({ itemId: "c_age", anyOf: [12, 13, 14, 15, 16, 17] });
+    expect(childScaleSafety.items.find(item => item.id === "c18_1")?.visibleFromAge).toBeUndefined();
+    expect(childScaleBirthAge.items.find(item => item.id === "c18_1")?.visibleFromAge).toBe(12);
+    expect(childScaleBirthAge.items.find(item => item.id === "c18_1")?.showIf).toBeUndefined();
     vi.mocked(query).mockResolvedValue([]);
     await ensureTriadInstruments();
     const sql = vi.mocked(query).mock.calls.map(([text]) => String(text));
     expect(sql.some(text => text.includes("DO UPDATE SET definition"))).toBe(false);
     expect(sql.some(text => text.includes("UPDATE content_versions"))).toBe(false);
     const inserts = vi.mocked(query).mock.calls.filter(([text]) => String(text).includes("INSERT INTO scales"));
-    expect(inserts.map(([, values]) => values?.[0])).toEqual(["growth-child@1.3.0", "growth-parent@1.2.0", "growth-teacher@1.2.0"]);
+    const published = [childScale, childScaleSafety, childScaleBirthAge, parentScaleV1, parentScale, parentScaleSafety, teacherScale, teacherScaleSafety];
+    expect(inserts.map(([, values]) => values?.[0])).toEqual(published.map(scale => `${scale.id}@${scale.version}`));
     expect(inserts.every(([text]) => String(text).includes("ON CONFLICT(id) DO NOTHING"))).toBe(true);
-    const stored = JSON.parse(String(inserts[0][1]?.[3]));
-    expect(stored.version).toBe("1.3.0");
-    expect(stored.demo).toBe(true);
-    expect(stored.norm.validated).toBe(false);
-    expect(stored.items.find((item: { id: string }) => item.id === "c15").showIf.anyOf).toEqual([1, 2, 3, 4, 5, 7, 8]);
-    expect(stored.items.find((item: { id: string; visibleFromAge?: number; showIf?: unknown }) => item.id === "c18_1").visibleFromAge).toBe(12);
-    expect(stored.items.find((item: { id: string; showIf?: unknown }) => item.id === "c18_1").showIf).toBeUndefined();
+    inserts.forEach(([, values], index) => {
+      expect(values?.[3]).toBe(JSON.stringify(parseStoredScale(published[index])));
+    });
+    const storedSafety = JSON.parse(String(inserts[1][1]?.[3]));
+    expect(storedSafety.version).toBe("1.1.0");
+    expect(storedSafety.demo).toBe(false);
+    expect(storedSafety.items.find((item: { id: string; visibleFromAge?: number }) => item.id === "c18_1").visibleFromAge).toBeUndefined();
+    expect(storedSafety.items.find((item: { id: string; showIf?: { itemId: string } }) => item.id === "c18_1").showIf).toEqual({ itemId: "c_age", anyOf: [12, 13, 14, 15, 16, 17] });
+    const storedBirth = JSON.parse(String(inserts[2][1]?.[3]));
+    expect(storedBirth.version).toBe("1.2.0");
+    expect(storedBirth.demo).toBe(false);
+    expect(storedBirth.norm.validated).toBe(false);
+    expect(storedBirth.items.find((item: { id: string; showIf: { anyOf: number[] } }) => item.id === "c15").showIf.anyOf).toEqual([1, 2, 3, 4, 5, 7, 8]);
+    expect(storedBirth.items.find((item: { id: string; visibleFromAge?: number }) => item.id === "c18_1").visibleFromAge).toBe(12);
+    expect(storedBirth.items.find((item: { id: string; showIf?: unknown }) => item.id === "c18_1").showIf).toBeUndefined();
     const retired = vi.mocked(query).mock.calls.filter(([text]) => String(text).includes("UPDATE scales SET status='retired'"));
     expect(retired.map(([, values]) => values)).toEqual([
-      ["growth-child", "growth-child@1.3.0"],
-      ["growth-parent", "growth-parent@1.2.0"],
-      ["growth-teacher", "growth-teacher@1.2.0"]
+      ["growth-child", "growth-child@1.2.0"],
+      ["growth-teacher@1.0.0"]
     ]);
+    expect(retired.some(([, values]) => String(values?.[0]).startsWith("growth-parent@"))).toBe(false);
   });
 });

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PoolClient } from "pg";
 import type { Actor } from "../src/domain/types";
 import { ageAt } from "../src/lib/access";
-import { childScale } from "../src/domain/triad-scales";
+import { childScaleBirthAge as childScale } from "../src/domain/triad-scales";
 import { previewAnswers } from "../src/domain/triad-report";
 import { demoAdvice, demoTemplate } from "../src/domain/demo";
 
@@ -18,8 +18,9 @@ const AFTER = new Date("2026-10-10T16:00:00.000Z");
 const FAMILY = "11111111-2222-4333-8444-555555555555";
 const TASK = "22222222-3333-4444-8555-666666666666";
 const USER = "33333333-4444-4555-8666-777777777777";
+const STUDENT = "44444444-5555-4666-8777-888888888888";
 const parent: Actor = { id: USER, name: "Synthetic parent", role: "parent", region: "CN" };
-const student: Actor = { id: USER, name: "Synthetic student", role: "student", region: "CN" };
+const student: Actor = { id: STUDENT, name: "Synthetic student", role: "student", region: "CN" };
 
 function stub(region: "CN" | "HK") {
   vi.stubEnv("NOVA_REGION", region);
@@ -52,7 +53,7 @@ describe("birth-date age uses the service region's local date", () => {
       expect(ageAt(birth, BEFORE)).toBe(before);
       expect(ageAt(birth, AFTER)).toBe(after);
     }
-    expect(childScale.version).toBe("1.3.0");
+    expect(childScale.version).toBe("1.2.0");
   });
 });
 
@@ -76,7 +77,7 @@ describe("eligibility, visibility, score age and mismatch follow that local age"
     return { id: FAMILY, region: parent.region, family_name: "Synthetic family", child_name: "Synthetic child", birth_date: birthDate, grade: "初中", guardian_label: "母亲", assigned_to: null };
   }
   function wire(birthDate: string) {
-    const assessment = { id: TASK, family_id: FAMILY, respondent_id: USER, respondent_role: "student", status: "pending", draft_revision: 0, triad_round_id: "44444444-5555-4666-8777-888888888888", snapshot: null, definition: childScale };
+    const assessment = { id: TASK, family_id: FAMILY, respondent_id: STUDENT, respondent_role: "student", status: "pending", draft_revision: 0, triad_round_id: "55555555-6666-4777-8888-999999999999", snapshot: null, definition: childScale };
     vi.mocked(query).mockImplementation(async (sql: string) => {
       const text = String(sql);
       if (text.includes("definition->>'demo'")) return [];
@@ -86,11 +87,18 @@ describe("eligibility, visibility, score age and mismatch follow that local age"
       if (text.includes("FROM consents")) return [{ id: "consent" }];
       return [];
     });
-    client.query.mockImplementation(async (sql: string) => {
+    client.query.mockImplementation(async (sql: string, values: unknown[] = []) => {
+      if (sql.includes("FROM users WHERE id=$1")) {
+        const id = String(values[0]);
+        const actor = id === student.id ? student : parent;
+        return { rows: [{ id: actor.id, name: actor.name, role: actor.role, region: actor.region, disabled: false, demo: false }] };
+      }
+      if (sql.includes("FROM memberships")) return { rows: [{ role: "student" }] };
       if (sql.includes("SELECT id FROM families")) return { rows: [{ id: FAMILY }] };
+      if (sql.includes("FROM families")) return { rows: [family(birthDate)] };
       if (sql.includes("SELECT status FROM scales")) return { rows: [{ status: "active" }] };
       if (sql.includes("SELECT a.*,r.id AS report_id")) return { rows: [assessment] };
-      if (sql.includes("AS scopes FROM consents WHERE family_id=$1")) return { rows: [{ scopes: ["assessment", "parent_report", "sensitive_data"] }] };
+      if (sql.includes("FROM consents")) return { rows: [{ scopes: ["assessment", "parent_report", "sensitive_data"] }] };
       if (sql.includes("status='pending'")) return { rows: [] };
       if (sql.includes("SELECT submitted_at")) return { rows: [] };
       if (sql.includes("triad_round_id IS NULL")) return { rows: [] };

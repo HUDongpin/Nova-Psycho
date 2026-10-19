@@ -7,7 +7,7 @@ import { SubmissionPanel } from "../src/components/documents";
 import { scoreAssessment, ScoringError } from "../src/domain/scoring";
 import { surveyDefinition } from "../src/domain/survey";
 import { previewAnswers } from "../src/domain/triad-report";
-import { childScale, parentScale, teacherScale } from "../src/domain/triad-scales";
+import { childScaleBirthAge, childScaleSafety as childScale, currentTriadScaleIds, parentScaleSafety as parentScale, teacherScaleSafety as teacherScale } from "../src/domain/triad-scales";
 
 const student = { age: 12, region: "CN" as const, role: "student" as const };
 const parent = { age: 12, region: "CN" as const, role: "parent" as const };
@@ -18,6 +18,16 @@ function choice(scale: typeof childScale, itemId: string, label: string) {
 }
 
 describe("safety items stay early and exclusive", () => {
+  it("publishes parent and teacher safety revisions, and the birth-date child revision, for new assignments", () => {
+    expect(currentTriadScaleIds).toEqual({
+      parent: `${parentScale.id}@${parentScale.version}`,
+      student: `${childScaleBirthAge.id}@${childScaleBirthAge.version}`,
+      teacher: `${teacherScale.id}@${teacherScale.version}`
+    });
+    expect(childScaleBirthAge.items.find(item => item.id === "c15")?.showIf?.anyOf).toEqual([1, 2, 3, 4, 5, 7, 8]);
+    expect(childScaleBirthAge.items.find(item => item.id === "c14")?.noAutoAdvance).toBe(true);
+  });
+
   it("asks c14–c16 before the long matrices and keeps them off the auto-advance timer", () => {
     const ids = childScale.items.map(item => item.id);
     expect(ids.indexOf("c14")).toBeGreaterThan(ids.indexOf("c_help"));
@@ -77,16 +87,14 @@ describe("safety follow-up and risk visibility", () => {
     }
   });
 
-  it("does not flag “以上均没有” and ignores a hidden danger answer", () => {
+  it("does not flag “以上均没有” and rejects a hidden danger answer", () => {
     const calm = previewAnswers(childScale, "calm");
     expect(calm.c14).toEqual([6]);
     expect(calm.c15).toBeUndefined();
     const clean = scoreAssessment(childScale, calm, student);
     expect(clean.status).toBe("valid");
     expect(clean.risk).toBe(false);
-    const hidden = scoreAssessment(childScale, { ...calm, c15: 1 }, student);
-    expect(hidden.risk).toBe(false);
-    expect(hidden.riskMessages).toEqual([]);
+    expect(() => scoreAssessment(childScale, { ...calm, c15: 1 }, student)).toThrow(ScoringError);
   });
 
   it("rejects combining a harm choice with an exclusive option", () => {

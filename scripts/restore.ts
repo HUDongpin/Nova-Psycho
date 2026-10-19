@@ -1,8 +1,9 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import pg from "pg";
-import { backupKeyFromEnv, collectReferencedPdfKeys, countedTableSql, fingerprintKey, isCountedTable, missingRestoredReportKeys, pgConnection, requireReportKey, run, sha256File, type BackupManifest } from "./backup-lib";
-import { withDecryptedBackup } from "./restore-lib";
+import { backupKeyFromEnv, collectReferencedPdfKeys, countedTableSql, fingerprintKey, isCountedTable, missingRestoredReportKeys, pgConnection, requireReportKey, sha256File, type BackupManifest } from "./backup-lib";
+import { RestoreInterruptionError, runRestoreCommand, withDecryptedBackup, withRestoreInterruption } from "./restore-lib";
 
 // Restores one regional backup into an ISOLATED environment.
 //
@@ -91,84 +92,112 @@ try {
   }
   console.log("  target schema is empty");
 
-  const reportDirEntries = await fs.readdir(path.resolve(targetReportDir)).catch(() => [] as string[]);
+  const reportDirEntries = await fs.readdir(path.resolve(targetReportDir)).catch(error => {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [] as string[];
+    throw error;
+  });
   if (reportDirEntries.length > 0) {
     throw new Error(`The restore target report directory already contains ${reportDirEntries.length} entry(ies). Refusing to restore over existing files.`);
   }
+  await fs.mkdir(path.resolve(targetReportDir), { recursive: true, mode: 0o700 });
+  const probePath = path.join(path.resolve(targetReportDir), `.restore-check-${randomUUID()}`);
+  const probe = await fs.open(probePath, "wx", 0o600);
+  try {
+    await probe.writeFile("restore preflight");
+  } finally {
+    try { await probe.close(); } finally { await fs.rm(probePath, { force: true }); }
+  }
+  await fs.chmod(path.resolve(targetReportDir), 0o700);
   console.log("  target report directory is empty");
 } finally {
   await client.end();
 }
 
-// 4. Restore. Decrypt into a unique temp directory when the backup is encrypted.
-// Cleanup is armed before the first decrypt so a later failure cannot leave plaintext.
-const backupKey = backupKeyFromEnv();
-await withDecryptedBackup(backupDir, databasePath, reportsPath, manifest.encrypted, backupKey, async (dumpToRestore, reportsToRestore) => {
-  if (manifest.encrypted) console.log("  decrypted");
-  await run("pg_restore", [...target.args, "--no-owner", "--no-acl", "--exit-on-error", dumpToRestore], { env: target.env });
-  console.log("  database restored");
+async function restoreTarget(backupDir: string, targetReportDir: string): Promise<void> {
+  // 4. Restore. Decrypt into a unique temp directory when the backup is encrypted.
+  // Cleanup is armed before the first decrypt so a later failure cannot leave plaintext.
+  const backupKey = backupKeyFromEnv();
+  await withRestoreInterruption(signal => withDecryptedBackup(backupDir, databasePath, reportsPath, manifest.encrypted, backupKey, async (dumpToRestore, reportsToRestore) => {
+    if (manifest.encrypted) console.log("  decrypted");
+    await runRestoreCommand("pg_restore", [...target.args, "--no-owner", "--no-acl", "--exit-on-error", "--single-transaction", dumpToRestore], { env: target.env, signal });
+    console.log("  database restored");
 
-  await fs.mkdir(path.resolve(targetReportDir), { recursive: true, mode: 0o700 });
-  await run("tar", ["-xzf", reportsToRestore, "-C", path.resolve(targetReportDir)]);
-  await fs.chmod(path.resolve(targetReportDir), 0o700);
-  console.log("  report files restored");
-});
-
-// 5. Verify the result rather than trusting the exit codes.
-const verify = new pg.Client({ host: target.args[1], port: Number(target.args[3]), user: target.args[5], password: target.env.PGPASSWORD, database: target.args[7] });
-await verify.connect();
-let failures = 0;
-try {
-  const settings = await verify.query("SELECT region, mode FROM deployment_settings WHERE singleton=true");
-  const row = settings.rows[0];
-  const regionOk = row?.region === manifest.region;
-  const modeOk = row?.mode === manifest.mode;
-  console.log("");
-  console.log(`  ${regionOk ? "ok  " : "FAIL"} region ${row?.region ?? "(missing)"} expected ${manifest.region}`);
-  console.log(`  ${modeOk ? "ok  " : "FAIL"} mode ${row?.mode ?? "(missing)"} expected ${manifest.mode}`);
-  if (!regionOk || !modeOk) failures += 1;
-
-  for (const [table, expected] of Object.entries(manifest.database.tables)) {
-    if (!isCountedTable(table)) {
-      failures += 1;
-      console.log(`  FAIL ${table} is not a known backup table`);
-      continue;
+    const previousMask = process.umask(0o077);
+    try {
+      await runRestoreCommand("tar", ["-xzf", reportsToRestore, "-C", path.resolve(targetReportDir)], { signal });
+    } finally {
+      process.umask(previousMask);
     }
-    const result = await verify.query(countedTableSql(table));
-    const actual = result.rows[0].n;
-    const ok = actual === expected;
-    if (!ok) failures += 1;
-    console.log(`  ${ok ? "ok  " : "FAIL"} ${table} ${actual}${ok ? "" : ` expected ${expected}`}`);
+    await fs.chmod(path.resolve(targetReportDir), 0o700);
+    console.log("  report files restored");
+  }, signal));
+
+  // 5. Verify the result rather than trusting the exit codes.
+  const verify = new pg.Client({ host: target.args[1], port: Number(target.args[3]), user: target.args[5], password: target.env.PGPASSWORD, database: target.args[7] });
+  await verify.connect();
+  let failures = 0;
+  try {
+    const settings = await verify.query("SELECT region, mode FROM deployment_settings WHERE singleton=true");
+    const row = settings.rows[0];
+    const regionOk = row?.region === manifest.region;
+    const modeOk = row?.mode === manifest.mode;
+    console.log("");
+    console.log(`  ${regionOk ? "ok  " : "FAIL"} region ${row?.region ?? "(missing)"} expected ${manifest.region}`);
+    console.log(`  ${modeOk ? "ok  " : "FAIL"} mode ${row?.mode ?? "(missing)"} expected ${manifest.mode}`);
+    if (!regionOk || !modeOk) failures += 1;
+
+    for (const [table, expected] of Object.entries(manifest.database.tables)) {
+      if (!isCountedTable(table)) {
+        failures += 1;
+        console.log(`  FAIL ${table} is not a known backup table`);
+        continue;
+      }
+      const result = await verify.query(countedTableSql(table));
+      const actual = result.rows[0].n;
+      const ok = actual === expected;
+      if (!ok) failures += 1;
+      console.log(`  ${ok ? "ok  " : "FAIL"} ${table} ${actual}${ok ? "" : ` expected ${expected}`}`);
+    }
+
+    const pdfRows = await verify.query("SELECT pdf_keys FROM reports");
+    const referenced = collectReferencedPdfKeys(pdfRows.rows);
+    const missing = await missingRestoredReportKeys(path.resolve(targetReportDir), pdfRows.rows);
+    if (missing.length) {
+      failures += missing.length;
+      for (const key of missing) console.log(`  FAIL missing report file ${key}`);
+    } else {
+      console.log(`  ok   ${referenced.length} referenced report file(s) present`);
+    }
+  } finally {
+    await verify.end();
   }
 
-  const pdfRows = await verify.query("SELECT pdf_keys FROM reports");
-  const referenced = collectReferencedPdfKeys(pdfRows.rows);
-  const missing = await missingRestoredReportKeys(path.resolve(targetReportDir), pdfRows.rows);
-  if (missing.length) {
-    failures += missing.length;
-    for (const key of missing) console.log(`  FAIL missing report file ${key}`);
-  } else {
-    console.log(`  ok   ${referenced.length} referenced report file(s) present`);
+  const restoredReports = (await fs.readdir(path.resolve(targetReportDir))).length;
+  const reportsOk = restoredReports === manifest.reports.fileCount;
+  if (!reportsOk) failures += 1;
+  console.log(`  ${reportsOk ? "ok  " : "FAIL"} report files ${restoredReports} expected ${manifest.reports.fileCount}`);
+
+  console.log("");
+  if (failures) {
+    console.log(`${failures} verification check(s) FAILED. Do not switch service traffic to this environment.`);
+    process.exit(1);
   }
-} finally {
-  await verify.end();
+  console.log("Restore verified. Remaining manual checks before this environment serves traffic:");
+  console.log("  1. Keep workers and traffic stopped. Reconcile post-backup passwords, account access, sessions, recovery/invitation link use and revocation, Clerk revocations, family access, consents and deletions.");
+  console.log("     Use a newer authoritative source; otherwise keep this target isolated. The restored snapshot cannot supply later changes.");
+  console.log("  2. Start the report worker for this target; it completes physical deletion.");
+  console.log("  3. Open a historical report and confirm the PDF downloads and renders.");
+  console.log("  4. Publish one new assessment end to end and confirm automatic publication.");
+  console.log("  5. Confirm the deletion queue drains and that no orphaned report files remain.");
+  console.log("  6. Only then switch service traffic. This restore did not touch the live environment.");
+  console.log("");
+  console.log(`The restored environment uses the report key you supplied (${actualFingerprint}).`);
 }
 
-const restoredReports = (await fs.readdir(path.resolve(targetReportDir))).length;
-const reportsOk = restoredReports === manifest.reports.fileCount;
-if (!reportsOk) failures += 1;
-console.log(`  ${reportsOk ? "ok  " : "FAIL"} report files ${restoredReports} expected ${manifest.reports.fileCount}`);
-
-console.log("");
-if (failures) {
-  console.log(`${failures} verification check(s) FAILED. Do not switch service traffic to this environment.`);
-  process.exit(1);
+try {
+  await restoreTarget(backupDir, targetReportDir);
+} catch (error) {
+  if (!(error instanceof RestoreInterruptionError)) throw error;
+  console.error(error.message);
+  process.exitCode = error.exitCode;
 }
-console.log("Restore verified. Remaining manual checks before this environment serves traffic:");
-console.log("  1. The report worker must be started (or already running) for this target; it completes physical deletion.");
-console.log("  2. Open a historical report and confirm the PDF downloads and renders.");
-console.log("  3. Publish one new assessment end to end and confirm automatic publication.");
-console.log("  4. Confirm the deletion queue drains and that no orphaned report files remain.");
-console.log("  5. Only then switch service traffic. This restore did not touch the live environment.");
-console.log("");
-console.log(`The restored environment uses the report key you supplied (${actualFingerprint}).`);

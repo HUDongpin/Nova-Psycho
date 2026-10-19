@@ -138,11 +138,9 @@ async function raceReassignment(actors: RaceActors): Promise<void> {
 }
 
 async function reassignmentWithAlertFollowsFamilyScope(actors: RaceActors): Promise<void> {
-  // The in-lock check is familyScope, not a second alert rule. This branch's
-  // helper still matches any staff_alerts row after the family is assigned to
-  // someone else, so the old staff member stays allowed. PR #11 narrows that
-  // helper to an unresolved alert only while assigned_to is null; the same
-  // query then refuses the old staff member.
+  // The in-lock check is familyScope, not a second alert rule. An unresolved
+  // alert lets regional staff in only while the family is unassigned. After
+  // reassignment the same query refuses the previous staff member.
   const { region, oldStaff, newStaff, admin } = actors;
   const familyId = randomUUID();
   const consentId = randomUUID();

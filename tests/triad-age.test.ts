@@ -5,8 +5,7 @@ import { statedAgeMismatch } from "../src/domain/age-review";
 import { scoreAssessment } from "../src/domain/scoring";
 import { surveyDefinition } from "../src/domain/survey";
 import { composeTriad, previewAnswers, type TriadSource } from "../src/domain/triad-report";
-import { childScale, parentScale } from "../src/domain/triad-scales";
-import { childScale as v12Child } from "./fixtures/triad-scales-1.2.0";
+import { childScaleBirthAge as childScale, childScaleSafety as legacyChild, parentScale } from "../src/domain/triad-scales";
 import { demoAdvice, demoTemplate } from "../src/domain/demo";
 
 vi.mock("../src/lib/db", () => ({ query: vi.fn(), transaction: vi.fn() }));
@@ -18,8 +17,9 @@ import { assessmentDetail, submitAssessment } from "../src/lib/assessments";
 const FAMILY = "11111111-2222-4333-8444-555555555555";
 const TASK = "22222222-3333-4444-8555-666666666666";
 const STUDENT = "33333333-4444-4555-8666-777777777777";
+const PARENT = "99999999-aaaa-4bbb-8ccc-dddddddddddd";
 const student: Actor = { id: STUDENT, name: "Synthetic student", role: "student", region: "CN" };
-const parent: Actor = { id: STUDENT, name: "Synthetic parent", role: "parent", region: "CN" };
+const parent: Actor = { id: PARENT, name: "Synthetic parent", role: "parent", region: "CN" };
 const client = { query: vi.fn<(sql: string, values?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }>>() };
 const context = { region: "CN" as const, role: "student" as const };
 
@@ -51,7 +51,7 @@ describe("birth-date age is the only age used for the youth block", () => {
     expect(young).not.toContain('"name":"c18_1"');
     expect(older).toContain('"name":"c18_1"');
     expect(older).not.toContain("{c_age} anyof [12");
-    const legacy = JSON.stringify(surveyDefinition(v12Child, "student", "zh-CN", { age: 11 }));
+    const legacy = JSON.stringify(surveyDefinition(legacyChild, "student", "zh-CN", { age: 11 }));
     expect(legacy).toContain("{c_age} anyof [12,13,14,15,16,17]");
     expect(scoreAssessment(childScale, {}, { ...context, age: 7 }).status).toBe("ineligible");
     expect(scoreAssessment(childScale, {}, { ...context, age: 12 }).reasons).not.toContain("instrument_age");
@@ -72,12 +72,12 @@ describe("birth-date age is the only age used for the youth block", () => {
     expect(older.status).toBe("valid");
     expect(older.dimensions.find(item => item.key === "c18")?.raw).not.toBeNull();
 
-    const statedOlder = previewAnswers(v12Child);
+    const statedOlder = previewAnswers(legacyChild);
     statedOlder.c_age = 15;
-    expect(scoreAssessment(v12Child, statedOlder, { ...context, age: 11 }).status).toBe("incomplete");
-    const statedYounger = previewAnswers(v12Child);
+    expect(scoreAssessment(legacyChild, statedOlder, { ...context, age: 11 }).status).toBe("incomplete");
+    const statedYounger = previewAnswers(legacyChild);
     statedYounger.c_age = 11;
-    const legacy = scoreAssessment(v12Child, statedYounger, { ...context, age: 15 });
+    const legacy = scoreAssessment(legacyChild, statedYounger, { ...context, age: 15 });
     expect(legacy).toMatchObject({ status: "valid", age: 15 });
   });
 
@@ -107,10 +107,16 @@ describe("staff review of a stated age that disagrees with the birth date", () =
       if (sql.includes("FROM consents")) return [{ id: "consent" }];
       return [];
     });
-    client.query.mockImplementation(async (sql: string) => {
+    client.query.mockImplementation(async (sql: string, values: unknown[] = []) => {
+      if (sql.includes("FROM users WHERE id=$1")) {
+        const id = String(values[0]);
+        const actor = id === parent.id ? parent : student;
+        return { rows: [{ id: actor.id, name: actor.name, role: actor.role, region: "CN", disabled: false, demo: false }] };
+      }
       if (sql.includes("SELECT id FROM families")) return { rows: [{ id: FAMILY }] };
+      if (sql.includes("FROM families")) return { rows: [{ id: FAMILY, child_name: "Synthetic child", birth_date: birthDate, grade: "初中", region: "CN" }] };
       if (sql.includes("SELECT a.*,r.id AS report_id")) return { rows: [assessment] };
-      if (sql.includes("AS scopes FROM consents WHERE family_id=$1")) return { rows: [{ scopes: ["assessment", "parent_report", "sensitive_data"] }] };
+      if (sql.includes("FROM consents")) return { rows: [{ scopes: ["assessment", "parent_report", "sensitive_data"] }] };
       return { rows: [] };
     });
   }

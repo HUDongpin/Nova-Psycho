@@ -68,13 +68,13 @@ GET `/api/workspace?locale=...` returns `{user,region,mode,families,assessments,
 | family | `{id,familyName,childName,age,birthDate,grade,region,guardianLabel,assignedTo,assignedName?,canInviteMembers,joinCode?,createdAt,consent,consents?,members:[{id,name,role}]}` |
 | assessment | `{id,familyId,childName,respondentId,respondentName,respondentRole,scaleVersionId,scaleTitle,status,phase,createdAt,submittedAt?,reportId,canRespond,canRetryReport,reviewFlags?,statedAge?}` |
 | report | `{id,familyId,childName,title,respondentRole,scaleTitle,combined?,createdAt,generationMode:'template'\|'ai',risk,demo,dimensions:[{key,label,raw,max,band}],assessmentId,comparison:{available,previousDate?,changes?,reason?}}` |
-| scale | `{id,scaleId,version,title,description,demo,minAge,maxAge,roles,retakeDays,source,rights,status:'active'\|'retired'}` |
+| scale | `{id,scaleId,version,title,description,demo,minAge,maxAge,roles,retakeDays,source,rights,status:'active'\|'retired',isDefaultVersion?}` |
 | alert | `{id,familyId,childName,createdAt,viewedAt}` for an unresolved safety signal |
 | staff note | `{familyId,label,value}`; only available to authorised staff/admin, never to the parent report or AI |
 | goal / observation | Goals have `{id,familyId,title,detail,status,createdAt}`. Observations have `{id,familyId,body,createdAt,authorName}` and are staff/admin-only. |
 | staff / contentVersions | `{id,name}[]` and `{id,kind,version,libraryKey?,createdAt}[]`; administrator fields are not exposed to other roles. |
 
-`consent` means participation purposes are active. `consents`, when exposed, contains `{assessment,sensitiveData,parentReport,aiProcessing}`. It does not bundle those permissions. `age` is calculated from the family birth date on the deployment region's local date. `age_mismatch` is a staff review flag, not a diagnosis or automatic safety escalation.
+`consent` means participation purposes are active. `consents`, when exposed, contains `{assessment,sensitiveData,parentReport,aiProcessing}`. It does not bundle those permissions. `age` is calculated from the family birth date on the deployment region's local date. `age_mismatch` is a staff review flag, not a diagnosis or automatic safety escalation. `demo` on a scale is `effectiveDemo`: the stored `demo` flag or a norm that is not `validated`. `isDefaultVersion` marks the current assignment ids (`growth-child@1.2.0`, `growth-parent@1.2.0`, `growth-teacher@1.1.0`). Earlier `scale_id@version` rows stay byte-identical.
 
 Parents see their own families. Students and teachers see their own assignments and cannot read parent reports. Regional staff can see minimal unresolved alerts; family details require assignment or an unassigned family with an unresolved alert. Viewing an alert preserves that unresolved state. Resolving the alert ends the fallback detail access. Retry and invitation controls use their own server capability checks; seeing an alert is not general mutation authority.
 
@@ -111,9 +111,9 @@ An answer map contains item IDs and `number | number[] | string` values for sing
 | Method / endpoint | Contract |
 |---|---|
 | POST `/api/assessments` | `{familyId,respondentId,scaleVersionId,locale}` → 201 `{id}` for an eligible authorised member and active version. Retake and pending-task rules apply. |
-| GET `/api/assessments/:id` | Own assignment only → `{id,status,childName,scaleTitle,demo,description,surveyJson,draftAnswers,draftRevision,consentRequired,phase,safetyGuidance}` |
+| GET `/api/assessments/:id` | Own assignment only → `{id,status,childName,scaleTitle,demo,description,surveyJson,draftAnswers,draftRevision,consentRequired,phase,safetyGuidance}`. Triad instruments also include `completionRules`. Present optional fields are `titleEmphasis` and `supplements` (staff-only text that appears when a parent choice is selected). |
 | PATCH `/api/assessments/:id` | `{answers,acknowledged:true,revision:number}` → `{ok:true,revision}`. Requires participation consent. Stale revision → 409 `DRAFT_CONFLICT`. |
-| POST `/api/assessments/:id/submit` | `{answers,acknowledged:true,revision:number}` → `{id,status,reportId,phase,safetyGuidance}`. Pending submissions freeze server scores/snapshot; replay returns the existing submitted result. |
+| POST `/api/assessments/:id/submit` | `{answers,acknowledged:true,revision:number}` → `{id,status,reportId,phase,safetyGuidance}`. Pending submissions freeze server scores/snapshot; replay returns the existing submitted result. An incomplete triad returns 422 `INCOMPLETE_TRIAD` with `completionIssues` and does not publish. |
 | POST `/api/assessments/:id/retry-report` | `{}` → `{id,status:'queued'}`. Admin/assigned staff only, with current authority and a retryable failed job. Does not reopen or rescore answers. Use `canRetryReport` from workspace. |
 
 Assessment status is `pending | queued | published | failed`. Phase adds reporting context:

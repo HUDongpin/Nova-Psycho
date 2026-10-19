@@ -1,6 +1,7 @@
 import type { Actor,Locale,ScaleDefinition,StoredAnswer } from "../domain/types";
 import { text } from "../domain/types";
 import { TRIAD_BUNDLE,staffOnlyText } from "../domain/triad-report";
+import { currentTriadScaleIds } from "../domain/triad-scales";
 import { effectiveDemo } from "../domain/validation";
 import { reportRetryBlocker } from "../domain/report-retry";
 import { formatJoinCode } from "./triad";
@@ -68,7 +69,7 @@ export async function workspaceFor(actor:Actor,locale:Locale){
   });
   const scopedReports=reports.map(r=>reportSummary(r,locale));
   return {user:actor,region:actor.region,mode:getConfig().mode,families:scopedFamilies,assessments:scopedAssessments,reports:scopedReports,
-    scales:scales.filter(s=>(s.definition as ScaleDefinition).regions.includes(actor.region)).map(s=>{const d=s.definition as ScaleDefinition;return {id:s.id,scaleId:s.scale_id,version:s.version,title:text(d.title,locale),description:text(d.description,locale),demo:effectiveDemo(d),minAge:d.minAge,maxAge:d.maxAge,roles:d.roles,retakeDays:d.retakeDays,source:d.source,rights:d.rights,status:s.status};}),
+    scales:scales.filter(s=>(s.definition as ScaleDefinition).regions.includes(actor.region)).map(s=>{const d=s.definition as ScaleDefinition;return {id:s.id,scaleId:s.scale_id,version:s.version,title:text(d.title,locale),description:text(d.description,locale),demo:effectiveDemo(d),minAge:d.minAge,maxAge:d.maxAge,roles:d.roles,retakeDays:d.retakeDays,source:d.source,rights:d.rights,status:s.status,...(Object.values(currentTriadScaleIds).includes(s.id)?{isDefaultVersion:true}:{})};}),
     goals:goals.map(g=>({id:g.id,familyId:g.family_id,title:g.title,detail:g.detail,status:g.status,createdAt:iso(g.created_at)})),
     observations:observations.map(o=>({id:o.id,familyId:o.family_id,body:o.body,createdAt:iso(o.created_at),authorName:o.author_name??""})),staff,
     contentVersions:content.map(c=>({id:c.id,kind:c.kind,version:c.version,libraryKey:typeof c.library_key==="string"?c.library_key:null,createdAt:iso(c.created_at)})),

@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { headers } from "next/headers";
+import { WebAnalytics } from "@/components/analytics";
 import { LocalizedClerkProvider } from "@/components/localized-clerk-provider";
 import { getAuthProvider, getClerkConfig } from "@/lib/auth-provider";
 import "survey-core/survey-core.min.css";
@@ -10,5 +11,5 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
   const locale = process.env.NOVA_REGION === "HK" ? "zh-HK" : "zh-CN";
   const nonce = (await headers()).get("x-nonce") ?? undefined;
   const content = getAuthProvider() === "clerk" ? <LocalizedClerkProvider publishableKey={getClerkConfig().publishableKey} initialLocale={locale} nonce={nonce}>{children}</LocalizedClerkProvider> : children;
-  return <html lang={locale}><body>{content}</body></html>;
+  return <html lang={locale}><body>{content}<WebAnalytics /></body></html>;
 }

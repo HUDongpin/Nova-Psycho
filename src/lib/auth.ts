@@ -78,11 +78,19 @@ export async function requireActor(request:Request):Promise<Actor>{return (await
 function setSessionCookie(response:NextResponse,token:string,name=cookieName()):void{
   response.cookies.set(name,token,{httpOnly:true,secure:getConfig().mode==="service",sameSite:"lax",path:"/",maxAge:43200});
 }
-export async function setSession(response:NextResponse,userId:string):Promise<void>{
+export async function setDemoSession(response:NextResponse,userId:string):Promise<void>{
   requireLocalAuth();
-  const config=getConfig(),token=randomBytes(48).toString("hex");
-  const created=await query("INSERT INTO sessions(token_hash,user_id,region,expires_at) SELECT $1,id,$3,now()+interval '12 hours' FROM users WHERE id=$2 AND region=$3 AND NOT disabled RETURNING token_hash",[hashToken(token),userId,config.region]);
-  if(!created[0])throw new HttpError(410,"账号已撤销，请联系服务人员。","ACCOUNT_REVOKED");
+  const config=getConfig();
+  if(config.mode!=="demo")throw new HttpError(404,"未找到该入口。","NOT_FOUND");
+  const token=randomBytes(48).toString("hex");
+  await transaction(async client=>{
+    const locked=await client.query("SELECT id FROM users WHERE id=$1 FOR UPDATE",[userId]);
+    if(!locked.rows[0])throw new HttpError(403,"演示账号不可用。","INVALID_DEMO_ACCOUNT");
+    // A lock wait can outlive demo declassification; recheck in a fresh statement.
+    const current=await client.query("SELECT id FROM users WHERE id=$1 AND region=$2 AND demo AND NOT disabled",[userId,config.region]);
+    if(!current.rows[0])throw new HttpError(403,"演示账号不可用。","INVALID_DEMO_ACCOUNT");
+    await client.query("INSERT INTO sessions(token_hash,user_id,region,expires_at) VALUES($1,$2,$3,now()+interval '12 hours')",[hashToken(token),userId,config.region]);
+  });
   setSessionCookie(response,token);
 }
 export async function setPasswordSession(response:NextResponse,username:string,password:string):Promise<void>{
