@@ -7,8 +7,8 @@ export function pageResponseWithCsp(request: NextRequest, clerkIssuer?: string):
 
   const nonce = randomBytes(16).toString("base64");
   const development = process.env.NODE_ENV === "development";
-  const scripts = ["'self'", `'nonce-${nonce}'`, "'strict-dynamic'"];
-  const connections = ["'self'"];
+  const scripts = ["'self'", `'nonce-${nonce}'`, "'strict-dynamic'", "https://va.vercel-scripts.com"];
+  const connections = ["'self'", "https://va.vercel-scripts.com", "https://vitals.vercel-insights.com"];
   const images = ["'self'", "data:", "blob:"];
   const frames = ["'self'"];
   if (development) {

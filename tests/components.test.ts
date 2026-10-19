@@ -107,7 +107,7 @@ describe("family invitation controls",()=>{
     expect(list).toContain(t("consentScopeSensitive"));
     expect(list).toContain(t("consentScopeParentReport"));
     expect(list.match(/<li>/g)).toHaveLength(4);
-    expect(html).toContain(t("consentUpdate"));
+    expect(html.includes(t("consentUpdate"))).toBe(role === "parent");
   });
   it("keeps parent-report consent reachable after assessment consent is already recorded",()=>{
     const family={id:"f",familyName:"合成家庭",childName:"合成孩子",age:12,birthDate:"2014-01-01",grade:"小学",region:"CN" as const,guardianLabel:"家长",assignedTo:null,createdAt:"2026-01-01T00:00:00Z",consent:true,consents:{assessment:true,sensitiveData:true,parentReport:false,aiProcessing:false},members:[],canInviteMembers:false};

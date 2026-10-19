@@ -18,7 +18,7 @@ const familyInput = { requestId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", relatio
 const sql = vi.fn(async (text: string) => {
   if (text.startsWith("SELECT id FROM scales")) return { rows: [{ id: "growth-parent@1.3.0" }] };
   if (text.startsWith("SELECT id,birth_date FROM families")) return { rows: [{ id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", birth_date: "2014-06-01" }] };
-  if (text.includes("AS scopes FROM consents")) return { rows: [{ scopes: ["assessment", "sensitive_data", "parent_report"] }] };
+  if (text.includes("AS scopes FROM consents") || text.startsWith("SELECT id FROM consents")) return { rows: [{ scopes: ["assessment", "sensitive_data", "parent_report"] }] };
   return { rows: [] };
 });
 

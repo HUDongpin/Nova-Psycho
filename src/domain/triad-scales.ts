@@ -35,10 +35,10 @@ function scene(target: Bag, id: string, page: string, pageTitle: string, label: 
   choose(target, id, page, pageTitle, label, numbered(labels), { shuffle: true, report: "situation" });
 }
 
-function matrix(target: Bag, spec: { id: string; page: string; pageTitle: string; panel: string; rows: string[]; options: Opt; domain: string; higher: "more_strength" | "more_support"; optional?: boolean; showIf?: ScaleItem["showIf"]; visibleFromAge?: number }): void {
+function matrix(target: Bag, spec: { id: string; page: string; pageTitle: string; panel: string; rows: string[]; options: Opt; domain: string; higher: "more_strength" | "more_support"; optional?: boolean; showIf?: ScaleItem["showIf"] }): void {
   const ids = spec.rows.map((row, index) => {
     const id = `${spec.id}_${index + 1}`;
-    add(target, { id, page: spec.page, pageTitle: pair(spec.pageTitle), panel: pair(spec.panel), label: pair(row), kind: "single", choices: choices(spec.options), reverse: false, required: true, excludeValues: spec.options.some(([value]) => value === -1) ? [-1] : undefined, showIf: spec.showIf, visibleFromAge: spec.visibleFromAge });
+    add(target, { id, page: spec.page, pageTitle: pair(spec.pageTitle), panel: pair(spec.panel), label: pair(row), kind: "single", choices: choices(spec.options), reverse: false, required: true, excludeValues: spec.options.some(([value]) => value === -1) ? [-1] : undefined, showIf: spec.showIf });
     return id;
   });
   target.dimensions.push({ key: spec.id, label: pair(spec.panel), items: ids, aggregation: "mean", maxMissing: maxMissingForCoverage(ids.length), prorate: false, higherMeans: spec.higher, bands: [], optional: spec.optional, domain: spec.domain });
@@ -48,38 +48,9 @@ function risk(target: Bag, itemId: string, values: number[], message: string): v
   target.risks.push({ itemId, values, message: pair(message) });
 }
 
-function markExclusive(target: Bag, id: string, labels: readonly string[]): void {
-  const item = target.items.find(entry => entry.id === id);
-  if (!item) throw new Error(`Missing ${id}`);
-  for (const label of labels) {
-    const choice = item.choices.find(entry => entry.label["zh-CN"] === label);
-    if (!choice) throw new Error(`Missing ${id} choice ${label}`);
-    choice.exclusive = true;
-  }
-}
-
-function holdAdvance(target: Bag, ids: readonly string[]): void {
-  for (const id of ids) {
-    const item = target.items.find(entry => entry.id === id);
-    if (!item) throw new Error(`Missing ${id}`);
-    item.noAutoAdvance = true;
-  }
-}
-
-const NONE = "以上均没有";
-const UNSURE = "不确定";
-const DECLINE = "不愿回答";
-// New row on each definition change. An assessment keeps scoring the version it was opened with.
-// 1.2.0 labels these unvalidated instruments as demo. Child 1.3.0 shows the 12+ block from the
-// family birth-date age, not the stated c_age. Parent and teacher 1.3.0 place writing addressed
-// to the service team (q32–q38 and t23) in staff notes. Child 1.4.0 keeps those questions and
-// sends the "我希望大人知道" writing to staff notes. 1.0.0, 1.1.0, 1.2.0 and child 1.3.0 stay immutable.
-const TRIAD_VERSION = "1.3.0";
-const CHILD_VERSION = "1.4.0";
-
-function define(role: RespondentRole, id: string, title: string, description: string, built: Bag, version = TRIAD_VERSION): ScaleDefinition {
+function define(role: RespondentRole, id: string, title: string, description: string, built: Bag): ScaleDefinition {
   return {
-    id, version, title: pair(title), description: pair(description), demo: true,
+    id, version: "1.0.0", title: pair(title), description: pair(description), demo: false,
     source: "2026-10 家庭、孩子与教师三方了解问卷。没有临床常模，不用于诊断。",
     rights: { digital: true, commercial: true, reference: "Operator intake, October 2026. zh-HK text is an OpenCC Hong Kong script conversion for reading, not a separately validated translation." },
     minAge: 8, maxAge: 17, regions: ["CN", "HK"], roles: [role], retakeDays: 90,
@@ -90,7 +61,7 @@ function define(role: RespondentRole, id: string, title: string, description: st
 
 const AGES: Opt = [8, 9, 10, 11, 12, 13, 14, 15, 16, 17].map(age => [age, `${age}岁`]);
 const GRADES = ["小学一至三年级", "小学四至六年级", "初中", "高中", "其他"];
-const YOUTH_FROM_AGE = 12;
+const YOUTH = { itemId: "c_age", anyOf: [12, 13, 14, 15, 16, 17] };
 
 function child(): ScaleDefinition {
   const built = bag();
@@ -99,16 +70,6 @@ function child(): ScaleDefinition {
   choose(built, "c_grade", "background", "关于你", "目前年级", numbered(GRADES));
   choose(built, "c_company", "background", "关于你", "今天是谁在你旁边", numbered(["我独立填写，身边没有人", "工作人员只帮助解释题目", "家长在附近但没有看答案", "家长在旁边看答案或帮助选择", "其他"]));
   checks(built, "c_help", "background", "关于你", "你现在最想得到哪些帮助", ["学习更有动力", "找到适合自己的学习方法", "更能专心和完成任务", "减少压力、焦虑或难过", "睡得更好或更有精神", "和家人更好沟通", "处理同伴或学校问题", "安排课程或未来方向", "发展兴趣或能力", "我暂时不需要帮助", "其他"], "priorities", 3);
-  checks(built, "c14", "safety", "先确认安全", "过去两周，你是否出现过以下情况", ["想到伤害自己", "觉得不想活了或活着没有意义", "担心自己会伤害别人或无法控制行为", "有人伤害、威胁、欺负或逼迫我做不愿意的事", "我现在没有安全的地方可以去", NONE, UNSURE, DECLINE]);
-  risk(built, "c14", [1, 2, 3, 4, 5], "孩子提到了伤害自己、不想活、可能伤害别人、被人伤害，或没有安全的地方。请先联系能保护孩子的大人。如有眼前危险，请联系当地紧急服务。");
-  risk(built, "c14", [7], "孩子对安全情况选择了“不确定”。请工作人员先查看，并确认孩子是否安全。如有眼前危险，请联系当地紧急服务。");
-  risk(built, "c14", [8], "孩子没有回答安全情况。请工作人员先查看，不要把未回答当成没有危险。如有眼前危险，请联系当地紧急服务。");
-  const safety = { itemId: "c14", anyOf: [1, 2, 3, 4, 5, 7, 8] };
-  choose(built, "c15", "safety", "先确认安全", "你现在是否处于立即危险中", numbered(["是", "可能是", "不是", UNSURE, DECLINE]), { showIf: safety });
-  risk(built, "c15", [1, 2], "孩子表示自己可能正处在危险中。请立即联系能提供保护的大人或当地紧急服务。");
-  checks(built, "c16", "safety", "先确认安全", "你希望工作人员怎样联系或帮助你", ["现在联系我", "先联系我信任的大人", "和我一起决定下一步", "我暂时不想说，但希望有人稍后再问", "其他"], "priorities", undefined, safety, false);
-  markExclusive(built, "c14", [NONE, UNSURE, DECLINE]);
-  holdAdvance(built, ["c14", "c15", "c16"]);
   matrix(built, { id: "c7", page: "learning", pageTitle: "我的感受与思考", panel: "我怎样理解和调节自己的学习", domain: "cognition", higher: "more_strength", options: RESOURCE, rows: ["我知道自己已经学会了什么，还有什么没弄懂。", "遇到困难时，我会先试一种方法，而不是马上放弃。", "我会用总结、画图、复述或自我测试帮助自己学习。", "做错后，我能找一找错误是怎样发生的。", "题目变了一点，我能试着用以前学过的方法。", "我相信通过合适的方法、练习和帮助，我可以进步。"] });
   matrix(built, { id: "c8", page: "learning", pageTitle: "我的感受与思考", panel: "我的目标和执行", domain: "cognition", higher: "more_strength", options: RESOURCE, rows: ["我知道自己最近最想改善的一件学习事情。", "我能把较大的任务分成几个小步骤。", "我通常能在需要时开始做任务。", "我能大概估计完成任务需要多长时间。", "做事分心以后，我通常能重新回到任务。", "我会检查自己是否完成了计划。"] });
   matrix(built, { id: "c9", page: "relationship", pageTitle: "家里和学校的关系", panel: "我的安全感和沟通体验", domain: "connection", higher: "more_strength", options: RESOURCE, rows: ["家里至少有一个人愿意认真听我说。", "我难过、紧张或遇到困难时，知道可以找谁。", "我和家人争吵以后，通常还有机会重新沟通。", "家人会尝试了解我的想法，而不只是告诉我该怎么做。", "在学校里，我至少有一个可以信任的成人。", "我和同伴在一起时，大多数时候觉得自己是被接纳的。"] });
@@ -116,20 +77,26 @@ function child(): ScaleDefinition {
   matrix(built, { id: "c11", page: "fit", pageTitle: "课程和支持", panel: "课程和活动是否适合我", domain: "curriculum", higher: "more_strength", options: RESOURCE, rows: ["现在的学习难度大体适合我的基础。", "我的时间里有学习、休息、运动和自己喜欢的活动。", "我有机会发展一项真正感兴趣的事情。", "我知道自己哪些学科或能力比较有优势。", "我参加课程或补习前，大人会听我的感受和想法。", "我对下一阶段想做什么有一个大概方向。"] });
   matrix(built, { id: "c12", page: "fit", pageTitle: "课程和支持", panel: "我在学校和周围获得的支持", domain: "community", higher: "more_strength", options: RESOURCE, rows: ["我知道遇到学习问题时可以向谁求助。", "我知道遇到同伴或安全问题时可以向谁求助。", "老师大体了解我的学习情况和需要。", "我有参加团队、运动、艺术、实践或集体活动的机会。", "我能接触到不同的人、观点和成长可能。", "当我需要帮助时，家长和学校通常能够一起想办法。"] });
   matrix(built, { id: "c13", page: "state", pageTitle: "过去两周", panel: "过去两周我的感受和状态", domain: "state", higher: "more_support", options: DISTRESS_CHILD, rows: ["我常常觉得紧张或担心，很难放松。", "我常常觉得难过、没希望或对事情没有兴趣。", "我容易生气或情绪一下子变得很强。", "我很累、没有精神，或睡眠明显不好。", "注意或冲动问题影响了学习或生活。", "我因为害怕、压力或身体不舒服而不想上学。", "我在学校被排挤、欺负或感到不安全。", "这些困难影响了我和家人或朋友的关系。"] });
+  checks(built, "c14", "state", "过去两周", "过去两周，你是否出现过以下情况", ["想到伤害自己", "觉得不想活了或活着没有意义", "担心自己会伤害别人或无法控制行为", "有人伤害、威胁、欺负或逼迫我做不愿意的事", "我现在没有安全的地方可以去", "以上均没有", "不确定", "不愿回答"]);
+  risk(built, "c14", [1, 2, 3, 4, 5], "孩子提到了伤害自己、不想活、可能伤害别人、被人伤害，或没有安全的地方。请先联系能保护孩子的大人。如有眼前危险，请联系当地紧急服务。");
+  const safety = { itemId: "c14", anyOf: [1, 2, 3, 4, 5] };
+  choose(built, "c15", "state", "过去两周", "你现在是否处于立即危险中", numbered(["是", "可能是", "不是", "不确定", "不愿回答"]), { showIf: safety });
+  risk(built, "c15", [1, 2], "孩子表示自己可能正处在危险中。请立即联系能提供保护的大人或当地紧急服务。");
+  checks(built, "c16", "state", "过去两周", "你希望工作人员怎样联系或帮助你", ["现在联系我", "先联系我信任的大人", "和我一起决定下一步", "我暂时不想说，但希望有人稍后再问", "其他"], "priorities", undefined, safety, false);
   scene(built, "cs1", "scenes", "遇到这些事情时，我通常会怎样做", "一道题做了几次仍然不会时，我通常会", ["继续用同一种方法反复做", "直接放弃或去做别的事", "看看自己卡在哪里，再换一种方法或求助", "等大人发现以后帮我", "先抄下答案，以后再说", "每次情况差别很大"]);
   scene(built, "cs2", "scenes", "遇到这些事情时，我通常会怎样做", "我和家长因为学习发生争吵后，我通常会", ["继续争到底", "不再说话，也不想再谈", "先离开一下，平静后再试着说明自己的想法", "答应大人的要求，但并不打算执行", "找另一个信任的人帮助沟通", "每次情况差别很大"]);
   scene(built, "cs3", "scenes", "遇到这些事情时，我通常会怎样做", "当很多任务同时要完成时，我通常会", ["先做最容易或最喜欢的", "一直担心，但不知道从哪里开始", "列出任务并选一个最重要的小步骤开始", "等到最后再集中完成", "请大人替我安排所有步骤", "每次情况差别很大"]);
   scene(built, "cs4", "scenes", "遇到这些事情时，我通常会怎样做", "同学的评论让我很难受时，我通常会", ["马上反击", "假装没事，不告诉任何人", "先确认发生了什么，再找合适的人商量", "认为一定是自己不好", "把事情发到网上", "每次情况差别很大"]);
   scene(built, "cs5", "scenes", "遇到这些事情时，我通常会怎样做", "我不想继续一项已经参加很久的课程或活动时，我通常会", ["直接拒绝再去", "继续参加，但不告诉任何人自己的感受", "说明原因，并和大人商量试一段时间或调整方案", "故意表现不好让大人放弃", "完全听大人决定", "每次情况差别很大"]);
   writing(built, "c17", "scenes", "遇到这些事情时，我通常会怎样做", "上面哪一个情境最像你最近遇到的问题，为什么", "words", false);
-  matrix(built, { id: "c18", page: "youth", pageTitle: "按出生日期满 12 岁才会看到", panel: "我的自主性和未来方向", domain: "autonomy", higher: "more_strength", options: RESOURCE, optional: true, visibleFromAge: YOUTH_FROM_AGE, rows: ["我能区分自己真正想要的目标和别人替我决定的目标。", "做重要决定时，我会考虑自己的兴趣、能力和现实条件。", "我能表达不同意见，同时听取他人的理由。", "我知道压力过大时有哪些对自己相对安全有效的应对方式。", "网络和社交媒体很少控制我的睡眠或重要任务。", "我对未来虽不完全确定，但知道下一步可以探索什么。"] });
-  writing(built, "c19", "hopes", "我希望大人知道", "我觉得自己做得比较好的三件事", "staff");
-  writing(built, "c20", "hopes", "我希望大人知道", "我最希望家长理解的一件事", "staff", false);
-  writing(built, "c21", "hopes", "我希望大人知道", "我最希望老师理解的一件事", "staff", false);
-  writing(built, "c22", "hopes", "我希望大人知道", "如果未来一个月能有一个小变化，我希望是", "staff");
+  matrix(built, { id: "c18", page: "youth", pageTitle: "12 岁及以上才会看到", panel: "我的自主性和未来方向", domain: "autonomy", higher: "more_strength", options: RESOURCE, optional: true, showIf: YOUTH, rows: ["我能区分自己真正想要的目标和别人替我决定的目标。", "做重要决定时，我会考虑自己的兴趣、能力和现实条件。", "我能表达不同意见，同时听取他人的理由。", "我知道压力过大时有哪些对自己相对安全有效的应对方式。", "网络和社交媒体很少控制我的睡眠或重要任务。", "我对未来虽不完全确定，但知道下一步可以探索什么。"] });
+  writing(built, "c19", "hopes", "我希望大人知道", "我觉得自己做得比较好的三件事", "words");
+  writing(built, "c20", "hopes", "我希望大人知道", "我最希望家长理解的一件事", "words", false);
+  writing(built, "c21", "hopes", "我希望大人知道", "我最希望老师理解的一件事", "words", false);
+  writing(built, "c22", "hopes", "我希望大人知道", "如果未来一个月能有一个小变化，我希望是", "words");
   choose(built, "c23", "hopes", "我希望大人知道", "填完这份问卷后，我现在的感受", numbered(["平静或还好", "有一点不舒服，但可以继续", "很难受，希望有人和我谈谈", "不确定", "不愿回答"]));
   risk(built, "c23", [3], "孩子填完后表示很难受，希望有人谈谈。请工作人员及时查看，并让孩子知道可以找到可信的大人。");
-  return define("student", "growth-child", "儿童和青少年成长体验自查", "这份问卷想了解你在学习、家里、学校和同伴中的真实体验。没有标准答案，也不会因为一次回答给你贴标签。建议 8 至 17 岁自己填写；出生日期满 12 岁会多几题。你填写的年龄如果和出生日期不一致，工作人员会核对。香港繁体是便于阅读的字形转换，不是另行验证的译本。", built, CHILD_VERSION);
+  return define("student", "growth-child", "儿童和青少年成长体验自查", "这份问卷想了解你在学习、家里、学校和同伴中的真实体验。没有标准答案，也不会因为一次回答给你贴标签。建议 8 至 17 岁自己填写；12 岁及以上会多几题。香港繁体是便于阅读的字形转换，不是另行验证的译本。", built);
 }
 
 function parent(): ScaleDefinition {
@@ -156,11 +123,8 @@ function parent(): ScaleDefinition {
   matrix(built, { id: "q19", page: "child", pageTitle: month, panel: "学校和成长资源", domain: "community", higher: "more_strength", options: OBSERVE, rows: ["家庭与学校有稳定、双向而非只在出问题时才发生的沟通。", "家庭大体了解孩子在学校的学习、情绪和同伴表现。", "孩子知道遇到学习、同伴或安全问题时可以向谁求助。", "孩子有参与团队、运动、艺术、实践或社区活动的机会。", "家庭能够找到相对可靠的教育或心理支持渠道。", "家庭获取教育信息后能够筛选，而不是越看越混乱。"] });
   matrix(built, { id: "q20", page: "state", pageTitle: "过去四周", panel: "过去四周出现以下情况的频率", domain: "state", higher: "more_support", options: DISTRESS, rows: ["明显难以开始或完成日常学习任务。", "注意力或冲动问题明显影响家庭或学校生活。", "持续情绪低落、易怒、紧张或缺乏活力。", "睡眠、饮食或身体不适影响白天功能。", "拒绝上学、经常请假或出勤受到影响。", "同伴冲突、被孤立或遭受欺凌。", "反复咬指甲、拔头发或其他明显紧张行为。", "家庭冲突明显影响孩子的日常状态。"] });
   matrix(built, { id: "q21", page: "state", pageTitle: "过去四周", panel: "当前问题的实际影响", domain: "impact", higher: "more_support", options: IMPACT, rows: ["学习完成或成绩", "情绪和自信", "睡眠、饮食或身体状态", "亲子关系", "家庭日常生活", "上学出勤", "同伴关系"] });
-  checks(built, "q22", "state", "过去四周", "过去四周是否出现以下需要及时关注的情况", ["提到伤害自己、不想活或明显绝望", "伤害他人或无法控制的激烈行为", "疑似遭受欺凌、暴力、虐待或其他安全威胁", "长时间无法正常睡眠或进食", "持续拒绝上学并明显影响出勤", "出现幻听、妄想、意识混乱或与现实明显脱节", NONE, UNSURE, DECLINE]);
+  checks(built, "q22", "state", "过去四周", "过去四周是否出现以下需要及时关注的情况", ["提到伤害自己、不想活或明显绝望", "伤害他人或无法控制的激烈行为", "疑似遭受欺凌、暴力、虐待或其他安全威胁", "长时间无法正常睡眠或进食", "持续拒绝上学并明显影响出勤", "出现幻听、妄想、意识混乱或与现实明显脱节", "以上均没有", "不确定", "不愿回答"]);
   risk(built, "q22", [1, 2, 3, 4, 5, 6], "家长报告了自伤、他伤、受伤害、长时间无法睡眠或进食、持续拒绝上学，或现实感明显异常。请先确认孩子是否安全。如有眼前危险，请联系当地紧急服务。");
-  risk(built, "q22", [8], "家长对需要及时关注的情况选择了“不确定”。请工作人员先确认孩子是否安全。如有眼前危险，请联系当地紧急服务。");
-  risk(built, "q22", [9], "家长没有回答需要及时关注的情况。请工作人员先查看，不要把未回答当成没有危险。如有眼前危险，请联系当地紧急服务。");
-  markExclusive(built, "q22", [NONE, UNSURE, DECLINE]);
   const parentSafety = { itemId: "q22", anyOf: [1, 2, 3, 4, 5, 6] };
   writing(built, "q23", "state", "过去四周", "请说明发生时间、频率、最近一次及目前是否仍在发生", "staff", true, parentSafety);
   matrix(built, { id: "q24", page: "portrait", pageTitle: "您自己通常怎样处理和了解这些事", panel: "反思和观点转换", domain: "portrait", higher: "more_strength", options: OBSERVE, rows: ["面对孩子的问题，我会先区分事实、我的解释和我的情绪。", "我能意识到同一行为可能有不止一种原因。", "孩子的说法与我不同的时候，我愿意先弄清他的视角。", "我会回顾自己的反应是否加剧了问题。", "即使已有经验，我也愿意根据新情况调整判断。", "我能容许一段时间的不确定，而不是立即下结论。", "我会把一次事件与长期模式区分开。", "我能同时看到孩子的困难和已有资源。"] });
@@ -187,13 +151,13 @@ function parent(): ScaleDefinition {
     scene(built, id, "scenes", "遇到这些情况时，您通常实际会怎么做", label, labels);
     writing(built, `${id}a`, "scenes", "遇到这些情况时，您通常实际会怎么做", "您这样处理时最主要的考虑是什么", "words", false);
   }
-  writing(built, "q32", "close", "还想让服务团队知道的事", "您认为孩子目前最重要的三个优势是什么", "staff");
-  writing(built, "q33", "close", "还想让服务团队知道的事", "您认为孩子目前最需要改善的状况是什么", "staff");
-  writing(built, "q34", "close", "还想让服务团队知道的事", "您认为自己作为家长对孩子的影响主要体现在哪些方面", "staff");
-  writing(built, "q35", "close", "还想让服务团队知道的事", "您认为整个家庭系统对孩子的重要影响有哪些", "staff");
-  writing(built, "q36", "close", "还想让服务团队知道的事", "您认为自己作为家长目前最稳定的三个资源是什么", "staff");
-  writing(built, "q37", "close", "还想让服务团队知道的事", "如果未来四至六周只能出现一个小变化，您最希望是什么", "staff");
-  writing(built, "q38", "close", "还想让服务团队知道的事", "还有哪些重要信息希望服务团队提前知道", "staff", false);
+  writing(built, "q32", "close", "还想让服务团队知道的事", "您认为孩子目前最重要的三个优势是什么", "words");
+  writing(built, "q33", "close", "还想让服务团队知道的事", "您认为孩子目前最需要改善的状况是什么", "words");
+  writing(built, "q34", "close", "还想让服务团队知道的事", "您认为自己作为家长对孩子的影响主要体现在哪些方面", "words");
+  writing(built, "q35", "close", "还想让服务团队知道的事", "您认为整个家庭系统对孩子的重要影响有哪些", "words");
+  writing(built, "q36", "close", "还想让服务团队知道的事", "您认为自己作为家长目前最稳定的三个资源是什么", "words");
+  writing(built, "q37", "close", "还想让服务团队知道的事", "如果未来四至六周只能出现一个小变化，您最希望是什么", "words");
+  writing(built, "q38", "close", "还想让服务团队知道的事", "还有哪些重要信息希望服务团队提前知道", "words", false);
   checks(built, "q39", "close", "还想让服务团队知道的事", "您方便参加初访的方式", ["线上视频", "电话", "线下面谈", "尚未确定"]);
   writing(built, "q40", "close", "还想让服务团队知道的事", "联系方式（手机号或微信，只给工作人员，不写入给家长的报告）", "staff");
   return define("parent", "growth-parent", "家庭系统发展需求评估", "这份问卷同时看两件事：孩子在家里、学习和学校里可以观察到的表现，以及您面对信息、学习和情绪时通常怎么处理。结果用来准备沟通和支持，不给孩子做诊断，也不给家长划分等级。三方一起完成时适用于 8 至 17 岁。香港繁体是便于阅读的字形转换，不是另行验证的译本。", built);
@@ -216,11 +180,8 @@ function teacher(): ScaleDefinition {
   matrix(built, { id: "t12", page: "school", pageTitle: observed, panel: "学校参与和支持资源", domain: "community", higher: "more_strength", options: OBSERVE, rows: ["学生有参与小组、班级或校园活动的机会。", "学生能接触到适合其需要的学习或心理支持资源。", "相关教师之间能够共享必要且合规的信息。", "学校与家庭之间有可使用的沟通渠道。", "遇到困难时，学生知道可以联系哪些校内人员。", "现有支持能够在一段时间内持续，而不是只在危机时出现。"] });
   matrix(built, { id: "t13", page: "state", pageTitle: "过去四周在学校的困难", panel: "过去四周在学校出现以下情况的频率", domain: "state", higher: "more_support", options: DISTRESS, rows: ["明显难以开始或完成课堂任务。", "注意力、冲动或活动水平明显影响学习。", "经常逃避较难、较长或需要耐心的任务。", "情绪低落、易怒、焦虑或明显缺乏活力。", "与同伴反复冲突、被孤立或遭受欺凌。", "因身体不适、睡眠不足或疲劳影响课堂状态。", "迟到、请假、拒绝到校或提前离校。", "激烈行为、退缩或情绪反应使日常支持难以进行。"] });
   matrix(built, { id: "t14", page: "state", pageTitle: "过去四周在学校的困难", panel: "这些困难对学校功能的影响", domain: "impact", higher: "more_support", options: IMPACT, rows: ["课程参与", "任务完成和成绩", "师生沟通", "同伴关系", "出勤和校园生活"] });
-  checks(built, "t15", "state", "过去四周在学校的困难", "您是否观察或获知以下需要及时处理的情况", ["学生表达自伤、自杀或明显绝望", "对他人存在明确伤害风险", "疑似遭受欺凌、暴力、虐待或其他安全威胁", "意识、言行或现实判断出现明显异常", "持续拒绝上学或出勤严重受损", NONE, UNSURE, "不便在本问卷中说明"]);
+  checks(built, "t15", "state", "过去四周在学校的困难", "您是否观察或获知以下需要及时处理的情况", ["学生表达自伤、自杀或明显绝望", "对他人存在明确伤害风险", "疑似遭受欺凌、暴力、虐待或其他安全威胁", "意识、言行或现实判断出现明显异常", "持续拒绝上学或出勤严重受损", "以上均没有", "不确定", "不便在本问卷中说明"]);
   risk(built, "t15", [1, 2, 3, 4, 5], "教师观察到自伤或绝望、伤害他人的风险、受伤害、现实判断异常，或出勤严重受损。请先按学校现有的保护流程处理，不要只等这份报告。");
-  risk(built, "t15", [7], "教师对需要及时处理的情况选择了“不确定”。请先按学校现有的保护流程核实，不要只等这份报告。");
-  risk(built, "t15", [8], "教师没有在问卷中说明需要及时处理的情况。请先按学校现有的保护流程核实，不要把未说明当成没有危险。");
-  markExclusive(built, "t15", [NONE, UNSURE, "不便在本问卷中说明"]);
   writing(built, "t16", "state", "过去四周在学校的困难", "请记录客观事实、发生时间、频率、最近一次和已采取措施", "staff", true, { itemId: "t15", anyOf: [1, 2, 3, 4, 5] });
   scene(built, "ts1", "scenes", "学校里通常会怎样处理", "学生多次未交作业，并说“太多了，我不知道从哪开始”", ["按班规直接处理，要求补齐", "减少全部任务，避免继续增加压力", "和学生确认卡点，选择一个最小步骤并约定检查时间", "立即联系家长，交由家庭处理", "安排同伴替他说明或完成部分任务", "暂时观察，不作处理"]);
   scene(built, "ts2", "scenes", "学校里通常会怎样处理", "学生考试成绩不错，但课堂经常走神并影响同伴", ["成绩没有问题，因此不特别处理", "反复提醒遵守纪律", "收集不同任务和时段的表现，与学生讨论走神的功能并调整支持", "立即建议家长做注意力诊断", "把学生调到单独座位并长期保持", "交给班主任处理"]);
@@ -233,11 +194,161 @@ function teacher(): ScaleDefinition {
   writing(built, "t20", "close", "已经做过的支持和您的建议", "请描述学生最稳定的三个优势", "words");
   writing(built, "t21", "close", "已经做过的支持和您的建议", "如果未来四至六周只设一个学校目标，您建议是什么", "words");
   checks(built, "t22", "close", "已经做过的支持和您的建议", "您认为下一步需要哪些协作", ["课堂内继续观察和支持", "与学生单独沟通", "家校共同制定计划", "学习能力或执行功能评估", "学校心理支持", "校外心理或医疗评估", "课程或任务调整", "同伴或校园安全支持", "暂不需要额外支持", "其他"], "priorities");
-  writing(built, "t23", "close", "已经做过的支持和您的建议", "其他需要服务团队了解的信息", "staff", false);
+  writing(built, "t23", "close", "已经做过的支持和您的建议", "其他需要服务团队了解的信息", "words", false);
   return define("teacher", "growth-teacher", "学生学习与身心发展观察", "请只报告您直接观察到的行为和频率，不推断家庭原因，也不做临床诊断。无法观察时请选择“不了解或不适用”。这份观察和家长、孩子的回答放在一起，给家长看一份报告。香港繁体是便于阅读的字形转换，不是另行验证的译本。", built);
 }
 
+function revisedParent(original: ScaleDefinition): ScaleDefinition {
+  const revised = structuredClone(original);
+  revised.version = "1.1.0";
+  const labels: Record<string, string> = {
+    p_care: "孩子主要由谁陪伴或照顾，平时有哪些照顾安排？",
+    q15_4: "孩子能安排任务的先后顺序，并估计任务大约需要多长时间。",
+    q24_4: "我会反思自己的应对方式是否让问题加重。",
+    q25_3: "我会区分“两件事有关联”和“一件事导致另一件事”，也避免把成绩变化只归因于一个因素。",
+    q28_3: "我会分析问题在什么情况下发生、哪些因素让它持续，以及哪些时候问题没有出现或较轻。"
+  };
+  const supplements: Record<string, { value: number; label: string }> = {
+    p_together: { value: 5, label: "其他共同生活安排（选填）" },
+    p_grade: { value: 6, label: "其他年级（选填）" },
+    p_curriculum: { value: 6, label: "其他课程体系（选填）" },
+    p_care: { value: 7, label: "其他照顾安排（选填）" },
+    p_changes: { value: 8, label: "其他重要变化（选填）" },
+    p_focus: { value: 11, label: "其他希望改善的方面（选填）" },
+    q31: { value: 10, label: "其他需要的支持（选填）" }
+  };
+  revised.items = revised.items.flatMap(item => {
+    if (labels[item.id]) item.label = pair(labels[item.id]);
+    if (item.id === "p_support") item.choices.find(choice => choice.value === 6)!.label = pair("亲子沟通与协作支持");
+    const supplement = supplements[item.id];
+    if (!supplement) return [item];
+    const detail: ScaleItem = {
+      id: `${item.id}_other`, label: pair(supplement.label), kind: "text", choices: [], reverse: false,
+      required: false, report: "staff", supplementFor: item.id, showIf: { itemId: item.id, anyOf: [supplement.value] },
+      page: item.page, pageTitle: item.pageTitle
+    };
+    return [item, detail];
+  });
+  return revised;
+}
+
+const CHILD_SAFETY_IDS = ["c14", "c15", "c16"] as const;
+
+function isChildSafetyId(id: string): id is (typeof CHILD_SAFETY_IDS)[number] {
+  return (CHILD_SAFETY_IDS as readonly string[]).includes(id);
+}
+
+function markExclusive(scale: ScaleDefinition, itemId: string, labels: readonly string[]): void {
+  const item = scale.items.find(entry => entry.id === itemId);
+  if (!item) throw new Error(`Missing ${itemId}`);
+  for (const label of labels) {
+    const choice = item.choices.find(entry => entry.label["zh-CN"] === label);
+    if (!choice) throw new Error(`Missing ${itemId} choice ${label}`);
+    choice.exclusive = true;
+  }
+}
+
+function addRisk(scale: ScaleDefinition, itemId: string, values: number[], message: string): void {
+  scale.riskRules.push({ itemId, values, message: pair(message) });
+}
+
+/** Safety follow-up for new child assignments. The 1.0.0 row stays unchanged. */
+function childSafetyRevision(original: ScaleDefinition): ScaleDefinition {
+  const revised = structuredClone(original);
+  revised.version = "1.1.0";
+  const safetyItems = CHILD_SAFETY_IDS.map(id => {
+    const item = revised.items.find(entry => entry.id === id);
+    if (!item) throw new Error(`Missing ${id}`);
+    return item;
+  });
+  revised.items = revised.items.filter(item => !isChildSafetyId(item.id));
+  const insertAt = revised.items.findIndex(item => item.id === "c7_1");
+  if (insertAt < 0) throw new Error("Missing c7_1");
+  for (const item of safetyItems) {
+    item.page = "safety";
+    item.pageTitle = pair("先确认安全");
+    item.noAutoAdvance = true;
+    if (item.id === "c15" || item.id === "c16") item.showIf = { itemId: "c14", anyOf: [1, 2, 3, 4, 5, 7, 8] };
+  }
+  revised.items.splice(insertAt, 0, ...safetyItems);
+  markExclusive(revised, "c14", ["以上均没有", "不确定", "不愿回答"]);
+  addRisk(revised, "c14", [7], "孩子对安全情况选择了“不确定”。请工作人员先查看，并确认孩子是否安全。如有眼前危险，请联系当地紧急服务。");
+  addRisk(revised, "c14", [8], "孩子没有回答安全情况。请工作人员先查看，不要把未回答当成没有危险。如有眼前危险，请联系当地紧急服务。");
+  return revised;
+}
+
+/** Unsure and declined checklist answers alert staff. Stored earlier versions are not rewritten. */
+function checklistSafetyRevision(original: ScaleDefinition, version: string, itemId: string, labels: readonly string[], rules: readonly (readonly [number[], string])[]): ScaleDefinition {
+  const revised = structuredClone(original);
+  revised.version = version;
+  markExclusive(revised, itemId, labels);
+  for (const [values, message] of rules) addRisk(revised, itemId, values, message);
+  return revised;
+}
+
+const CHILD_BIRTH_AGE_VERSION = "1.2.0";
+const CHILD_BIRTH_AGE_DESCRIPTION = "这份问卷想了解你在学习、家里、学校和同伴中的真实体验。没有标准答案，也不会因为一次回答给你贴标签。建议 8 至 17 岁自己填写；出生日期满 12 岁会多几题。你填写的年龄如果和出生日期不一致，工作人员会核对。香港繁体是便于阅读的字形转换，不是另行验证的译本。";
+
+/** 12+ items follow the family birth-date age. growth-child@1.0.0 and @1.1.0 stay byte-identical. */
+function childBirthAgeRevision(original: ScaleDefinition): ScaleDefinition {
+  const revised = structuredClone(original);
+  revised.version = CHILD_BIRTH_AGE_VERSION;
+  revised.description = pair(CHILD_BIRTH_AGE_DESCRIPTION);
+  const pageTitle = pair("按出生日期满 12 岁才会看到");
+  let youth = 0;
+  for (const item of revised.items) {
+    if (!item.id.startsWith("c18_")) continue;
+    youth += 1;
+    delete item.showIf;
+    item.visibleFromAge = 12;
+    item.pageTitle = pageTitle;
+  }
+  if (youth !== 6) throw new Error(`Expected 6 youth items, found ${youth}`);
+  return revised;
+}
+
 export const childScale = child();
-export const parentScale = parent();
+export const parentScaleV1 = parent();
+export const parentScale = revisedParent(parentScaleV1);
 export const teacherScale = teacher();
-export const triadScales = [childScale, parentScale, teacherScale];
+export const childScaleSafety = childSafetyRevision(childScale);
+export const teacherScaleSafety = checklistSafetyRevision(teacherScale, "1.1.0", "t15", ["以上均没有", "不确定", "不便在本问卷中说明"], [
+  [[7], "教师对需要及时处理的情况选择了“不确定”。请先按学校现有的保护流程核实，不要只等这份报告。"],
+  [[8], "教师没有在问卷中说明需要及时处理的情况。请先按学校现有的保护流程核实，不要把未说明当成没有危险。"]
+]);
+export const parentScaleSafety = checklistSafetyRevision(parentScale, "1.2.0", "q22", ["以上均没有", "不确定", "不愿回答"], [
+  [[8], "家长对需要及时关注的情况选择了“不确定”。请工作人员先确认孩子是否安全。如有眼前危险，请联系当地紧急服务。"],
+  [[9], "家长没有回答需要及时关注的情况。请工作人员先查看，不要把未回答当成没有危险。如有眼前危险，请联系当地紧急服务。"]
+]);
+export const childScaleBirthAge = childBirthAgeRevision(childScaleSafety);
+
+const CHILD_STAFF_NOTES_VERSION = "1.3.0";
+const PARENT_STAFF_NOTES_VERSION = "1.3.0";
+const TEACHER_STAFF_NOTES_VERSION = "1.2.0";
+const CHILD_HOPE_IDS = ["c19", "c20", "c21", "c22"] as const;
+const PARENT_SERVICE_IDS = ["q32", "q33", "q34", "q35", "q36", "q37", "q38"] as const;
+
+/** Staff-only writing for new assignments. Published earlier versions stay byte-identical. */
+function staffNotesRevision(original: ScaleDefinition, version: string, itemIds: readonly string[]): ScaleDefinition {
+  const revised = structuredClone(original);
+  revised.version = version;
+  const pending = new Set<string>(itemIds);
+  for (const item of revised.items) {
+    if (!pending.has(item.id)) continue;
+    if (item.kind !== "text" || item.report !== "words") throw new Error(`Expected parent-report writing at ${original.id}@${original.version} ${item.id}`);
+    item.report = "staff";
+    pending.delete(item.id);
+  }
+  if (pending.size > 0) throw new Error(`Missing staff-note items on ${original.id}@${original.version}: ${[...pending].join(",")}`);
+  return revised;
+}
+
+export const childScaleStaffNotes = staffNotesRevision(childScaleBirthAge, CHILD_STAFF_NOTES_VERSION, CHILD_HOPE_IDS);
+export const parentScaleStaffNotes = staffNotesRevision(parentScaleSafety, PARENT_STAFF_NOTES_VERSION, PARENT_SERVICE_IDS);
+export const teacherScaleStaffNotes = staffNotesRevision(teacherScaleSafety, TEACHER_STAFF_NOTES_VERSION, ["t23"]);
+export const triadScales = [childScale, childScaleSafety, childScaleBirthAge, childScaleStaffNotes, parentScaleV1, parentScale, parentScaleSafety, parentScaleStaffNotes, teacherScale, teacherScaleSafety, teacherScaleStaffNotes];
+export const currentTriadScaleIds = {
+  parent: `${parentScaleStaffNotes.id}@${parentScaleStaffNotes.version}`,
+  student: `${childScaleStaffNotes.id}@${childScaleStaffNotes.version}`,
+  teacher: `${teacherScaleStaffNotes.id}@${teacherScaleStaffNotes.version}`
+} as const;

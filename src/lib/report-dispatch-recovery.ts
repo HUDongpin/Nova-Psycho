@@ -13,11 +13,11 @@ export function authorizedReportRecovery(request:Request):boolean{
 export async function recoverReportDispatches():Promise<{selected:number;dispatched:number;pending:number}>{
   const config=getConfig();
   if(config.workerMode!=="queue")throw new Error("Report queue is disabled");
+  const deadline=Date.now()+40000;
   const rows=await query<{id:string}>(`SELECT j.id FROM report_jobs j JOIN assessments a ON a.id=j.assessment_id
     WHERE a.region=$1 AND ((j.state='ready' AND j.available_at<=now()) OR (j.state='running' AND j.lease_until<now()))
     ORDER BY j.available_at,j.created_at LIMIT 25`,[config.region]);
   let dispatched=0;
-  const deadline=Date.now()+40000;
   for(const row of rows){
     if(Date.now()>=deadline)break;
     try{await enqueueReportJob(row.id);dispatched++;}

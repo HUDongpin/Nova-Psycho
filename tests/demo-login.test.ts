@@ -34,15 +34,20 @@ function postDemo(body: string) {
   }), { params: Promise.resolve({ path: ["auth", "demo"] }) });
 }
 
+function seededDemo(id: string) {
+  return id === ADMIN_ID || id === STAFF_ID ? [{ id }] : [];
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   stub("demo");
   vi.mocked(query).mockImplementation(async (sql: string, params: unknown[] = []) => {
     const text = String(sql);
     if (text.includes("INSERT INTO sessions")) return [{ token_hash: "x" }];
+    // The actor lock is a separate statement from the demo recheck.
+    if (text.includes("FOR UPDATE")) return seededDemo(String(params[0]));
     if (text.includes("WHERE id=$1") && text.includes(" AND demo") && text.includes("NOT disabled") && text.includes("region=$2")) {
-      const id = String(params[0]);
-      return id === ADMIN_ID || id === STAFF_ID ? [{ id }] : [];
+      return seededDemo(String(params[0]));
     }
     if (text.startsWith("SELECT id,name,role FROM users WHERE demo AND region=$1")) {
       return [
@@ -52,6 +57,11 @@ beforeEach(() => {
     }
     return [];
   });
+  // Session creation commits inside the user lock. Mirror those statements onto
+  // query so the route still asserts the inserted account and not the raw cookie.
+  vi.mocked(transaction).mockImplementation((async (fn: (client: { query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }> }) => Promise<unknown>) => fn({
+    query: async (sql: string, params: unknown[] = []) => ({ rows: await query(sql, params) }),
+  })) as never);
 });
 afterEach(() => vi.unstubAllEnvs());
 

@@ -78,6 +78,8 @@ describe("application page CSP", () => {
     const value = policy(response);
     expect(directive(value, "script-src")).toMatch(/'nonce-[A-Za-z0-9+/=]+'/);
     expect(directive(value, "script-src")).toContain("'strict-dynamic'");
+    expect(directive(value, "script-src")).toContain("https://va.vercel-scripts.com");
+    expect(directive(value, "connect-src")).toContain("https://vitals.vercel-insights.com");
     expect(directive(value, "script-src")).not.toMatch(/unsafe-inline|unsafe-eval|https:\s|http:\s/);
     expect(directive(value, "script-src-attr")).toBe("script-src-attr 'none'");
     expect(directive(value, "style-src")).toBe("style-src 'self' 'unsafe-inline'");

@@ -228,6 +228,107 @@ describe("submission",()=>{
   });
 });
 
+describe("uncertain submission outcomes",()=>{
+  it.each([
+    new Error("Synthetic response lost"),
+    new ApiError("Synthetic server failure","REQUEST_FAILED",500),
+    new ApiError("Synthetic request timeout","REQUEST_TIMEOUT",408)
+  ])("retains the unload guard and blocks logout after %s",async error=>{
+    const session=ack(new AssessmentDraftSession(record({draftAnswers:{q1:1}})));
+    mockApi.mockRejectedValueOnce(error);
+    await expect(session.submit(LOCALE)).rejects.toThrow(error.message);
+    expect(session.getSnapshot()).toMatchObject({status:"failed",submitting:false,hasUnsavedChanges:true,answers:{q1:1}});
+    await expect(session.prepareForLogout(LOCALE)).rejects.toThrow();
+    expect(mockApi).toHaveBeenCalledTimes(1);
+  });
+  it("does not retain submission uncertainty for a rejected validation request",async()=>{
+    const session=ack(new AssessmentDraftSession(record({draftAnswers:{q1:1}})));
+    mockApi.mockRejectedValueOnce(new ApiError("Invalid answers","INVALID_ANSWERS",422));
+    await expect(session.submit(LOCALE)).rejects.toMatchObject({status:422});
+    expect(session.getSnapshot().hasUnsavedChanges).toBe(false);
+    await session.prepareForLogout(LOCALE);
+  });
+  it("preserves an earlier uncertain POST when a retry receives a validation rejection",async()=>{
+    const session=ack(new AssessmentDraftSession(record({draftAnswers:{q1:1}})));
+    mockApi.mockRejectedValueOnce(new Error("Synthetic response lost"));
+    await expect(session.submit(LOCALE)).rejects.toThrow();
+    mockApi.mockRejectedValueOnce(new ApiError("Invalid retry answers","INVALID_ANSWERS",422));
+    await expect(session.submit(LOCALE)).rejects.toMatchObject({status:422});
+    expect(session.getSnapshot()).toMatchObject({submitting:false,hasUnsavedChanges:true,answers:{q1:1}});
+    await expect(session.prepareForLogout(LOCALE)).rejects.toThrow();
+  });
+  it("does not mark a failed draft write as an uncertain POST",async()=>{
+    const session=ack(new AssessmentDraftSession(record()));session.update({q1:1},LOCALE);
+    mockApi.mockRejectedValueOnce(new Error("Synthetic PATCH failure"));
+    await expect(session.submit(LOCALE)).rejects.toThrow("Synthetic PATCH failure");
+    mockApi.mockResolvedValueOnce({ok:true,revision:1});
+    await session.save(LOCALE);
+    expect(session.getSnapshot().hasUnsavedChanges).toBe(false);
+    await session.prepareForLogout(LOCALE);
+    expect(mockApi.mock.calls.every(call=>call[2]?.method==="PATCH")).toBe(true);
+  });
+  it("clears uncertainty after an idempotent submission retry succeeds",async()=>{
+    const session=ack(new AssessmentDraftSession(record({draftAnswers:{q1:1}})));
+    mockApi.mockRejectedValueOnce(new Error("Synthetic response lost"));
+    await expect(session.submit(LOCALE)).rejects.toThrow();
+    expect(session.getSnapshot().hasUnsavedChanges).toBe(true);
+    mockApi.mockResolvedValueOnce({id:record().id,status:"queued",reportId:null});
+    await session.submit(LOCALE);
+    expect(session.getSnapshot()).toMatchObject({status:"saved",hasUnsavedChanges:false});
+    await session.prepareForLogout(LOCALE);
+    expect(mockApi.mock.calls.every(call=>call[2]?.method==="POST")).toBe(true);
+  });
+  it("retains edits and uncertainty even after a later PATCH succeeds",async()=>{
+    const session=ack(new AssessmentDraftSession(record({draftAnswers:{q1:1}})));
+    mockApi.mockRejectedValueOnce(new Error("Synthetic response lost"));
+    await expect(session.submit(LOCALE)).rejects.toThrow();
+    session.update({q1:2},LOCALE);
+    mockApi.mockResolvedValueOnce({ok:true,revision:1});
+    await session.save(LOCALE);
+    expect(session.getSnapshot()).toMatchObject({answers:{q1:2},hasUnsavedChanges:true});
+    await expect(session.prepareForLogout(LOCALE)).rejects.toThrow();
+  });
+  it("reconciles a fresh submitted record after a lost response",async()=>{
+    const session=ack(new AssessmentDraftSession(record({draftAnswers:{q1:1}})));
+    mockApi.mockRejectedValueOnce(new Error("Synthetic response lost"));
+    await expect(session.submit(LOCALE)).rejects.toThrow();
+    expect(session.getSnapshot().hasUnsavedChanges).toBe(true);
+    session.observeServer(record({status:"queued"}));
+    expect(session.getSnapshot().hasUnsavedChanges).toBe(false);
+    await session.prepareForLogout(LOCALE);
+  });
+  it("retains uncertainty after a pending read until an idempotent retry settles it",async()=>{
+    const session=ack(new AssessmentDraftSession(record({draftAnswers:{q1:1}})));
+    mockApi.mockRejectedValueOnce(new Error("Synthetic response lost"));
+    await expect(session.submit(LOCALE)).rejects.toThrow();
+    session.observeServer(record({draftAnswers:{q1:1}}));
+    expect(session.getSnapshot().hasUnsavedChanges).toBe(true);
+    await expect(session.prepareForLogout(LOCALE)).rejects.toThrow();session.cancelLogout();
+    mockApi.mockResolvedValueOnce({id:record().id,status:"queued",reportId:null});
+    await session.submit(LOCALE);
+    expect(session.getSnapshot().hasUnsavedChanges).toBe(false);
+  });
+  it("does not let a pending read resolve a POST that is still in flight",async()=>{
+    let reject:(error:unknown)=>void=()=>undefined;
+    mockApi.mockImplementationOnce(()=>new Promise((_resolve,fail)=>{reject=fail;}));
+    const session=ack(new AssessmentDraftSession(record({draftAnswers:{q1:1}})));
+    const submitting=session.submit(LOCALE).catch(()=>undefined);
+    await vi.advanceTimersByTimeAsync(0);
+    session.observeServer(record({draftAnswers:{q1:1}}));
+    reject(new Error("Synthetic response lost"));await submitting;
+    expect(session.getSnapshot().hasUnsavedChanges).toBe(true);
+  });
+  it("keeps post-failure edits as a conflict when a fresh read confirms submission",async()=>{
+    const session=ack(new AssessmentDraftSession(record({draftAnswers:{q1:1}})));
+    mockApi.mockRejectedValueOnce(new Error("Synthetic response lost"));
+    await expect(session.submit(LOCALE)).rejects.toThrow();
+    session.update({q1:2},LOCALE);
+    session.observeServer(record({status:"queued"}));
+    expect(session.getSnapshot()).toMatchObject({conflict:true,hasUnsavedChanges:true,answers:{q1:2}});
+    await expect(session.prepareForLogout(LOCALE)).rejects.toThrow();
+  });
+});
+
 describe("observing the server",()=>{
   it("adopts the server snapshot when there are no local edits",()=>{
     const session=new AssessmentDraftSession(record({draftRevision:0}));
@@ -421,6 +522,34 @@ describe("account session disposal",()=>{
 });
 
 describe("temporary authentication loss",()=>{
+  it("pauses on a revoked Clerk account while retaining dirty answers",async()=>{
+    const expired=vi.fn(),session=ack(new AssessmentDraftSession(record(),expired));
+    session.update({q1:1},LOCALE);
+    mockApi.mockRejectedValueOnce(new ApiError("Account revoked","ACCOUNT_REVOKED",403));
+    await flush();
+    expect(session.getSnapshot()).toMatchObject({authenticationPaused:true,hasUnsavedChanges:true,answers:{q1:1}});
+    expect(expired).toHaveBeenCalledTimes(1);
+  });
+  it("keeps an unrelated forbidden response as a draft failure",async()=>{
+    const expired=vi.fn(),session=ack(new AssessmentDraftSession(record(),expired));
+    session.update({q1:1},LOCALE);
+    mockApi.mockRejectedValueOnce(new ApiError("Forbidden","FORBIDDEN",403));
+    await flush();
+    expect(session.getSnapshot()).toMatchObject({authenticationPaused:false,status:"failed",hasUnsavedChanges:true});
+    expect(expired).not.toHaveBeenCalled();
+  });
+  it("does not invent a POST outcome when authentication expires during its preceding PATCH",async()=>{
+    let release:(value:unknown)=>void=()=>undefined;
+    mockApi.mockImplementationOnce(()=>new Promise(resolve=>{release=resolve as typeof release;}));
+    const session=ack(new AssessmentDraftSession(record()));session.update({q1:1},LOCALE);
+    const submitting=session.submit(LOCALE).catch(()=>undefined);
+    await vi.advanceTimersByTimeAsync(0);session.suspendAuthentication();
+    session.resumeFromServer(record());session.setAcknowledged(true,LOCALE);session.cancelTimer();
+    release({ok:true,revision:1});await submitting;
+    mockApi.mockResolvedValueOnce({ok:true,revision:1});await session.save(LOCALE);
+    expect(session.getSnapshot().hasUnsavedChanges).toBe(false);
+    expect(mockApi.mock.calls.every(call=>call[2]?.method==="PATCH")).toBe(true);
+  });
   it("pauses on a real 401 while retaining local answers and the unload guard",async()=>{
     const expired=vi.fn();
     const session=ack(new AssessmentDraftSession(record(),expired));

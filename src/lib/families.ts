@@ -10,7 +10,7 @@ import { HttpError, requireRole, validateId } from "./http";
 import { ACTIVE_CONSENT_ROWS_SQL, CONSENT_SCOPES, PARENT_REPORT_SCOPE, REQUIRED_WITHDRAW_SCOPES, hasGranted, insertConsentRecords, rejectBundledConsent, scopeNotRevokedSql, type ConsentScope } from "./consent";
 import { noticeVersion } from "./privacy";
 import type { VerifiedClerkIdentity } from "./clerk-auth";
-import type { DeferredReportWork } from "./report-dispatch";
+import { dispatchAssessmentReport, type DeferredReportWork } from "./report-dispatch";
 import { assertTriadRegistrationReady, enqueueReportsHeldForConsent, joinTriadFamilyInTransaction, lockRegistrationActor, requireRegistrationConsent, type RegistrationFamily } from "./triad";
 import { registrationName, registrationPassword, registrationUsername } from "../domain/registration";
 const short=registrationName;
@@ -19,8 +19,12 @@ export async function createFamily(actor:Actor,input:unknown){
   requireRole(actor.role,["admin","staff"]);const d=familyInput.parse(input);const age=ageAt(d.birthDate);
   if(!Number.isFinite(Date.parse(d.birthDate))||new Date(d.birthDate).toISOString().slice(0,10)!==d.birthDate||!Number.isInteger(age)||age<3||age>25)throw new HttpError(422,"请填写有效的孩子出生日期。","INVALID_BIRTHDATE");
   const assigned=actor.role==="staff"?actor.id:d.assignedTo??null;
-  if(assigned && !(await query("SELECT id FROM users WHERE id=$1 AND region=$2 AND role='staff' AND NOT disabled",[assigned,actor.region])).length)throw new HttpError(422,"请选择本地区的有效工作人员。","INVALID_STAFF");
-  const id=randomUUID();await query("INSERT INTO families(id,region,family_name,child_name,birth_date,grade,guardian_label,assigned_to) VALUES($1,$2,$3,$4,$5,$6,$7,$8)",[id,actor.region,d.familyName,d.childName,d.birthDate,d.grade,d.guardianLabel,assigned]);await audit(actor,"family.created",id);return {id};
+  return transaction(async client=>{
+    if(assigned && !(await client.query("SELECT id FROM users WHERE id=$1 AND region=$2 AND role='staff' AND NOT disabled FOR SHARE",[assigned,actor.region])).rows.length)throw new HttpError(422,"请选择本地区的有效工作人员。","INVALID_STAFF");
+    await lockRegistrationActor(client,actor,"SHARE");
+    const id=randomUUID();await client.query("INSERT INTO families(id,region,family_name,child_name,birth_date,grade,guardian_label,assigned_to) VALUES($1,$2,$3,$4,$5,$6,$7,$8)",[id,actor.region,d.familyName,d.childName,d.birthDate,d.grade,d.guardianLabel,assigned]);
+    await client.query("INSERT INTO audit_events(region,actor_id,action,entity_id) VALUES($1,$2,'family.created',$3)",[actor.region,actor.id,id]);return {id};
+  });
 }
 export async function assignFamily(actor:Actor,id:string,input:unknown){
   requireRole(actor.role,["admin"]);validateId(id);
@@ -30,6 +34,7 @@ export async function assignFamily(actor:Actor,id:string,input:unknown){
     if(!family.rows[0])throw new HttpError(404,"未找到该家庭或没有访问权限。","NOT_FOUND");
     const staff=await client.query("SELECT id FROM users WHERE id=$1 AND region=$2 AND role='staff' AND NOT disabled FOR SHARE",[assignedTo,actor.region]);
     if(!staff.rows[0])throw new HttpError(422,"请选择本地区的有效工作人员。","INVALID_STAFF");
+    await lockRegistrationActor(client,actor);
     await client.query("UPDATE families SET assigned_to=$1 WHERE id=$2 AND region=$3",[assignedTo,id,actor.region]);
     await client.query("INSERT INTO audit_events(region,actor_id,action,entity_id) VALUES($1,$2,'family.assigned',$3)",[actor.region,actor.id,id]);
     return {id,assignedTo};
@@ -88,7 +93,6 @@ export async function recordConsent(actor:Actor,id:string,input:unknown,defer?:D
     return [];
   });
   if(queued.length){
-    const {dispatchAssessmentReport}=await import("./report-dispatch");
     for(const assessmentId of queued)await dispatchAssessmentReport(assessmentId,defer);
   }
   await audit(actor,d.action==="grant"?"consent.recorded":"consent.withdrawn",id);return {ok:true};
@@ -118,7 +122,9 @@ export async function createInvitation(actor:Actor,id:string,input:unknown){
   const token=randomBytes(32).toString("hex"),expires=new Date(Date.now()+72*3600000);
   await transaction(async client=>{
     const lock=await client.query("SELECT id,region,assigned_to FROM families WHERE id=$1 AND region=$2 FOR UPDATE",[id,actor.region]);
-    if(!lock.rows[0]||!canInviteFamilyMembers(actor,lock.rows[0]))throw new HttpError(404,"未找到该家庭或没有访问权限。","NOT_FOUND");
+    if(!lock.rows[0])throw new HttpError(404,"未找到该家庭或没有访问权限。","NOT_FOUND");
+    const current=await lockRegistrationActor(client,actor);
+    if(!canInviteFamilyMembers(current,lock.rows[0]))throw new HttpError(404,"未找到该家庭或没有访问权限。","NOT_FOUND");
     await client.query("INSERT INTO invitations(token_hash,family_id,role,expires_at,created_by) VALUES($1,$2,$3,$4,$5)",[hashToken(token),id,role,expires,actor.id]);
   });
   await audit(actor,"invitation.created",id);return {url:`${getConfig().publicUrl}/invite#token=${token}`,expiresAt:expires.toISOString()};
@@ -196,7 +202,10 @@ async function bindInvitedActor(client: PoolClient, actor: Actor, tokenHash: str
 
 export async function acceptInvitationForActor(actor: Actor, input: unknown, locale: Locale = "zh-CN"): Promise<string> {
   requireRole(actor.role, ["parent", "student", "teacher"]);
-  const { token } = z.object({ token: z.string() }).strict().parse(input);
+  // An initial Clerk acceptance can commit before its response arrives. Its
+  // retry now has an Actor but still carries the onboarding name; never rename
+  // that existing account or discard the already-accepted invitation.
+  const { token } = z.object({ token: z.string(), name: short.optional() }).strict().parse(input);
   const tokenHash = hashToken(invitationToken(token));
   return transaction(async client => {
     const { invite, family } = await lockInvitation(client, tokenHash);

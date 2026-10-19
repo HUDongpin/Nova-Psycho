@@ -40,17 +40,6 @@ describe("assessment rows after a triad report exists", () => {
     expect(markup).not.toContain("查看报告");
   });
 
-  it("tells a waiting child that the other two people have not finished", () => {
-    const markup = html([
-      row({ id: "child", respondentRole: "student", respondentName: "孩子", status: "queued", phase: "waiting", reportId: null })
-    ], false);
-    expect(markup).toContain("等待另外两方");
-    expect(markup).toContain("孩子、家长和老师都交齐后");
-    expect(markup).not.toContain("无需再次填写");
-    expect(markup).not.toContain("已完成提交");
-    expect(markup).not.toContain("报告生成中");
-  });
-
   it("replaces the three view-report buttons with the consent reason after withdrawal", () => {
     const held = trio.map(item => ({ ...item, phase: "consent" as const, reportId: "r-parent" }));
     const simplified = html(held);
@@ -60,6 +49,17 @@ describe("assessment rows after a triad report exists", () => {
     expect(traditional).not.toContain("查看報告");
     expect(traditional.match(/等待家長報告同意/g)?.length).toBeGreaterThanOrEqual(3);
     expect(simplified).not.toContain("<button");
+  });
+
+  it("tells a waiting child that the other two people have not finished", () => {
+    const markup = html([
+      row({ id: "child", respondentRole: "student", respondentName: "孩子", status: "queued", phase: "waiting", reportId: null })
+    ], false);
+    expect(markup).toContain("等待另外两方");
+    expect(markup).toContain("孩子、家长和老师都交齐后");
+    expect(markup).not.toContain("无需再次填写");
+    expect(markup).not.toContain("已完成提交");
+    expect(markup).not.toContain("报告生成中");
   });
 
   it("shows a staff age-mismatch note without printing a birth date", () => {

@@ -4,9 +4,8 @@ import { modelInput, selectNarrative, eligibleAdviceIds } from "../src/domain/na
 import { reportHtml } from "../src/domain/report-html";
 import { scoreAssessment } from "../src/domain/scoring";
 import { composeTriad, previewAnswers, staffOnlyText, type TriadSource } from "../src/domain/triad-report";
-import { childScale, parentScale, teacherScale } from "../src/domain/triad-scales";
+import { childScaleBirthAge, childScaleStaffNotes as childScale, parentScaleStaffNotes as parentScale, teacherScaleStaffNotes as teacherScale } from "../src/domain/triad-scales";
 import type { AssessmentSnapshot, Locale, ReportPayload, ScaleBand, StoredAnswer } from "../src/domain/types";
-import { childScale as child13 } from "./fixtures/triad-scales-1.3.0";
 
 const HOPES = ["c19", "c20", "c21", "c22"] as const;
 const SECRET = "CHILD_HOPE_SECRET_NOT_FOR_PARENT_OR_MODEL";
@@ -27,15 +26,15 @@ function source(scale: typeof childScale, answers: Record<string, StoredAnswer>)
   return { role, scale, answers, score: scoreAssessment(scale, answers, { age: 12, region: "CN", role }), submittedAt };
 }
 
-describe("growth-child@1.4.0 hopes writing", () => {
+describe("growth-child@1.3.0 hopes writing", () => {
   it("keeps the questions and gives them a staff reader without a parent or model reader", async () => {
-    expect(childScale.version).toBe("1.4.0");
+    expect(childScale.version).toBe("1.3.0");
     expect(parentScale.version).toBe("1.3.0");
-    expect(teacherScale.version).toBe("1.3.0");
-    expect(child13.version).toBe("1.3.0");
+    expect(teacherScale.version).toBe("1.2.0");
+    expect(childScaleBirthAge.version).toBe("1.2.0");
     for (const id of HOPES) {
       const current = childScale.items.find(item => item.id === id);
-      const previous = child13.items.find(item => item.id === id);
+      const previous = childScaleBirthAge.items.find(item => item.id === id);
       expect(current?.kind).toBe("text");
       expect(current?.pageTitle?.["zh-CN"]).toBe("我希望大人知道");
       expect(current?.report).toBe("staff");
@@ -45,7 +44,7 @@ describe("growth-child@1.4.0 hopes writing", () => {
     }
 
     const childAnswers = answersFor(childScale);
-    const previousAnswers = answersFor(child13);
+    const previousAnswers = answersFor(childScaleBirthAge);
     for (const id of HOPES) {
       childAnswers[id] = `${SECRET}_${id}`;
       previousAnswers[id] = `${SECRET}_${id}`;
@@ -60,7 +59,7 @@ describe("growth-child@1.4.0 hopes writing", () => {
     expect(notes.map(note => note.value)).toEqual(HOPES.map(id => `${SECRET}_${id}`));
     expect(notes.map(note => note.label["zh-CN"])).toEqual(HOPES.map(id => childScale.items.find(item => item.id === id)!.label["zh-CN"]));
     expect(notes.some(note => note.value === SCENE)).toBe(false);
-    expect(staffOnlyText(child13, previousAnswers)).toEqual([]);
+    expect(staffOnlyText(childScaleBirthAge, previousAnswers)).toEqual([]);
 
     const sources = [source(childScale, childAnswers), source(parentScale, parentAnswers), source(teacherScale, teacherAnswers)];
     expect(sources.every(item => item.score.status === "valid" && item.score.risk === false)).toBe(true);

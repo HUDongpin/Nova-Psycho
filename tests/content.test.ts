@@ -18,6 +18,7 @@ const defaultClientQuery=async(sql:string)=>{
   if(text.includes("FROM content_versions WHERE kind=$1"))return {rows:[{id:"a1",version:"1.0.0",content:demoAdvice}]};
   if(text.includes("SELECT id,definition,status FROM scales"))return {rows:[{id:SCALE_ID,definition:demoScale,status:"retired"}]};
   if(text.includes("SELECT s.definition FROM scales s"))return {rows:[{definition:demoScale}]};
+  if(text.startsWith("INSERT INTO scales")||text.startsWith("UPDATE scales")||text.startsWith("INSERT INTO content_versions"))return {rows:[{id:"synthetic-written"}],rowCount:1};
   return {rows:[]};
 };
 const client={query:vi.fn(defaultClientQuery)};

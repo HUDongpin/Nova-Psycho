@@ -44,6 +44,23 @@ describe("bounded dispatch recovery",()=>{
     vi.mocked(enqueueReportJob).mockImplementation(async()=>{vi.setSystemTime(Date.now()+20000);});
     await expect(recoverReportDispatches()).resolves.toEqual({selected:3,dispatched:2,pending:1});
   });
+  it("counts database startup against the cron's execution budget",async()=>{
+    vi.useFakeTimers();vi.setSystemTime(0);
+    vi.mocked(query).mockImplementation(async()=>{
+      // Connection, regional validation and selection each have their own timeout.
+      vi.setSystemTime(25000);
+      return Array.from({length:8},(_,index)=>({id:`job-${index}`}));
+    });
+    vi.mocked(enqueueReportJob).mockImplementation(async()=>{
+      // A successful send can finish just before the eight-second dispatch timeout.
+      vi.setSystemTime(Date.now()+7900);
+    });
+    const result=await recoverReportDispatches();
+    expect(Date.now()).toBeLessThan(60000);
+    expect(result.dispatched).toBeGreaterThan(0);
+    expect(result.pending).toBeGreaterThan(0);
+    expect(result.dispatched+result.pending).toBe(result.selected);
+  });
   it("provides liveness without configuration or a database connection",async()=>{
     vi.stubEnv("DATABASE_URL",undefined);
     await expect(liveness().json()).resolves.toEqual({ok:true});expect(query).not.toHaveBeenCalled();

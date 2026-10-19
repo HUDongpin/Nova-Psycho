@@ -10,6 +10,7 @@ const item=z.object({
   reverse:z.boolean(),required:z.boolean(),excludeValues:z.array(z.number().int()).max(10).optional(),
   maxChoices:z.number().int().min(1).max(20).optional(),noAutoAdvance:z.boolean().optional(),
   showIf:z.object({itemId:key,anyOf:z.array(z.number().int()).min(1).max(20)}).strict().optional(),
+  supplementFor:key.optional(),
   visibleFromAge:z.number().int().min(0).max(25).optional(),
   page:z.string().trim().min(1).max(80).optional(),pageTitle:localized.optional(),panel:localized.optional(),
   shuffle:z.boolean().optional(),gate:z.number().int().optional(),report:z.enum(["omit","words","situation","priorities","staff"]).optional()
@@ -29,7 +30,6 @@ export const scaleSchema=z.object({
   if(s.minAge>s.maxAge||s.norm.minAge>s.norm.maxAge)fail("Age interval is invalid");
   if(s.norm.minAge>s.minAge||s.norm.maxAge<s.maxAge)fail("Norm age interval must cover the instrument");
   if(s.regions.some(r=>!s.norm.regions.includes(r)))fail("Norm region must cover the instrument");
-  if(!s.demo&&!s.norm.validated)fail("Unvalidated instruments must be labelled demo");
   if(new Set(s.items.map(i=>i.id)).size!==s.items.length)fail("Item IDs must be unique");
   if(new Set(s.dimensions.map(d=>d.key)).size!==s.dimensions.length)fail("Dimension IDs must be unique");
   for(const i of s.items){
@@ -51,6 +51,15 @@ export const scaleSchema=z.object({
     }
   }
   const items=new Map(s.items.map(i=>[i.id,i]));
+  const supplementedParents=new Set<string>();
+  for(const i of s.items)if(i.supplementFor!==undefined){
+    const parent=items.get(i.supplementFor);
+    if(i.kind!=="text"||i.required||i.report!=="staff"||i.gate!==undefined)fail("Supplements must be optional staff-only text");
+    if(!parent||(parent.kind??"single")==="text"||i.showIf?.itemId!==i.supplementFor)fail("Supplement must be conditional on its choice parent");
+    if(supplementedParents.has(i.supplementFor))fail("Each choice item allows only one supplement");
+    supplementedParents.add(i.supplementFor);
+    if(s.dimensions.some(d=>d.items.includes(i.id))||s.riskRules.some(rule=>rule.itemId===i.id))fail("Supplements cannot contribute to scores or safety rules");
+  }
   for(const i of s.items)if(i.showIf){
     if(i.showIf.itemId===i.id)fail("Item cannot depend on itself");
     const target=items.get(i.showIf.itemId);
@@ -82,7 +91,13 @@ export function normValidated(norm:{validated?:boolean}|null|undefined):boolean{
 export function effectiveDemo(scale:{demo?:boolean;norm?:{validated?:boolean}|null}|null|undefined):boolean{
   return scale?.demo===true||!normValidated(scale?.norm);
 }
-export function parseScale(value:unknown):ScaleDefinition{return scaleSchema.parse(value);}
+// Frozen scale_id@version rows stay byte-identical, including legacy non-demo instruments whose norm is not validated.
+export function parseStoredScale(value:unknown):ScaleDefinition{return scaleSchema.parse(value);}
+export function parseScale(value:unknown):ScaleDefinition{
+  const scale=parseStoredScale(value);
+  if(!scale.demo&&!normValidated(scale.norm))throw new Error("Unvalidated instruments must be labelled demo");
+  return scale;
+}
 export function parseAdvice(value:unknown):AdviceLibrary{return adviceSchema.parse(value);}
 export function parseTemplate(value:unknown):ReportTemplate{return templateSchema.parse(value);}
 export function ensureAdviceReferences(scale:ScaleDefinition,library:AdviceLibrary):void{
