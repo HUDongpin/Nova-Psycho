@@ -1,7 +1,9 @@
 import { describe,it,expect,beforeEach,afterEach,vi } from "vitest";
+import type { PoolClient } from "pg";
 
-vi.mock("../src/lib/db",()=>({query:vi.fn()}));
-import { query } from "../src/lib/db";
+vi.mock("../src/lib/db",()=>({query:vi.fn(),transaction:vi.fn()}));
+vi.mock("../src/lib/triad",()=>({lockRegistrationActor:vi.fn(async (_client:unknown,user:Actor)=>user)}));
+import { query, transaction } from "../src/lib/db";
 import { addGoal,addObservation,updateGoal } from "../src/lib/care";
 import type { Actor,Role } from "../src/domain/types";
 
@@ -17,7 +19,9 @@ beforeEach(()=>{
   vi.stubEnv("NOVA_REPORT_DIR","work/test-private");
   vi.stubEnv("NOVA_REPORT_KEY","0".repeat(64));
   mockQuery.mockReset();
+  vi.mocked(transaction).mockImplementation(async fn=>fn({query:async(sql:string,values:unknown[])=>({rows:await query(sql,values)})} as unknown as PoolClient));
   mockQuery.mockImplementation((async(sql:string)=>{
+    if(String(sql).includes("FROM families")&&String(sql).includes("FOR UPDATE"))return [{id:FAMILY_ID}];
     if(String(sql).includes("FROM families f WHERE f.id=$1"))return [{id:FAMILY_ID,region:"CN",family_name:"Synthetic",child_name:"Synthetic child",birth_date:"2013-04-12",grade:"S2",guardian_label:"Mother",assigned_to:null,created_at:new Date()}];
     if(String(sql).includes("SELECT family_id FROM goals"))return [{family_id:FAMILY_ID}];
     return [];
@@ -77,6 +81,28 @@ describe("case observations",()=>{
   });
   it("refuses a family the caller cannot reach",async()=>{
     mockQuery.mockImplementation((async()=>[]) as never);
-    await expect(addObservation(actor("staff"),{familyId:FAMILY_ID,body:"note"})).rejects.toMatchObject({code:"NOT_FOUND"});
+    await expect(addObservation(actor("staff"),{familyId:FAMILY_ID,body:"note"})).rejects.toMatchObject({status:404,code:"NOT_FOUND"});
+    expect(mockQuery.mock.calls.some(([sql])=>String(sql).includes("INSERT INTO observations"))).toBe(false);
+  });
+  it("checks detail scope, so other regional staff cannot edit notes for an assigned family",async()=>{
+    mockQuery.mockImplementation((async(sql:string)=>{
+      const text=String(sql);
+      if(text.includes("FROM families f WHERE f.id=$1"))return [];
+      if(text.includes("FOR UPDATE"))return [{id:FAMILY_ID}];
+      return [];
+    }) as never);
+    await expect(addObservation(actor("staff"),{familyId:FAMILY_ID,body:"Synthetic note"})).rejects.toMatchObject({status:404,code:"NOT_FOUND"});
+    const lookup=mockQuery.mock.calls.find(([sql])=>String(sql).includes("FROM families f WHERE f.id=$1"));
+    expect(String(lookup?.[0])).toContain("f.assigned_to=$3");
+    expect(String(lookup?.[0])).toContain("f.assigned_to IS NULL");
+    expect(String(lookup?.[0])).toContain("sa.resolved_at IS NULL");
+    expect(String(lookup?.[0])).not.toContain("viewed_at");
+    expect(mockQuery.mock.calls.some(([sql])=>String(sql).includes("INSERT INTO observations"))).toBe(false);
+  });
+  it("lets an administrator record a note through the same detail gate",async()=>{
+    await addObservation(actor("admin"),{familyId:FAMILY_ID,body:"Synthetic note"});
+    const lookup=mockQuery.mock.calls.find(([sql])=>String(sql).includes("FROM families f WHERE f.id=$1"));
+    expect(String(lookup?.[0])).toBe("SELECT f.* FROM families f WHERE f.id=$1 AND f.region=$2");
+    expect(mockQuery.mock.calls.some(([sql])=>String(sql).includes("INSERT INTO observations"))).toBe(true);
   });
 });

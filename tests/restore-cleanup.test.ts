@@ -1,5 +1,7 @@
 import { describe,it,expect,afterEach } from "vitest";
-import { existsSync,mkdtempSync,readdirSync,readFileSync,rmSync,writeFileSync } from "node:fs";
+import { chmodSync,existsSync,mkdirSync,mkdtempSync,readdirSync,readFileSync,readlinkSync,rmSync,symlinkSync,writeFileSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { decryptFile,encryptFile } from "../scripts/backup-lib";
@@ -15,6 +17,7 @@ afterEach(()=>{for(const dir of created.splice(0))rmSync(dir,{recursive:true,for
 
 const key=Buffer.from("0f".repeat(32),"hex");
 const wrongKey=Buffer.from("ff".repeat(32),"hex");
+const run=promisify(execFile);
 
 async function encryptedPayload(dir:string,name:string,contents:string,useKey=key):Promise<string>{
   const source=path.join(dir,`${name}.src`);
@@ -85,5 +88,62 @@ describe("restore decrypt cleanup",()=>{
     expect(readdirSync(dir).filter(name=>name.startsWith(".restore-"))).toEqual([]);
     expect(existsSync(path.join(dir,"keep.txt"))).toBe(true);
     expect(readdirSync(dir).some(name=>name.includes("database.dump"))).toBe(false);
+  });
+
+  it.each([0o077,0o400,0o700])("keeps owned staging usable and private under umask %i",async(mask)=>{
+    const dir=tempDir();
+    const database=await encryptedPayload(dir,"database","database-bytes");
+    const reports=await encryptedPayload(dir,"reports","reports-bytes");
+    const program=`
+      import assert from "node:assert/strict";
+      import fs from "node:fs/promises";
+      import path from "node:path";
+      import { withDecryptedBackup } from ${JSON.stringify(new URL("../scripts/restore-lib.ts",import.meta.url).href)};
+      process.umask(${mask});
+      await withDecryptedBackup(${JSON.stringify(dir)},${JSON.stringify(database)},${JSON.stringify(reports)},true,Buffer.from(${JSON.stringify(key.toString("hex"))},"hex"),async(dump,reports)=>{
+        assert.equal((await fs.stat(path.dirname(dump))).mode&0o777,0o700);
+        assert.equal((await fs.stat(dump)).mode&0o777,0o600);
+        assert.equal((await fs.stat(reports)).mode&0o777,0o600);
+        assert.equal(await fs.readFile(dump,"utf8"),"database-bytes");
+        assert.equal(await fs.readFile(reports,"utf8"),"reports-bytes");
+      });
+      assert.deepEqual((await fs.readdir(${JSON.stringify(dir)})).filter(name=>name.startsWith(".restore-")),[]);
+    `;
+    try{
+      await run(process.execPath,["--import","tsx","--input-type=module","-e",program]);
+    }finally{
+      for(const name of readdirSync(dir).filter(name=>name.startsWith(".restore-")))chmodSync(path.join(dir,name),0o700);
+    }
+  });
+
+  it("cleans callback failure without changing prior staging or sibling symlinks",async()=>{
+    const dir=tempDir();
+    const database=await encryptedPayload(dir,"database","database-bytes");
+    const reports=await encryptedPayload(dir,"reports","reports-bytes");
+    const previous=path.join(dir,".restore-previous-run"),sentinel=path.join(dir,"keep.txt");
+    mkdirSync(previous);writeFileSync(path.join(previous,"database.dump"),"older owned-by-another-run");
+    writeFileSync(sentinel,"sibling");
+    const link=path.join(dir,".restore-sibling-link"),dangling=path.join(dir,".restore-dangling-link");
+    symlinkSync(sentinel,link);symlinkSync(path.join(dir,"absent"),dangling);
+    const before=readdirSync(dir).sort(),failure=new Error("Synthetic restore callback failure");
+    let staging="";
+    await expect(withDecryptedBackup(dir,database,reports,true,key,async(dump,archive)=>{
+      staging=path.dirname(dump);
+      expect(readFileSync(dump,"utf8")).toBe("database-bytes");
+      expect(readFileSync(archive,"utf8")).toBe("reports-bytes");
+      throw failure;
+    })).rejects.toBe(failure);
+    expect(existsSync(staging)).toBe(false);
+    expect(readdirSync(dir).sort()).toEqual(before);
+    expect(readFileSync(path.join(previous,"database.dump"),"utf8")).toBe("older owned-by-another-run");
+    expect(readFileSync(sentinel,"utf8")).toBe("sibling");
+    expect(readlinkSync(link)).toBe(sentinel);expect(readlinkSync(dangling)).toBe(path.join(dir,"absent"));
+  });
+
+  it("removes its staging directory if the first archive cannot be read",async()=>{
+    const dir=tempDir();let called=false;
+    writeFileSync(path.join(dir,"keep.txt"),"sibling");
+    await expect(withDecryptedBackup(dir,path.join(dir,"missing.enc"),path.join(dir,"reports.enc"),true,key,async()=>{called=true;})).rejects.toMatchObject({code:"ENOENT"});
+    expect(called).toBe(false);expect(readdirSync(dir)).toEqual(["keep.txt"]);
   });
 });

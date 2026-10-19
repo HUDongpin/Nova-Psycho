@@ -6,7 +6,7 @@ import { SubmissionPanel } from "../src/components/documents";
 
 function panelFor(role: "parent" | "admin" | "student" | "teacher", phase: SubmissionPhase, options: { locale?: "zh-CN" | "zh-HK"; reportId?: string | null; reportHeld?: boolean } = {}) {
   return renderToStaticMarkup(createElement(SubmissionPanel, {
-    locale: options.locale ?? "zh-CN", role, phase, reportId: options.reportId ?? null, reportHeld: options.reportHeld, onViewReport: () => undefined, onBack: () => undefined
+    locale: options.locale ?? "zh-CN", region: "CN", role, phase, safetyGuidance: false, reportId: options.reportId ?? null, reportHeld: options.reportHeld, onViewReport: () => undefined, onBack: () => undefined
   }));
 }
 

@@ -10,8 +10,9 @@ import { query,transaction } from "../src/lib/db";
 import { currentContent,getScale,lockContent } from "../src/lib/content";
 import { assessmentDetail,createAssessment,retryReport,saveDraft,submitAssessment } from "../src/lib/assessments";
 import { demoAdvice,demoScale,demoTemplate } from "../src/domain/demo";
-import { parseScale } from "../src/domain/validation";
 import { childScale,parentScale,teacherScale } from "../src/domain/triad-scales";
+import { childScale as oldChild } from "./fixtures/triad-scales-ed66f27";
+import { effectiveDemo, parseScale } from "../src/domain/validation";
 import { previewAnswers, TRIAD_BUNDLE } from "../src/domain/triad-report";
 import { ACTIVE_CONSENT_ROWS_SQL } from "../src/lib/consent";
 import type { Actor,Role,ScaleDefinition } from "../src/domain/types";
@@ -25,17 +26,20 @@ const ASSESSMENT_ID="11111111-2222-4333-8444-555555555555";
 const FAMILY_ID="22222222-3333-4444-8555-666666666666";
 const USER_ID="99999999-8888-4777-8666-555555555555";
 const SCALE_ID=`${demoScale.id}@${demoScale.version}`;
-const actor=(role:Role,over:Partial<Actor>={}):Actor=>({id:USER_ID,name:"Synthetic",role,region:"CN",...over});
+let currentActor:Actor;
+const actor=(role:Role,over:Partial<Actor>={}):Actor=>(currentActor={id:USER_ID,name:"Synthetic",role,region:"CN",...over});
 const scale=parseScale(demoScale);
 
 const clientCalls:string[]=[];
-const client={
-  // Declared with a params argument and a widened row type so each test can install its
-  // own row shape without fighting the inferred return type.
-  query:vi.fn(async(sql:string,_params?:unknown[]):Promise<{rows:unknown[]}>=>{
+// Keep current-account fixtures explicit while allowing each case to override a query.
+const defaultClientQuery=async(sql:string,_params?:unknown[]):Promise<{rows:unknown[]}>=>{
     clientCalls.push(String(sql));
     const text=String(sql);
+    if(text.includes("FROM users WHERE id=$1"))return {rows:[{...currentActor,disabled:false,demo:false}]};
+    if(text.includes("SELECT m.role FROM memberships"))return {rows:[{role:"student"}]};
+    if(text.includes("SELECT id FROM consents"))return {rows:[{id:"c1"}]};
     if(text.includes("SELECT id FROM families"))return {rows:[{id:FAMILY_ID}]};
+    if(text.includes("FROM families f WHERE f.id=$1"))return {rows:[{id:FAMILY_ID,region:"CN",assigned_to:null}]};
     if(text.includes("SELECT status FROM scales"))return {rows:[{status:"active"}]};
     if(text.includes("SELECT id FROM assessments"))return {rows:[]};
     if(text.includes("SELECT submitted_at FROM assessments"))return {rows:[]};
@@ -45,8 +49,8 @@ const client={
     if(text.includes("SELECT * FROM assessments WHERE id=$1 AND region=$2"))return {rows:[{id:ASSESSMENT_ID,status:"failed",family_id:FAMILY_ID,snapshot:{},answers:{},submitted_at:new Date()}]};
     if(text.includes("SELECT family_id FROM assessments"))return {rows:[{family_id:FAMILY_ID}]};
     return {rows:[]};
-  })
-};
+  };
+const client={query:vi.fn(defaultClientQuery)};
 
 beforeEach(()=>{
   vi.stubEnv("NOVA_REGION","CN");vi.stubEnv("NOVA_MODE","demo");
@@ -54,7 +58,7 @@ beforeEach(()=>{
   vi.stubEnv("NOVA_PUBLIC_URL","http://127.0.0.1:3100");
   vi.stubEnv("NOVA_REPORT_DIR","work/test-private");
   vi.stubEnv("NOVA_REPORT_KEY","0".repeat(64));
-  mockQuery.mockReset();mockTransaction.mockReset();client.query.mockClear();clientCalls.length=0;
+  mockQuery.mockReset();mockTransaction.mockReset();client.query.mockReset();client.query.mockImplementation(defaultClientQuery);clientCalls.length=0;
   mockGetScale.mockReset();mockCurrentContent.mockReset();vi.mocked(lockContent).mockReset();
   mockTransaction.mockImplementation((async(fn:(c:unknown)=>Promise<unknown>)=>fn(client)) as never);
   mockGetScale.mockResolvedValue({id:SCALE_ID,definition:scale,status:"active"} as never);
@@ -83,9 +87,17 @@ describe("creating an assessment",()=>{
     mockGetScale.mockResolvedValueOnce({id:SCALE_ID,definition:scale,status:"retired"} as never);
     await expect(createAssessment(actor("admin"),createInput)).rejects.toMatchObject({code:"SCALE_RETIRED"});
   });
-  it("refuses a demo instrument in service mode",async()=>{
+  it("refuses an unvalidated instrument in service mode",async()=>{
     vi.stubEnv("NOVA_MODE","service");vi.stubEnv("NOVA_PUBLIC_URL","https://nova.example.invalid");
-    await expect(createAssessment(actor("admin"),createInput)).rejects.toMatchObject({code:"DEMO_INSTRUMENT"});
+    await expect(createAssessment(actor("admin"),createInput)).rejects.toMatchObject({status:409,code:"UNVALIDATED_INSTRUMENT"});
+    expect(mockTransaction).not.toHaveBeenCalled();
+  });
+  it("refuses a validated demo instrument in service mode",async()=>{
+    const validated=structuredClone(scale);validated.norm={...validated.norm,validated:true};
+    mockGetScale.mockResolvedValueOnce({id:SCALE_ID,definition:validated,status:"active"} as never);
+    vi.stubEnv("NOVA_MODE","service");vi.stubEnv("NOVA_PUBLIC_URL","https://nova.example.invalid");
+    await expect(createAssessment(actor("admin"),createInput)).rejects.toMatchObject({status:409,code:"DEMO_INSTRUMENT"});
+    expect(mockTransaction).not.toHaveBeenCalled();
   });
   it("refuses a respondent who is not a member of the family",async()=>{
     // The family must resolve, otherwise the failure would come from the family lookup
@@ -101,9 +113,8 @@ describe("creating an assessment",()=>{
     await expect(createAssessment(actor("admin"),createInput)).rejects.toMatchObject({code:"INELIGIBLE"});
   });
   it("returns the existing task instead of creating a duplicate pending one",async()=>{
-    client.query.mockImplementationOnce(async()=>({rows:[{id:FAMILY_ID}]}));
-    client.query.mockImplementationOnce(async()=>({rows:[{status:"active"}]}));
-    client.query.mockImplementationOnce(async()=>({rows:[{id:ASSESSMENT_ID}]}));
+    client.query.mockImplementation(async(sql,values)=>sql.includes("SELECT id,triad_round_id FROM assessments")
+      ? {rows:[{id:ASSESSMENT_ID}]} : defaultClientQuery(sql,values));
     await expect(createAssessment(actor("admin"),createInput)).resolves.toEqual({id:ASSESSMENT_ID});
   });
   const familyRow={id:FAMILY_ID,region:"CN",family_name:"Synthetic",child_name:"Synthetic child",birth_date:"2013-04-12",grade:"S2",guardian_label:"Mother",assigned_to:null,created_at:new Date()};
@@ -111,31 +122,65 @@ describe("creating an assessment",()=>{
     mockQuery.mockImplementation((async(sql:string)=>{
       const text=String(sql);
       if(text.includes("FROM families f WHERE f.id=$1"))return [familyRow];
-      if(text.includes("SELECT m.role FROM memberships"))return [{role:"parent"}];
+      if(text.includes("SELECT m.role FROM memberships"))return [{role:"student"}];
       return extra(text)??[];
     }) as never);
   };
+  it("assigns nova-family-demo for ages 8-17 when the triad scales are only demo-labelled",async()=>{
+    mockQuery.mockImplementation((async(sql:string,values?:unknown[])=>{
+      const text=String(sql);
+      if(text.includes("FROM families f WHERE f.id=$1"))return [{id:FAMILY_ID,region:"CN",family_name:"Synthetic",child_name:"Synthetic child",birth_date:"2013-04-12",grade:"S2",guardian_label:"Mother",assigned_to:null,created_at:new Date()}];
+      if(text.includes("SELECT m.role FROM memberships"))return [{role:"student"}];
+      if(text.includes("FROM scales WHERE status='active'")){
+        expect(text).toContain("norm'->>'validated'");
+        const [region,role,age]=values as ["CN"|"HK","student",number];
+        return [childScale,parentScale,teacherScale,oldChild].filter(item=>!item.demo&&item.norm.validated&&item.regions.includes(region)&&item.roles.includes(role)&&item.minAge<=age&&item.maxAge>=age).map(item=>({id:`${item.id}@${item.version}`}));
+      }
+      return [];
+    }) as never);
+    const created=await createAssessment(actor("admin"),createInput);
+    expect(created.id).toEqual(expect.any(String));
+    expect(clientCalls.some(sql=>sql.includes("INSERT INTO assessments"))).toBe(true);
+    expect([childScale,parentScale,teacherScale,oldChild].every(scale=>scale.demo===false&&scale.norm.validated===false&&effectiveDemo(scale))).toBe(true);
+  });
   it("still assigns the demo instrument when no official questionnaire is available",async()=>{
     const created=await createAssessment(actor("admin"),createInput);
     expect(created.id).toEqual(expect.any(String));
     expect(clientCalls.some(sql=>sql.includes("INSERT INTO assessments"))).toBe(true);
   });
-  it("refuses a demo instrument when this member already holds an official questionnaire",async()=>{
-    withFamily(sql=>sql.includes("s.definition->>'demo'")?[{id:"official-task"}]:undefined);
+  it("does not treat a held unvalidated questionnaire as an official instrument",async()=>{
+    withFamily(sql=>{
+      if(!sql.includes("JOIN scales")||!sql.includes("definition->>'demo'"))return undefined;
+      const blocks=!oldChild.demo&&(sql.includes("validated")?oldChild.norm.validated:true);
+      return blocks?[{id:"legacy-task"}]:[];
+    });
+    const created=await createAssessment(actor("staff"),createInput);
+    expect(created.id).toEqual(expect.any(String));
+    expect(oldChild.demo).toBe(false);
+    expect(oldChild.norm.validated).toBe(false);
+  });
+  it("refuses a demo instrument when this member already holds a validated official questionnaire",async()=>{
+    withFamily(sql=>{
+      if(!sql.includes("JOIN scales")||!sql.includes("definition->>'demo'"))return undefined;
+      expect(sql).toContain("validated");
+      return [{id:"official-task"}];
+    });
     await expect(createAssessment(actor("staff"),createInput)).rejects.toMatchObject({status:409,code:"DEMO_NOT_ASSIGNABLE"});
     expect(mockTransaction).not.toHaveBeenCalled();
   });
-  it("refuses a demo instrument when an official questionnaire already fits this member",async()=>{
-    withFamily(sql=>sql.includes("FROM scales WHERE status='active'")?[{id:"growth-parent@1.0.0"}]:undefined);
+  it("refuses a demo instrument when a validated official questionnaire already fits this member",async()=>{
+    withFamily(sql=>{
+      if(!sql.includes("FROM scales WHERE status='active'"))return undefined;
+      expect(sql).toContain("norm'->>'validated'");
+      return [{id:"official@1.0.0"}];
+    });
     await expect(createAssessment(actor("admin"),createInput)).rejects.toMatchObject({status:409,code:"DEMO_NOT_ASSIGNABLE"});
     expect(mockTransaction).not.toHaveBeenCalled();
   });
   it("enforces the retake interval for the same respondent and version",async()=>{
     const recent=new Date(Date.now()-2*86400000);
-    client.query.mockImplementationOnce(async()=>({rows:[{id:FAMILY_ID}]}));
-    client.query.mockImplementationOnce(async()=>({rows:[{status:"active"}]}));
-    client.query.mockImplementationOnce(async()=>({rows:[]}));
-    client.query.mockImplementationOnce(async()=>({rows:[{submitted_at:recent}]}));
+    client.query.mockImplementation(async(sql,values)=>sql.includes("SELECT submitted_at FROM assessments")
+      ? {rows:[{submitted_at:recent}]} : defaultClientQuery(sql,values));
     await expect(createAssessment(actor("admin"),createInput)).rejects.toMatchObject({code:"RETAKE_INTERVAL"});
   });
 });
@@ -216,12 +261,14 @@ describe("submitting",()=>{
   it("refuses a stale revision",async()=>{
     withOwn();
     client.query.mockImplementationOnce(async()=>({rows:[{id:FAMILY_ID}]}));
+    client.query.mockImplementationOnce(async()=>({rows:[{...currentActor,disabled:false,demo:false}]}));
     client.query.mockImplementationOnce(async()=>({rows:[{id:ASSESSMENT_ID,status:"pending",draft_revision:5,family_id:FAMILY_ID,respondent_id:USER_ID}]}));
     await expect(submitAssessment(actor("student"),ASSESSMENT_ID,submission)).rejects.toMatchObject({code:"DRAFT_CONFLICT"});
   });
   it("refuses to submit without both participation consents",async()=>{
     withOwn();
     client.query.mockImplementationOnce(async()=>({rows:[{id:FAMILY_ID}]}));
+    client.query.mockImplementationOnce(async()=>({rows:[{...currentActor,disabled:false,demo:false}]}));
     client.query.mockImplementationOnce(async()=>({rows:[{id:ASSESSMENT_ID,status:"pending",draft_revision:0,family_id:FAMILY_ID,respondent_id:USER_ID,respondent_role:"student"}]}));
     client.query.mockImplementationOnce(async()=>({rows:[{scopes:["assessment"]},{scopes:["parent_report"]}]}));
     await expect(submitAssessment(actor("student"),ASSESSMENT_ID,submission)).rejects.toMatchObject({code:"GUARDIAN_CONSENT_REQUIRED"});
@@ -229,6 +276,7 @@ describe("submitting",()=>{
   it("submits without a parent report and does not queue one until that consent exists",async()=>{
     withOwn();
     client.query.mockImplementation(async(sql:string)=>{
+      if(sql.includes("FROM users WHERE id=$1"))return {rows:[{...currentActor,disabled:false,demo:false}]};
       if(sql.includes("SELECT id FROM families"))return {rows:[{id:FAMILY_ID}]};
       if(sql.includes("SELECT a.*,r.id AS report_id"))return {rows:[{id:ASSESSMENT_ID,status:"pending",draft_revision:0,family_id:FAMILY_ID,respondent_id:USER_ID,respondent_role:"student"}]};
       if(sql.includes("AS scopes FROM consents WHERE family_id=$1"))return {rows:[{scopes:["assessment"]},{scopes:["sensitive_data"]}]};
@@ -244,6 +292,7 @@ describe("submitting",()=>{
       withOwn();
       client.query.mockReset();
       client.query.mockImplementation(async(sql:string)=>{
+        if(sql.includes("FROM users WHERE id=$1"))return {rows:[{...currentActor,disabled:false,demo:false}]};
         if(sql.includes("SELECT id FROM families"))return {rows:[{id:FAMILY_ID}]};
         if(sql.includes("SELECT a.*,r.id AS report_id"))return {rows:[{id:ASSESSMENT_ID,status:"pending",draft_revision:0,family_id:FAMILY_ID,respondent_id:USER_ID,respondent_role:"student"}]};
         if(sql.includes("AS scopes FROM consents WHERE family_id=$1"))return {rows};
@@ -258,13 +307,26 @@ describe("submitting",()=>{
   it("returns the existing result for an already-submitted assessment instead of re-scoring",async()=>{
     withOwn();
     client.query.mockImplementationOnce(async()=>({rows:[{id:FAMILY_ID}]}));
+    client.query.mockImplementationOnce(async()=>({rows:[{...currentActor,disabled:false,demo:false}]}));
     client.query.mockImplementationOnce(async()=>({rows:[{id:ASSESSMENT_ID,status:"published",draft_revision:0,family_id:FAMILY_ID,respondent_id:USER_ID,report_id:"r1"}]}));
     await expect(submitAssessment(actor("student"),ASSESSMENT_ID,submission)).resolves.toMatchObject({status:"published",reportId:"r1",phase:null});
   });
-  it("refuses a demo submission in service mode",async()=>{
+  it("refuses an unvalidated submission in service mode",async()=>{
     vi.stubEnv("NOVA_MODE","service");vi.stubEnv("NOVA_PUBLIC_URL","https://nova.example.invalid");
     withOwn();
-    await expect(submitAssessment(actor("student"),ASSESSMENT_ID,submission)).rejects.toMatchObject({code:"DEMO_INSTRUMENT"});
+    await expect(submitAssessment(actor("student"),ASSESSMENT_ID,submission)).rejects.toMatchObject({status:409,code:"UNVALIDATED_INSTRUMENT"});
+    expect(mockTransaction).not.toHaveBeenCalled();
+  });
+  it("refuses a validated demo submission in service mode",async()=>{
+    const validated=structuredClone(scale);validated.norm={...validated.norm,validated:true};
+    vi.stubEnv("NOVA_MODE","service");vi.stubEnv("NOVA_PUBLIC_URL","https://nova.example.invalid");
+    mockQuery.mockImplementation((async(sql:string)=>{
+      const text=String(sql);
+      if(text.includes("FROM assessments a JOIN scales s"))return [{id:ASSESSMENT_ID,status:"pending",definition:validated,draft_answers:{},draft_revision:0,family_id:FAMILY_ID,child_name:"Synthetic child",birth_date:"2013-04-12",respondent_role:"student",region:"CN"}];
+      return [];
+    }) as never);
+    await expect(submitAssessment(actor("student"),ASSESSMENT_ID,submission)).rejects.toMatchObject({status:409,code:"DEMO_INSTRUMENT"});
+    expect(mockTransaction).not.toHaveBeenCalled();
   });
 });
 
@@ -285,6 +347,7 @@ describe("retrying a failed report",()=>{
       return [];
     }) as never);
     client.query.mockImplementationOnce(async()=>({rows:[{id:FAMILY_ID,region:"CN",assigned_to:null}]}));
+    client.query.mockImplementationOnce(async()=>({rows:[{...currentActor,disabled:false,demo:false}]}));
     client.query.mockImplementationOnce(async()=>({rows:[{id:ASSESSMENT_ID,status:"published",family_id:FAMILY_ID,region:"CN"}]}));
     client.query.mockImplementationOnce(async()=>({rows:[{id:"job1",state:"done"}]}));
     client.query.mockImplementationOnce(async()=>({rows:[{scopes:["assessment","parent_report","sensitive_data"]}]}));
@@ -301,6 +364,7 @@ describe("retry locks and shared eligibility",()=>{
     }) as never);
     client.query.mockReset();
     client.query.mockImplementation(async(sql:string)=>{
+      if(sql.includes("FROM users WHERE id=$1"))return {rows:[{...currentActor,disabled:false,demo:false}]};
       if(sql.includes("FROM families"))return {rows:[{id:FAMILY_ID,region:"CN",assigned_to:options.assignedTo===undefined?USER_ID:options.assignedTo}]};
       if(sql.includes("SELECT * FROM assessments"))return {rows:[{id:ASSESSMENT_ID,family_id:FAMILY_ID,status:"failed",snapshot:{},answers:{},submitted_at:new Date(),...options.assessment}]};
       if(sql.includes("SELECT * FROM report_jobs"))return {rows:[{id:"job1",state:"failed",...options.job}]};
@@ -362,6 +426,7 @@ describe("submission phase follows parent-report consent",()=>{
     }) as never);
     client.query.mockImplementation(async(sql:string)=>{
       const text=String(sql);
+      if(text.includes("FROM users WHERE id=$1"))return {rows:[{...currentActor,disabled:false,demo:false}]};
       if(text.includes("SELECT id FROM families"))return {rows:[{id:FAMILY_ID}]};
       if(text.includes("SELECT a.*,r.id AS report_id"))return {rows:[row]};
       if(text===ACTIVE_CONSENT_ROWS_SQL)return {rows:scopes};
@@ -386,24 +451,24 @@ describe("submission phase follows parent-report consent",()=>{
 
   it("is not a consent hold while another triad role is still out",async()=>{
     const row=install({definition:childScale,role:"student",scopes:participation,submittedRoles:["student"]});
-    await expect(submitAssessment(actor("student"),ASSESSMENT_ID,{answers:previewAnswers(childScale,"calm"),acknowledged:true,revision:0})).resolves.toMatchObject({status:"queued",phase:null,reportId:null});
+    await expect(submitAssessment(actor("student"),ASSESSMENT_ID,{answers:previewAnswers(childScale,"calm"),acknowledged:true,revision:0})).resolves.toMatchObject({status:"queued",phase:"waiting",reportId:null});
     expect(client.query.mock.calls.some(([sql])=>String(sql).includes("INSERT INTO report_jobs"))).toBe(false);
     row.status="queued";
-    await expect(assessmentDetail(actor("student"),ASSESSMENT_ID,"zh-CN")).resolves.toMatchObject({phase:null});
+    await expect(assessmentDetail(actor("student"),ASSESSMENT_ID,"zh-CN")).resolves.toMatchObject({phase:"waiting"});
   });
 
   it("replays a partial triad submission without a consent hold and does not score it again",async()=>{
     install({definition:childScale,role:"student",status:"queued",scopes:participation,submittedRoles:["student"],snapshot:{score:{risk:false}}});
-    await expect(submitAssessment(actor("student"),ASSESSMENT_ID,{answers:previewAnswers(childScale,"calm"),acknowledged:true,revision:0})).resolves.toMatchObject({status:"queued",phase:null});
+    await expect(submitAssessment(actor("student"),ASSESSMENT_ID,{answers:previewAnswers(childScale,"calm"),acknowledged:true,revision:0})).resolves.toMatchObject({status:"queued",phase:"waiting"});
     expect(client.query.mock.calls.some(([sql])=>String(sql).includes("UPDATE assessments SET answers"))).toBe(false);
   });
 
   it("is not held when the finished triad has parent-report consent and a job",async()=>{
     const row=install({definition:teacherScale,role:"teacher",scopes:withReport,submittedRoles:["parent","student","teacher"],job:true});
-    await expect(submitAssessment(actor("teacher"),ASSESSMENT_ID,{answers:previewAnswers(teacherScale,"calm"),acknowledged:true,revision:0})).resolves.toMatchObject({status:"queued",phase:null,reportId:null});
+    await expect(submitAssessment(actor("teacher"),ASSESSMENT_ID,{answers:previewAnswers(teacherScale,"calm"),acknowledged:true,revision:0})).resolves.toMatchObject({status:"queued",phase:"reporting",reportId:null});
     expect(client.query.mock.calls.some(([sql])=>String(sql).includes("INSERT INTO report_jobs"))).toBe(true);
     row.status="queued";
-    await expect(assessmentDetail(actor("teacher"),ASSESSMENT_ID,"zh-HK")).resolves.toMatchObject({phase:null});
+    await expect(assessmentDetail(actor("teacher"),ASSESSMENT_ID,"zh-HK")).resolves.toMatchObject({phase:"reporting"});
   });
 
   it("returns consent for the 9-item demo when parent-report consent is missing",async()=>{

@@ -157,10 +157,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS families_join_code ON families(join_code) WHER
 CREATE TABLE IF NOT EXISTS staff_alerts(
  id uuid PRIMARY KEY,family_id uuid NOT NULL REFERENCES families(id) ON DELETE CASCADE,region text NOT NULL,
  assessment_id uuid,created_at timestamptz NOT NULL DEFAULT now(),
- viewed_at timestamptz,viewed_by uuid
+ viewed_at timestamptz,viewed_by uuid,resolved_at timestamptz,resolved_by uuid
 );
 ALTER TABLE staff_alerts ADD COLUMN IF NOT EXISTS viewed_at timestamptz;
 ALTER TABLE staff_alerts ADD COLUMN IF NOT EXISTS viewed_by uuid;
+ALTER TABLE staff_alerts ADD COLUMN IF NOT EXISTS resolved_at timestamptz;
+ALTER TABLE staff_alerts ADD COLUMN IF NOT EXISTS resolved_by uuid;
 CREATE UNIQUE INDEX IF NOT EXISTS staff_alerts_assessment ON staff_alerts(assessment_id) WHERE assessment_id IS NOT NULL;
 CREATE TABLE IF NOT EXISTS worker_heartbeats(
  region text PRIMARY KEY CHECK(region IN ('CN','HK')),worker_id text NOT NULL,

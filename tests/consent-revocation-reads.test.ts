@@ -97,6 +97,7 @@ describe("one revocation predicate for every consent read", () => {
     mockTransaction.mockImplementation((async (fn: (client: { query: (sql: string) => Promise<{ rows: unknown[] }> }) => Promise<unknown>) => fn({
       query: async (sql: string, params?: unknown[]) => {
         clientSql.push(sql);
+        if (sql.includes("FROM users WHERE id=$1")) return { rows: [{ id: ACTOR_ID, name: "Synthetic", role: "student", region: "CN", disabled: false, demo: false }] };
         if (sql.includes("SELECT id FROM families")) return { rows: [{ id: FAMILY_ID }] };
         if (sql.includes("SELECT a.*,r.id AS report_id")) return { rows: [{ id: ASSESSMENT_ID, status: "pending", draft_revision: 0, family_id: FAMILY_ID, respondent_id: ACTOR_ID, respondent_role: "student" }] };
         if (sql === ACTIVE_CONSENT_ROWS_SQL) return { rows: revokedLegacy };
@@ -123,6 +124,7 @@ describe("one revocation predicate for every consent read", () => {
     expect(mockQuery.mock.calls.some(([sql]) => sql === ACTIVE_CONSENT_ROWS_SQL)).toBe(true);
     mockTransaction.mockImplementation((async (fn: (client: { query: (sql: string) => Promise<{ rows: unknown[] }> }) => Promise<unknown>) => fn({
       query: async (sql: string) => {
+        if (sql.includes("FROM users WHERE id=$1")) return { rows: [{ id: ACTOR_ID, name: "Synthetic", role: "admin", region: "CN", disabled: false, demo: false }] };
         if (sql.includes("FROM families") && sql.includes("FOR UPDATE")) return { rows: [{ id: FAMILY_ID, region: "CN", assigned_to: ACTOR_ID }] };
         if (sql.includes("SELECT * FROM assessments")) return { rows: [{ id: ASSESSMENT_ID, family_id: FAMILY_ID, status: "failed", snapshot: {}, answers: {}, submitted_at: new Date() }] };
         if (sql.includes("SELECT * FROM report_jobs")) return { rows: [{ id: "job", state: "failed" }] };

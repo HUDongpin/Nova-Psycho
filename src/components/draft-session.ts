@@ -1,5 +1,6 @@
-import { api, ApiError, errorMessage, type Locale, type SubmissionPhase, type SurveyRecord } from "./api";
+import { api, ApiError, errorMessage, isAuthenticationLost, type Locale, type SubmissionPhase, type SurveyRecord } from "./api";
 import { copy } from "./copy";
+import type { CompletionIssue } from "../domain/completion";
 
 type Answers = Record<string, number | number[] | string>;
 export type DraftStatus = "saved" | "unsaved" | "saving" | "failed" | "conflict" | "submitting";
@@ -13,6 +14,8 @@ export interface DraftSnapshot {
   loggingOut: boolean;
   authenticationPaused: boolean;
   error: string | null;
+  completionAttempted: boolean;
+  completionIssues: CompletionIssue[];
 }
 const sameAnswers = (left: Answers, right: Answers) => {
   const keys = new Set([...Object.keys(left), ...Object.keys(right)]);
@@ -39,6 +42,8 @@ export class AssessmentDraftSession {
   private requests = new Set<AbortController>();
   private status: DraftStatus = "saved";
   private error: string | null = null;
+  private completionAttempted = false;
+  private completionIssues: CompletionIssue[] = [];
   private tail: Promise<void> = Promise.resolve();
   private timer: ReturnType<typeof setTimeout> | null = null;
   private listeners = new Set<() => void>();
@@ -62,7 +67,7 @@ export class AssessmentDraftSession {
     return () => { this.listeners.delete(listener); };
   };
   private makeSnapshot(): DraftSnapshot {
-    return { status: this.status, revision: this.revision, answers: { ...this.answers }, hasUnsavedChanges: this.generation !== this.savedGeneration || this.uncertainSubmission, conflict: this.conflict, submitting: this.submitting, loggingOut: this.loggingOut, authenticationPaused: this.authenticationPaused, error: this.error };
+    return { status: this.status, revision: this.revision, answers: { ...this.answers }, hasUnsavedChanges: this.generation !== this.savedGeneration || this.uncertainSubmission, conflict: this.conflict, submitting: this.submitting, loggingOut: this.loggingOut, authenticationPaused: this.authenticationPaused, error: this.error, completionAttempted: this.completionAttempted, completionIssues: structuredClone(this.completionIssues) };
   }
   private publish() {
     this.snapshot = this.makeSnapshot();
@@ -93,19 +98,33 @@ export class AssessmentDraftSession {
     if (!value) this.cancelTimer();
     else if (this.generation !== this.savedGeneration && !this.conflict && !this.submitting) this.schedule(locale);
   }
+  markCompletionAttempted() {
+    if (!this.acknowledged || this.consentRequired || this.conflict || this.submitting || this.completed || this.loggingOut || this.disposed || this.authenticationPaused || this.completionAttempted) return;
+    this.completionAttempted = true;
+    this.publish();
+  }
   update(answers: Answers, locale: Locale) {
     if (!this.acknowledged || this.consentRequired || this.conflict || this.submitting || this.completed || this.loggingOut || this.disposed || this.authenticationPaused || sameAnswers(this.answers, answers)) return;
     this.answers = { ...answers };
     this.generation += 1;
     this.status = "unsaved";
     this.error = null;
+    this.completionIssues = [];
     this.publish();
     this.schedule(locale);
   }
   private fail(error: unknown) {
-    if (error instanceof ApiError && error.status === 401) {
+    if (isAuthenticationLost(error)) {
       this.suspendAuthentication();
       this.onAuthenticationLost?.();
+      return;
+    }
+    if (error instanceof ApiError && error.code === "INCOMPLETE_TRIAD" && error.completionIssues?.length) {
+      this.completionAttempted = true;
+      this.completionIssues = structuredClone(error.completionIssues);
+      this.status = this.generation === this.savedGeneration ? "saved" : "unsaved";
+      this.error = null;
+      this.publish();
       return;
     }
     this.error = errorMessage(error);
@@ -175,6 +194,7 @@ export class AssessmentDraftSession {
     // The queue includes saves and submissions started before the exit click.
     return this.enqueue(async () => {
       this.requireCurrent(epoch);
+      if (this.uncertainSubmission) throw new Error(copy(locale)("logoutDraftFailed"));
       if (this.generation === this.savedGeneration) return;
       if (this.conflict) throw this.conflictError();
       if (!this.acknowledged || this.consentRequired) {
@@ -197,12 +217,14 @@ export class AssessmentDraftSession {
     for (const controller of this.requests) controller.abort();
     this.requests.clear();
     this.tail = Promise.resolve();
+    this.completionAttempted = false;
+    this.completionIssues = [];
+    this.snapshot = this.makeSnapshot();
   }
   suspendAuthentication() {
     if (this.disposed || this.authenticationPaused) return;
     this.authenticationPaused = true;
     this.epoch += 1;
-    this.uncertainSubmission ||= this.submitting;
     this.submitting = false;
     this.loggingOut = false;
     this.acknowledged = false;
@@ -220,7 +242,6 @@ export class AssessmentDraftSession {
     if (this.disposed || record.id !== this.id) return;
     this.authenticationPaused = false;
     this.acknowledged = false;
-    this.uncertainSubmission = false;
     this.submitting = false;
     this.loggingOut = false;
     this.observeServer(record);
@@ -232,8 +253,10 @@ export class AssessmentDraftSession {
   }
   observeServer(record: SurveyRecord) {
     if (this.disposed || record.id !== this.id) return;
+    // A pending read cannot resolve a POST that may still commit afterward.
+    if (!this.submitting && record.status !== "pending" && record.draftRevision >= this.revision) this.uncertainSubmission = false;
     this.consentRequired = record.consentRequired;
-    if (record.status !== "pending") { this.completed = true; this.cancelTimer(); }
+    if (record.status !== "pending") { this.completed = true; this.cancelTimer(); this.completionAttempted = false; this.completionIssues = []; }
     if (this.conflict) return;
     const dirty = this.generation !== this.savedGeneration;
     if ((record.draftRevision !== this.revision || record.status !== "pending") && dirty) {
@@ -243,12 +266,13 @@ export class AssessmentDraftSession {
     // A fresh read may replace a fully persisted local snapshot. It may never
     // rebase outstanding edits onto another writer's newer revision.
     if (!dirty) {
+      if (!sameAnswers(this.answers, record.draftAnswers)) this.completionIssues = [];
       this.revision = record.draftRevision;
       this.answers = { ...record.draftAnswers };
       this.status = "saved";
       this.error = null;
-      this.publish();
     }
+    this.publish();
   }
   async submit(locale: Locale) {
     const epoch = this.epoch;
@@ -269,12 +293,21 @@ export class AssessmentDraftSession {
         if (this.conflict) throw this.conflictError();
         const controller = new AbortController();
         this.requests.add(controller);
-        let result: { id: string; status: "queued" | "published"; reportId: string | null; phase?: SubmissionPhase };
+        let result: { id: string; status: "queued" | "published"; reportId: string | null; phase?: SubmissionPhase; safetyGuidance?: boolean };
+        const previouslyUncertain = this.uncertainSubmission;
+        this.uncertainSubmission = true;
+        this.publish();
         try {
           result = await api<typeof result>(`/api/assessments/${encodeURIComponent(this.id)}/submit`, locale, { method: "POST", body: { answers: { ...this.answers }, acknowledged: true, revision: this.revision }, signal: controller.signal });
+        } catch (error) {
+          if (this.current(epoch) && error instanceof ApiError && error.status >= 400 && error.status < 500 && error.status !== 408 && !isAuthenticationLost(error)) this.uncertainSubmission = previouslyUncertain;
+          throw error;
         } finally { this.requests.delete(controller); }
         this.requireCurrent(epoch);
+        this.uncertainSubmission = false;
         this.completed = true;
+        this.completionAttempted = false;
+        this.completionIssues = [];
         this.savedGeneration = this.generation;
         this.status = "saved";
         this.submitting = false;
@@ -283,7 +316,7 @@ export class AssessmentDraftSession {
       } catch (error) {
         if (this.current(epoch)) {
           // Preserve a possible accepted submission until a fresh GET confirms it.
-          if (!(error instanceof ApiError && error.status === 401)) this.submitting = false;
+          if (!isAuthenticationLost(error)) this.submitting = false;
           this.fail(error);
         }
         throw error;

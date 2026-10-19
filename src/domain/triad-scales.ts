@@ -198,7 +198,110 @@ function teacher(): ScaleDefinition {
   return define("teacher", "growth-teacher", "学生学习与身心发展观察", "请只报告您直接观察到的行为和频率，不推断家庭原因，也不做临床诊断。无法观察时请选择“不了解或不适用”。这份观察和家长、孩子的回答放在一起，给家长看一份报告。香港繁体是便于阅读的字形转换，不是另行验证的译本。", built);
 }
 
+function revisedParent(original: ScaleDefinition): ScaleDefinition {
+  const revised = structuredClone(original);
+  revised.version = "1.1.0";
+  const labels: Record<string, string> = {
+    p_care: "孩子主要由谁陪伴或照顾，平时有哪些照顾安排？",
+    q15_4: "孩子能安排任务的先后顺序，并估计任务大约需要多长时间。",
+    q24_4: "我会反思自己的应对方式是否让问题加重。",
+    q25_3: "我会区分“两件事有关联”和“一件事导致另一件事”，也避免把成绩变化只归因于一个因素。",
+    q28_3: "我会分析问题在什么情况下发生、哪些因素让它持续，以及哪些时候问题没有出现或较轻。"
+  };
+  const supplements: Record<string, { value: number; label: string }> = {
+    p_together: { value: 5, label: "其他共同生活安排（选填）" },
+    p_grade: { value: 6, label: "其他年级（选填）" },
+    p_curriculum: { value: 6, label: "其他课程体系（选填）" },
+    p_care: { value: 7, label: "其他照顾安排（选填）" },
+    p_changes: { value: 8, label: "其他重要变化（选填）" },
+    p_focus: { value: 11, label: "其他希望改善的方面（选填）" },
+    q31: { value: 10, label: "其他需要的支持（选填）" }
+  };
+  revised.items = revised.items.flatMap(item => {
+    if (labels[item.id]) item.label = pair(labels[item.id]);
+    if (item.id === "p_support") item.choices.find(choice => choice.value === 6)!.label = pair("亲子沟通与协作支持");
+    const supplement = supplements[item.id];
+    if (!supplement) return [item];
+    const detail: ScaleItem = {
+      id: `${item.id}_other`, label: pair(supplement.label), kind: "text", choices: [], reverse: false,
+      required: false, report: "staff", supplementFor: item.id, showIf: { itemId: item.id, anyOf: [supplement.value] },
+      page: item.page, pageTitle: item.pageTitle
+    };
+    return [item, detail];
+  });
+  return revised;
+}
+
+const CHILD_SAFETY_IDS = ["c14", "c15", "c16"] as const;
+
+function isChildSafetyId(id: string): id is (typeof CHILD_SAFETY_IDS)[number] {
+  return (CHILD_SAFETY_IDS as readonly string[]).includes(id);
+}
+
+function markExclusive(scale: ScaleDefinition, itemId: string, labels: readonly string[]): void {
+  const item = scale.items.find(entry => entry.id === itemId);
+  if (!item) throw new Error(`Missing ${itemId}`);
+  for (const label of labels) {
+    const choice = item.choices.find(entry => entry.label["zh-CN"] === label);
+    if (!choice) throw new Error(`Missing ${itemId} choice ${label}`);
+    choice.exclusive = true;
+  }
+}
+
+function addRisk(scale: ScaleDefinition, itemId: string, values: number[], message: string): void {
+  scale.riskRules.push({ itemId, values, message: pair(message) });
+}
+
+/** Safety follow-up for new child assignments. The 1.0.0 row stays unchanged. */
+function childSafetyRevision(original: ScaleDefinition): ScaleDefinition {
+  const revised = structuredClone(original);
+  revised.version = "1.1.0";
+  const safetyItems = CHILD_SAFETY_IDS.map(id => {
+    const item = revised.items.find(entry => entry.id === id);
+    if (!item) throw new Error(`Missing ${id}`);
+    return item;
+  });
+  revised.items = revised.items.filter(item => !isChildSafetyId(item.id));
+  const insertAt = revised.items.findIndex(item => item.id === "c7_1");
+  if (insertAt < 0) throw new Error("Missing c7_1");
+  for (const item of safetyItems) {
+    item.page = "safety";
+    item.pageTitle = pair("先确认安全");
+    item.noAutoAdvance = true;
+    if (item.id === "c15" || item.id === "c16") item.showIf = { itemId: "c14", anyOf: [1, 2, 3, 4, 5, 7, 8] };
+  }
+  revised.items.splice(insertAt, 0, ...safetyItems);
+  markExclusive(revised, "c14", ["以上均没有", "不确定", "不愿回答"]);
+  addRisk(revised, "c14", [7], "孩子对安全情况选择了“不确定”。请工作人员先查看，并确认孩子是否安全。如有眼前危险，请联系当地紧急服务。");
+  addRisk(revised, "c14", [8], "孩子没有回答安全情况。请工作人员先查看，不要把未回答当成没有危险。如有眼前危险，请联系当地紧急服务。");
+  return revised;
+}
+
+/** Unsure and declined checklist answers alert staff. Stored earlier versions are not rewritten. */
+function checklistSafetyRevision(original: ScaleDefinition, version: string, itemId: string, labels: readonly string[], rules: readonly (readonly [number[], string])[]): ScaleDefinition {
+  const revised = structuredClone(original);
+  revised.version = version;
+  markExclusive(revised, itemId, labels);
+  for (const [values, message] of rules) addRisk(revised, itemId, values, message);
+  return revised;
+}
+
 export const childScale = child();
-export const parentScale = parent();
+export const parentScaleV1 = parent();
+export const parentScale = revisedParent(parentScaleV1);
 export const teacherScale = teacher();
-export const triadScales = [childScale, parentScale, teacherScale];
+export const childScaleSafety = childSafetyRevision(childScale);
+export const teacherScaleSafety = checklistSafetyRevision(teacherScale, "1.1.0", "t15", ["以上均没有", "不确定", "不便在本问卷中说明"], [
+  [[7], "教师对需要及时处理的情况选择了“不确定”。请先按学校现有的保护流程核实，不要只等这份报告。"],
+  [[8], "教师没有在问卷中说明需要及时处理的情况。请先按学校现有的保护流程核实，不要把未说明当成没有危险。"]
+]);
+export const parentScaleSafety = checklistSafetyRevision(parentScale, "1.2.0", "q22", ["以上均没有", "不确定", "不愿回答"], [
+  [[8], "家长对需要及时关注的情况选择了“不确定”。请工作人员先确认孩子是否安全。如有眼前危险，请联系当地紧急服务。"],
+  [[9], "家长没有回答需要及时关注的情况。请工作人员先查看，不要把未回答当成没有危险。如有眼前危险，请联系当地紧急服务。"]
+]);
+export const triadScales = [childScale, childScaleSafety, parentScaleV1, parentScale, parentScaleSafety, teacherScale, teacherScaleSafety];
+export const currentTriadScaleIds = {
+  parent: `${parentScaleSafety.id}@${parentScaleSafety.version}`,
+  student: `${childScaleSafety.id}@${childScaleSafety.version}`,
+  teacher: `${teacherScaleSafety.id}@${teacherScaleSafety.version}`
+} as const;

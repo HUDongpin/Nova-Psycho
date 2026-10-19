@@ -17,6 +17,7 @@ const FAMILY_ID="11111111-2222-4333-8444-555555555555";
 const USER_ID="99999999-8888-4777-8666-555555555555";
 const actor=(role:Role,over:Partial<Actor>={}):Actor=>({id:USER_ID,name:"Synthetic",role,region:"CN",...over});
 const familyRow={id:FAMILY_ID,region:"CN",family_name:"Synthetic family",child_name:"Synthetic child",birth_date:"2013-04-12",grade:"S2",guardian_label:"Mother",assigned_to:null,created_at:new Date()};
+let currentRole:Role="admin";
 
 const clientCalls:string[]=[];
 async function answerClient(sql:string,_params?:unknown[]):Promise<{rows:unknown[]}>{
@@ -26,17 +27,23 @@ async function answerClient(sql:string,_params?:unknown[]):Promise<{rows:unknown
   if(String(sql).includes("parent_member"))return {rows:[{parent_member:1}]};
   if(String(sql).includes("SELECT id,region,assigned_to FROM families"))return {rows:[familyRow]};
   if(String(sql).includes("SELECT id,region,birth_date,join_code FROM families"))return {rows:[{...familyRow,join_code:null}]};
-  if(String(sql).includes("SELECT id,name,role,region,disabled,demo FROM users"))return {rows:[{...actor("admin"),disabled:false,demo:false}]};
+  if(String(sql).includes("SELECT id,name,role,region,disabled,demo FROM users"))return {rows:[{...actor(currentRole),disabled:false,demo:false}]};
+  if(String(sql).includes("SELECT id FROM users"))return {rows:await query(sql,_params)};
   if(String(sql).includes("SELECT id FROM families"))return {rows:[{id:FAMILY_ID}]};
   if(String(sql).includes("SELECT family_id FROM invitations"))return {rows:[{family_id:FAMILY_ID}]};
   if(String(sql).includes("FOR UPDATE OF i"))return {rows:[{family_id:FAMILY_ID,role:"parent"}]};
   if(String(sql).includes("SELECT user_id FROM memberships"))return {rows:[{user_id:USER_ID}]};
+  if(String(sql).includes("SELECT 1 FROM memberships"))return {rows:[{exists:true}]};
   if(String(sql).includes("SELECT pdf_keys FROM reports"))return {rows:[{pdf_keys:{"zh-CN":"a.zh-CN.pdf.enc"}}]};
   return {rows:[]};
 }
-const client={query:vi.fn(answerClient)};
+const client={
+  // Declared with a params argument so mock.calls exposes the bound values.
+  query:vi.fn(answerClient)
+};
 
 function stubDb(){
+  currentRole="admin";
   mockQuery.mockReset();mockTransaction.mockReset();client.query.mockReset();clientCalls.length=0;
   client.query.mockImplementation(answerClient);
   mockTransaction.mockImplementation((async(fn:(c:unknown)=>Promise<unknown>)=>fn(client)) as never);
@@ -69,6 +76,7 @@ describe("creating a family",()=>{
   });
   it("accepts an administrator and a staff member",async()=>{
     await expect(createFamily(actor("admin"),validFamily)).resolves.toMatchObject({id:expect.any(String)});
+    currentRole="staff";
     await expect(createFamily(actor("staff"),validFamily)).resolves.toMatchObject({id:expect.any(String)});
   });
   // Two layers reject a bad date: the schema enforces the shape, the handler enforces
@@ -84,8 +92,9 @@ describe("creating a family",()=>{
     await expect(createFamily(actor("admin"),{...validFamily,birthDate:"1990-01-01"})).rejects.toMatchObject({code:"INVALID_BIRTHDATE"});
   });
   it("assigns staff to themselves rather than trusting the payload",async()=>{
+    currentRole="staff";
     await createFamily(actor("staff"),{...validFamily,assignedTo:"11111111-2222-4333-8444-555555555555"});
-    const insert=mockQuery.mock.calls.find(call=>String(call[0]).includes("INSERT INTO families"));
+    const insert=client.query.mock.calls.find(call=>String(call[0]).includes("INSERT INTO families"));
     expect(insert?.[1]).toContain(USER_ID);
   });
   it("refuses an assignee who is not staff in this region",async()=>{
@@ -114,15 +123,17 @@ describe("assigning an existing family",()=>{
     expect(mockTransaction).not.toHaveBeenCalled();
   });
   it("locks the regional family and valid staff before updating and auditing",async()=>{
-    client.query.mockResolvedValueOnce({rows:[{id:FAMILY_ID}]}).mockResolvedValueOnce({rows:[{id:USER_ID}]});
+    client.query.mockResolvedValueOnce({rows:[{id:FAMILY_ID}]}).mockResolvedValueOnce({rows:[{id:USER_ID}]}).mockResolvedValueOnce({rows:[{...actor("admin"),disabled:false,demo:false}]});
     await expect(assignFamily(actor("admin"),FAMILY_ID,{assignedTo:USER_ID})).resolves.toEqual({id:FAMILY_ID,assignedTo:USER_ID});
     const calls=client.query.mock.calls;
     expect(calls[0][0]).toContain("region=$2 FOR UPDATE");
     expect(calls[0][1]).toEqual([FAMILY_ID,"CN"]);
     expect(calls[1][0]).toContain("role='staff' AND NOT disabled FOR SHARE");
     expect(calls[1][1]).toEqual([USER_ID,"CN"]);
-    expect(calls[2][0]).toContain("UPDATE families SET assigned_to");
-    expect(calls[3][0]).toContain("family.assigned");
+    expect(calls[2][0]).toContain("FROM users WHERE id=$1 FOR UPDATE");
+    expect(calls[2][1]).toEqual([USER_ID]);
+    expect(calls[3][0]).toContain("UPDATE families SET assigned_to");
+    expect(calls[4][0]).toContain("family.assigned");
     expect(mockQuery).not.toHaveBeenCalled();
   });
   it("hides missing and foreign-region families before looking up the assignee",async()=>{
@@ -152,6 +163,7 @@ describe("recording guardian consent",()=>{
     await expect(recordConsent(actor("staff"),FAMILY_ID,grant("assessment"))).rejects.toMatchObject({code:"CONSENT_REFERENCE_REQUIRED"});
   });
   it("accepts a reference from staff",async()=>{
+    currentRole="staff";
     await expect(recordConsent(actor("staff"),FAMILY_ID,grant("assessment",{reference:"SYNTHETIC-REF"}))).resolves.toEqual({ok:true});
   });
   it("does not demand a reference from a parent giving online consent",async()=>{
@@ -337,7 +349,7 @@ describe("deleting a family",()=>{
 });
 
 describe("invitations",()=>{
-  const issuanceOutcome=(issuer:Actor,role:"parent"|"student"|"teacher")=>createInvitation(issuer,FAMILY_ID,{role}).then(()=>({allowed:true}),error=>({status:error.status,code:error.code}));
+  const issuanceOutcome=(issuer:Actor,role:"parent"|"student"|"teacher")=>{currentRole=issuer.role;return createInvitation(issuer,FAMILY_ID,{role}).then(()=>({allowed:true}),error=>({status:error.status,code:error.code}));};
   it("refuses a parent or student issuing one",async()=>{
     for(const role of ["parent","student","teacher"] as const){
       await expect(createInvitation(actor(role),FAMILY_ID,{role:"parent"})).rejects.toMatchObject({code:"ROLE_DENIED"});
@@ -361,6 +373,7 @@ describe("invitations",()=>{
     expect(mockQuery.mock.calls.some(([sql])=>String(sql).includes("invitation.created"))).toBe(false);
   });
   it.each(["parent","student","teacher"] as const)("allows the assigned staff member to invite a %s after locking the family",async role=>{
+    currentRole="staff";
     client.query.mockResolvedValueOnce({rows:[{...familyRow,assigned_to:USER_ID}]});
     await expect(createInvitation(actor("staff"),FAMILY_ID,{role})).resolves.toMatchObject({url:expect.stringContaining("/invite#token=")});
     expect(client.query.mock.calls[0][0]).toContain("region=$2 FOR UPDATE");

@@ -3,7 +3,7 @@ import { demoAdvice, demoTemplate } from "../src/domain/demo";
 import { reportHtml } from "../src/domain/report-html";
 import { scoreAssessment } from "../src/domain/scoring";
 import { composeTriad, previewAnswers, type TriadSource } from "../src/domain/triad-report";
-import { childScale, parentScale, teacherScale } from "../src/domain/triad-scales";
+import { childScale, parentScale, parentScaleV1, teacherScale } from "../src/domain/triad-scales";
 import type { Locale, ReportPayload, ScaleDefinition, TriadReport } from "../src/domain/types";
 
 const locales: Locale[] = ["zh-CN", "zh-HK"];
@@ -183,20 +183,22 @@ describe("portrait, safety and privacy boundaries", () => {
     }
   });
 
-  it("preserves frozen answers and scores, safety-first HTML, and child/staff writing privacy", () => {
-    const sources = [source(childScale, {}, true), source(parentScale, {}, true), source(teacherScale, {}, true)];
+  it.each([["1.0.0", parentScaleV1], ["1.1.0", parentScale]] as const)("preserves frozen answers and scores, safety-first HTML, and child/staff writing privacy for parent %s", (version, parentDefinition) => {
+    const sources = [source(childScale, {}, true), source(parentDefinition, {}, true), source(teacherScale, {}, true)];
     for (const from of sources) for (const item of from.scale.items) {
       if (item.kind === "text" && from.answers[item.id] !== undefined) from.answers[item.id] = `${from.role}-${item.report}-SYNTHETIC_PRIVATE`;
     }
     const before = JSON.stringify(sources);
     const report = composeTriad(sources);
     expect(JSON.stringify(sources)).toBe(before);
-    expect(sources.every(item => item.scale.version === "1.0.0")).toBe(true);
+    expect(sources.map(item => item.scale.version)).toEqual(["1.0.0", version, "1.0.0"]);
+    expect(sources.every(item => item.scale.demo === false && item.scale.norm.validated === false)).toBe(true);
     expect(report.safety.length).toBeGreaterThan(0);
     for (const collection of [report.situations, report.priorities, report.words]) expect(collection.every(item => item.role !== "student")).toBe(true);
     for (const locale of locales) {
       const html = reportHtml(payload(sources), locale);
       expect(html.indexOf(locale === "zh-CN" ? "请先关注安全" : "請先關注安全")).toBeLessThan(html.indexOf(locale === "zh-CN" ? "三方看到的情况" : "三方看到的情況"));
+      expect(html).toContain(locale === "zh-CN" ? "演示报告" : "示範報告");
       expect(html).not.toContain("student-words-SYNTHETIC_PRIVATE");
       expect(html).not.toContain("staff-SYNTHETIC_PRIVATE");
       expect(html).toContain("parent-words-SYNTHETIC_PRIVATE");

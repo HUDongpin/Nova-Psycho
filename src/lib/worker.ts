@@ -4,11 +4,12 @@ import { selectNarrative } from "../domain/narrative";
 import { composeTriad,TRIAD_BUNDLE,triadRolesReady } from "../domain/triad-report";
 import { compareResults } from "../domain/scoring";
 import { reportHtml } from "../domain/report-html";
+import { normValidated } from "../domain/validation";
 import { ACTIVE_CONSENT_ROWS_SQL, PARENT_REPORT_SCOPE, consentScopePredicate, consentScopeGrantedSql, hasGranted } from "./consent";
-import { getConfig } from "./config";
+import { getConfig, isDemoMode } from "./config";
 import { query,transaction } from "./db";
 import { renderPdf } from "./pdf";
-import { listPrivatePdfKeys,removePrivatePdf,writePrivatePdf } from "./storage";
+import { cleanAbandonedPrivatePdfTemps,listPrivatePdfKeys,removePrivatePdf,writePrivatePdf } from "./storage";
 import { validateId } from "./http";
 export type ReportJobResult=
   |{status:"published"}
@@ -23,6 +24,7 @@ export async function processDeletionJobs():Promise<void>{
 }
 export async function cleanOrphanReports():Promise<void>{
   if(getConfig().reportStorage==="database")return;
+  await cleanAbandonedPrivatePdfTemps();
   for(const key of await listPrivatePdfKeys()){
     const id=key.slice(0,36);const rows=await query("SELECT a.status,r.pdf_keys FROM assessments a LEFT JOIN reports r ON r.assessment_id=a.id WHERE a.id=$1",[id]);
     const r=rows[0];if(!r||r.status==="failed"||(r.pdf_keys&&!Object.values(r.pdf_keys).includes(key)))await removePrivatePdf(key);
@@ -70,14 +72,23 @@ async function runReportJob(jobId?:string):Promise<ReportJobResult>{
   const keys:Partial<Record<Locale,string>>={};
   const pdfs:Partial<Record<Locale,Buffer>>={};
   let unboundTriad=false;
+  let blockCode:string|null=null;
+  const rejectSnapshot=(item:AssessmentSnapshot|null|undefined)=>{
+    if(isDemoMode())return;
+    const code=!normValidated(item?.scale?.norm)?"UNVALIDATED_INSTRUMENT":item?.scale?.demo?"DEMO_INSTRUMENT":null;
+    if(!code)return;
+    blockCode=code;
+    throw new Error(code==="UNVALIDATED_INSTRUMENT"?"Unvalidated instrument rejected in service mode":"Demo snapshot rejected in service mode");
+  };
   try{
     if(job.attempt_limit_reached)throw new Error("Report attempt limit reached");
     const rows=await query("SELECT * FROM assessments WHERE id=$1 AND region=$2",[job.assessment_id,getConfig().region]);
     const assessment=rows[0];if(!assessment?.snapshot)throw new Error("Missing assessment snapshot");
     const snapshot=assessment.snapshot as AssessmentSnapshot;
-    if(snapshot.scale.demo&&getConfig().mode!=="demo")throw new Error("Demo snapshot rejected in service mode");
+    rejectSnapshot(snapshot);
     let payload:ReportPayload;
     let publishIds=[assessment.id as string];
+    const sources:AssessmentSnapshot[]=[snapshot];
     if(snapshot.scale.bundle===TRIAD_BUNDLE){
       unboundTriad=!assessment.triad_round_id||!job.source_assessment_ids;
       if(unboundTriad)throw new Error("Triad sources require review");
@@ -85,6 +96,8 @@ async function runReportJob(jobId?:string):Promise<ReportJobResult>{
       if(sourceIds.length!==3||new Set(sourceIds).size!==3||!sourceIds.includes(assessment.id))throw new Error("Invalid triad sources");
       const siblings=await query("SELECT id,respondent_role,answers,snapshot,submitted_at FROM assessments WHERE id=ANY($1::uuid[]) AND family_id=$2 AND region=$3 AND triad_round_id=$4 AND submitted_at IS NOT NULL",[sourceIds,assessment.family_id,getConfig().region,assessment.triad_round_id]);
       if(siblings.length!==3||!triadRolesReady(siblings.map(row=>row.respondent_role))||siblings.some(row=>row.snapshot?.scale?.bundle!==TRIAD_BUNDLE))throw new Error("Triad incomplete");
+      for(const row of siblings)rejectSnapshot(row.snapshot as AssessmentSnapshot);
+      sources.splice(0,sources.length,...siblings.map(row=>row.snapshot as AssessmentSnapshot));
       const triad=composeTriad(siblings.map(row=>{const stored=row.snapshot as AssessmentSnapshot;return {role:row.respondent_role,scale:stored.scale,answers:row.answers as Record<string,StoredAnswer>,score:stored.score,submittedAt:new Date(row.submitted_at).toISOString()};}));
       payload={...snapshot,selectedAdviceIds:[],generationMode:"template",fallbackReason:"triad_combined",aiModel:null,comparison:{available:false,reason:"first_assessment"},triad,score:{...snapshot.score,risk:triad.safety.length>0,riskMessages:triad.safety}};
       publishIds=siblings.map(row=>row.id);
@@ -96,6 +109,7 @@ async function runReportJob(jobId?:string):Promise<ReportJobResult>{
       const prior=previous[0];
       payload={...snapshot,...selection,comparison:compareResults(snapshot.score,prior?(prior.snapshot as AssessmentSnapshot).score:null,prior?new Date(prior.submitted_at).toISOString():undefined)};
     }
+    if(sources.some(item=>!normValidated(item?.scale?.norm)))payload={...payload,score:{...payload.score,demo:true}};
     const htmlDocuments={"zh-CN":reportHtml(payload,"zh-CN"),"zh-HK":reportHtml(payload,"zh-HK")};
     for(const locale of ["zh-CN","zh-HK"] as const){
       const key=`${assessment.id}.${token}.${locale}.pdf.enc`;keys[locale]=key;
@@ -128,17 +142,29 @@ async function runReportJob(jobId?:string):Promise<ReportJobResult>{
     }
     return {status:"published"};
   }catch{
-    if(getConfig().reportStorage==="filesystem")for(const key of Object.values(keys))await removePrivatePdf(key).catch(()=>{});
-    const terminal=unboundTriad||job.attempts>=3;
-    const changed=await query(`WITH changed AS (
+    const terminal=unboundTriad||blockCode!==null||job.attempts>=3;
+    const reason=blockCode??(unboundTriad?"TRIAD_SOURCES_UNBOUND":job.attempt_limit_reached?"REPORT_ATTEMPTS_EXHAUSTED":"REPORT_GENERATION_FAILED");
+    const failureSql=`WITH changed AS (
       UPDATE report_jobs SET state=$1,lease_until=NULL,available_at=now()+interval '10 seconds',last_error_code=$4
       WHERE id=$2 AND claim_token=$3 AND state='running' RETURNING assessment_id,source_assessment_ids,available_at
     ), failed_assessments AS (
       UPDATE assessments SET status='failed' WHERE $1='failed' AND status='queued'
         AND id IN (SELECT unnest(COALESCE(source_assessment_ids,ARRAY[assessment_id])) FROM changed) RETURNING id
-    ) SELECT assessment_id,source_assessment_ids,available_at FROM changed`,[terminal?"failed":"ready",job.id,token,unboundTriad?"TRIAD_SOURCES_UNBOUND":job.attempt_limit_reached?"REPORT_ATTEMPTS_EXHAUSTED":"REPORT_GENERATION_FAILED"]);
+    ) SELECT assessment_id,source_assessment_ids,available_at FROM changed`;
+    const failureValues=[terminal?"failed":"ready",job.id,token,reason];
+    const changed=terminal?await transaction(async client=>{
+      await client.query("SELECT f.id FROM families f JOIN assessments a ON a.family_id=f.id WHERE a.id=$1 AND f.region=$2 FOR UPDATE OF f",[job.assessment_id,getConfig().region]);
+      return (await client.query(failureSql,failureValues)).rows;
+    }):await query(failureSql,failureValues);
+    if(getConfig().reportStorage==="filesystem"&&Object.keys(keys).length){
+      // COMMIT may succeed even if its response is lost. The job update above
+      // waits for that transaction before deciding which files are unreferenced.
+      const published=changed.length?[]:await query<{pdf_keys:Record<Locale,string>}>("SELECT pdf_keys FROM reports WHERE assessment_id=$1 AND region=$2",[job.assessment_id,getConfig().region]);
+      const referenced=new Set(Object.values(published[0]?.pdf_keys??{}));
+      for(const key of Object.values(keys))if(!referenced.has(key))await removePrivatePdf(key).catch(()=>{});
+    }
     console.error("nova_report_generation_failed",{region:getConfig().region,attempt:job.attempts});
-    if(!changed[0])return {status:"already_done"};
+    if(!changed[0])return unclaimedJobResult(job.id);
     return terminal?{status:"terminal"}:{status:"retry_at",retryAt:new Date(changed[0].available_at??Date.now()+10000).toISOString()};
   }
 }

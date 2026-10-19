@@ -41,11 +41,14 @@ describe("familyFor",()=>{
     await expect(rejection).rejects.toThrow(/家庭|权限/);
   });
 
-  it("binds assigned_to to the staff actor",async()=>{
+  it("binds assigned_to to the staff actor and keeps the unassigned alert fallback until resolve",async()=>{
     mockQuery.mockResolvedValueOnce([familyRow]);
     await familyFor(actor("staff"),FAMILY_ID);
     const [sql,values]=mockQuery.mock.calls[0];
     expect(String(sql)).toContain("f.assigned_to=");
+    expect(String(sql)).toContain("f.assigned_to IS NULL");
+    expect(String(sql)).toContain("sa.resolved_at IS NULL");
+    expect(String(sql)).not.toContain("viewed_at");
     expect(values).toContain(USER_ID);
   });
 

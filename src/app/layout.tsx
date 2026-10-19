@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { WebAnalytics } from "@/components/analytics";
 import { LocalizedClerkProvider } from "@/components/localized-clerk-provider";
 import { getAuthProvider, getClerkConfig } from "@/lib/auth-provider";
 import "survey-core/survey-core.min.css";
@@ -8,5 +9,5 @@ export const dynamic = "force-dynamic";
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   const locale = process.env.NOVA_REGION === "HK" ? "zh-HK" : "zh-CN";
   const content = getAuthProvider() === "clerk" ? <LocalizedClerkProvider publishableKey={getClerkConfig().publishableKey} initialLocale={locale}>{children}</LocalizedClerkProvider> : children;
-  return <html lang={locale}><body>{content}</body></html>;
+  return <html lang={locale}><body>{content}<WebAnalytics /></body></html>;
 }
