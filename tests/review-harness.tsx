@@ -1,11 +1,19 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useState, useSyncExternalStore } from "react";
 import InvitePage from "@/app/invite/page";
 import RecoverPage from "@/app/recover/page";
 
+function requestedView(): "invite" | "recover" {
+  return new URL(window.location.href).searchParams.get("view") === "recover" ? "recover" : "invite";
+}
+function subscribeToLocation(): () => void {
+  return () => undefined;
+}
+
 // Copy only into an isolated development checkout for lifecycle tests, never a release.
 export default function ReviewHarness() {
-  const [view, setView] = useState<"invite" | "recover" | null>(null);
-  useEffect(() => { setView(new URL(window.location.href).searchParams.get("view") === "recover" ? "recover" : "invite"); }, []);
-  return <><button id="review-unmount" onClick={() => setView(null)}>Unmount tested component</button><div id="review-sentinel">Independent host remains mounted</div>{view === "invite" ? <InvitePage /> : view === "recover" ? <RecoverPage /> : null}</>;
+  const requested = useSyncExternalStore(subscribeToLocation, requestedView, () => "invite" as const);
+  const [dismissed, setDismissed] = useState(false);
+  const view = dismissed ? null : requested;
+  return <><button id="review-unmount" onClick={() => setDismissed(true)}>Unmount tested component</button><div id="review-sentinel">Independent host remains mounted</div>{view === "invite" ? <InvitePage /> : <RecoverPage />}</>;
 }

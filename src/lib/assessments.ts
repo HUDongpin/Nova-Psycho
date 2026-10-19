@@ -36,6 +36,7 @@ type SubmissionPhase = "waiting" | "reporting" | "consent" | null;
 interface PhaseReader { query(sql:string,values?:unknown[]):Promise<{rows:Record<string,unknown>[]}> }
 // Same predicate queueTriadReport uses, so a round is "ready" only when parent, student and teacher have all submitted.
 const TRIAD_SUBMITTED_ROLES_SQL="SELECT id,respondent_role FROM assessments WHERE family_id=$1 AND region=$2 AND triad_round_id=$3 AND submitted_at IS NOT NULL ORDER BY respondent_role";
+const REPORT_JOB_FOR_ASSESSMENT_SQL="SELECT id FROM report_jobs WHERE assessment_id=$1 OR $1=ANY(source_assessment_ids) LIMIT 1";
 function poolPhaseReader():PhaseReader{
   return {query:async(sql,values)=>({rows:await query(sql,values??[]) as Record<string,unknown>[]})};
 }
@@ -45,9 +46,9 @@ function clientPhaseReader(client:PoolClient):PhaseReader{
 function safetyGuidanceFor(snapshot:AssessmentSnapshot|null|undefined):boolean{
   return snapshot?.score?.risk===true;
 }
-// Matches the workspace list. A missing parent_report grant holds a published
-// assessment, a single-role submission, or a finished triad round. A triad that
-// still waits on another role stays "waiting" until that round is ready.
+// "waiting" is only the other triad roles. A finished round, or a single-role
+// submission, with no parent_report grant is "consent" even though no job exists.
+// A job that consent still allows is "reporting", including the 9-item demo.
 // Effective scopes already drop purposes named in consent_scope_revocations.
 async function submissionPhase(db:PhaseReader,assessmentId:string,familyId:string,roundId:string|null,status:string,scale:ScaleDefinition):Promise<SubmissionPhase>{
   if(status!=="queued"&&status!=="published")return null;
@@ -58,8 +59,9 @@ async function submissionPhase(db:PhaseReader,assessmentId:string,familyId:strin
   const roundReady=triadRolesReady(submitted.rows.map(row=>String(row.respondent_role)));
   if(status==="published"&&!parentReport)return "consent";
   if(status==="queued"&&!parentReport&&(!triad||roundReady))return "consent";
-  if(!triad||status!=="queued")return null;
-  const jobs=await db.query("SELECT id FROM report_jobs WHERE assessment_id=$1 OR $1=ANY(source_assessment_ids) LIMIT 1",[assessmentId]);
+  if(status!=="queued")return null;
+  const jobs=await db.query(REPORT_JOB_FOR_ASSESSMENT_SQL,[assessmentId]);
+  if(!triad)return jobs.rows[0]?"reporting":null;
   return jobs.rows[0]?"reporting":"waiting";
 }
 async function refuseDemoBesideOfficial(familyId:string,respondentId:string,region:"CN"|"HK",role:RespondentRole,age:number,client?:PoolClient){

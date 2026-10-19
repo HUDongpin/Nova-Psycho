@@ -14,7 +14,8 @@ const config: NextConfig = {
   poweredByHeader: false,
   agentRules: false,
   devIndicators: false,
-  logging: { incomingRequests: { ignore: [/\/api\/invite/] } },
+  // Recovery and invitation entry points may still carry a legacy ?token= query; keep them out of dev request logs.
+  logging: { incomingRequests: { ignore: [/^\/(?:recover|invite|api\/recovery|api\/invite)(?:[/?#]|$)/] } },
   async headers() {
     return [{ source: "/:path*", headers: [
       { key: "X-Content-Type-Options", value: "nosniff" },

@@ -13,8 +13,21 @@ export function ParentFamilyFields({ locale, openPrivacy }: { locale: Locale; op
 }
 export function FamilyEntry({ user, hasFamilies, locale, onDone, openPrivacy }: { user: User; hasFamilies: boolean; locale: Locale; onDone: () => Promise<void>; openPrivacy: () => void }) {
   const t = copy(locale), mutation = useMutation();
-  const [open, setOpen] = useState(!hasFamilies), [code, setCode] = useState(""), [copied, setCopied] = useState(false), [status, setStatus] = useState("");
+  const [open, setOpen] = useState(!hasFamilies), [code, setCode] = useState(""), [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "failed">("idle"), [status, setStatus] = useState("");
   const requestId = useRef<string | null>(null);
+  const copyAttempt = useRef(0);
+  function resetCopy() { copyAttempt.current += 1; setCopyStatus("idle"); }
+  async function copyCode() {
+    const attempt = ++copyAttempt.current;
+    setCopyStatus("idle");
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error("Clipboard unavailable");
+      await navigator.clipboard.writeText(code);
+      if (copyAttempt.current === attempt) setCopyStatus("copied");
+    } catch {
+      if (copyAttempt.current === attempt) setCopyStatus("failed");
+    }
+  }
   if (user.role !== "parent" && user.role !== "teacher" && user.role !== "student") return null;
   const parent = user.role === "parent";
   async function submit(form: FormData) {
@@ -22,7 +35,7 @@ export function FamilyEntry({ user, hasFamilies, locale, onDone, openPrivacy }: 
     if (parent) {
       requestId.current ??= crypto.randomUUID();
       const result = await api<{ joinCode: string }>("/api/triad/family", locale, { method: "POST", body: { requestId: requestId.current, relationship: form.get("relationship"), childName: form.get("childName"), birthDate: form.get("birthDate"), grade: form.get("grade"), assessment: form.get("assessment") === "on", sensitiveData: form.get("sensitiveData") === "on", parentReport: form.get("parentReport") === "on" } });
-      setCode(result.joinCode);
+      resetCopy(); setCode(result.joinCode);
       await onDone();
     } else {
       const result = await api<{ alreadyMember: boolean }>("/api/triad/join", locale, { method: "POST", body: { code: form.get("code") } });
@@ -30,5 +43,5 @@ export function FamilyEntry({ user, hasFamilies, locale, onDone, openPrivacy }: 
       await onDone(); setOpen(false);
     }
   }
-  return <section className="panel family-entry" style={{ marginBottom: "1.25rem", padding: "1.5rem" }}><div className="section-heading"><div><h2>{t(parent ? "createFirstFamily" : hasFamilies ? "joinAnotherFamily" : "noFamilyYet")}</h2>{!hasFamilies && <p>{t(parent ? "parentFamilyNote" : user.role === "teacher" ? "teacherFamilyNote" : "studentDoorNote")}</p>}</div>{!open && <button type="button" className="button secondary" onClick={() => { setCode(""); requestId.current = null; setStatus(""); setOpen(true); }}><Plus />{t(parent ? "newFamily" : "joinFamily")}</button>}</div>{status && <p className="success-notice" role="status">{status}</p>}{code ? <div><h3>{t("joinCodeReady")}</h3><p className="join-code">{code}</p><p>{t("joinCodeNote")}</p><div className="button-group"><button type="button" className="button secondary" onClick={() => void navigator.clipboard.writeText(code).then(() => setCopied(true)).catch(() => setCopied(false))}><Copy />{t(copied ? "copied" : "copyCode")}</button><button type="button" className="button primary" onClick={() => { setOpen(false); setCode(""); }}>{t("close")}</button></div></div> : open && <form onSubmit={event => { event.preventDefault(); if (!mutation.busy) void mutation.run(() => submit(new FormData(event.currentTarget))); }}><fieldset disabled={mutation.busy} style={{ border: 0, padding: 0, margin: 0 }}>{parent ? <ParentFamilyFields locale={locale} openPrivacy={openPrivacy} /> : <JoinCodeField locale={locale} error={mutation.field === "code" ? mutation.error : undefined} />}{mutation.error && mutation.field !== "code" && <ErrorNotice message={mutation.error} locale={locale} />}<div className="button-group"><button className="button primary" disabled={mutation.busy}>{mutation.busy ? <CircleNotch className="spin" /> : <ArrowRight />}{t(parent ? "createFirstFamily" : "joinFamily")}</button>{hasFamilies && <button type="button" className="button ghost" disabled={mutation.busy} onClick={() => setOpen(false)}>{t("cancel")}</button>}</div></fieldset></form>}</section>;
+  return <section className="panel family-entry" style={{ marginBottom: "1.25rem", padding: "1.5rem" }}><div className="section-heading"><div><h2>{t(parent ? "createFirstFamily" : hasFamilies ? "joinAnotherFamily" : "noFamilyYet")}</h2>{!hasFamilies && <p>{t(parent ? "parentFamilyNote" : user.role === "teacher" ? "teacherFamilyNote" : "studentDoorNote")}</p>}</div>{!open && <button type="button" className="button secondary" onClick={() => { resetCopy(); setCode(""); requestId.current = null; setStatus(""); setOpen(true); }}><Plus />{t(parent ? "newFamily" : "joinFamily")}</button>}</div>{status && <p className="success-notice" role="status">{status}</p>}{code ? <div><h3>{t("joinCodeReady")}</h3><p className="join-code">{code}</p><p>{t("joinCodeNote")}</p>{copyStatus === "failed" && <ErrorNotice locale={locale} message={t("copyCodeFailed")} />}<div className="button-group"><button type="button" className="button secondary" onClick={() => void copyCode()}><Copy />{t(copyStatus === "copied" ? "copied" : "copyCode")}</button><button type="button" className="button primary" onClick={() => { resetCopy(); setOpen(false); setCode(""); }}>{t("close")}</button></div></div> : open && <form onSubmit={event => { event.preventDefault(); if (!mutation.busy) void mutation.run(() => submit(new FormData(event.currentTarget))); }}><fieldset disabled={mutation.busy} style={{ border: 0, padding: 0, margin: 0 }}>{parent ? <ParentFamilyFields locale={locale} openPrivacy={openPrivacy} /> : <JoinCodeField locale={locale} error={mutation.field === "code" ? mutation.error : undefined} />}{mutation.error && mutation.field !== "code" && <ErrorNotice message={mutation.error} locale={locale} />}<div className="button-group"><button className="button primary" disabled={mutation.busy}>{mutation.busy ? <CircleNotch className="spin" /> : <ArrowRight />}{t(parent ? "createFirstFamily" : "joinFamily")}</button>{hasFamilies && <button type="button" className="button ghost" disabled={mutation.busy} onClick={() => setOpen(false)}>{t("cancel")}</button>}</div></fieldset></form>}</section>;
 }

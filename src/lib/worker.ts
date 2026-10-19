@@ -17,18 +17,25 @@ export type ReportJobResult=
   |{status:"paused"}
   |{status:"retry_at";retryAt:string}
   |{status:"terminal"};
-export async function processDeletionJobs():Promise<void>{
-  if(getConfig().reportStorage==="database")return;
+export async function processDeletionJobs():Promise<"done"|"busy">{
+  if(getConfig().reportStorage==="database")return "done";
   const jobs=await query("SELECT file_key FROM file_deletion_jobs LIMIT 50");
-  for(const job of jobs){await removePrivatePdf(job.file_key);await query("DELETE FROM file_deletion_jobs WHERE file_key=$1",[job.file_key]);}
+  for(const job of jobs){
+    if(await removePrivatePdf(job.file_key)==="busy")return "busy";
+    await query("DELETE FROM file_deletion_jobs WHERE file_key=$1",[job.file_key]);
+  }
+  return "done";
 }
-export async function cleanOrphanReports():Promise<void>{
-  if(getConfig().reportStorage==="database")return;
+export async function cleanOrphanReports():Promise<"done"|"busy">{
+  if(getConfig().reportStorage==="database")return "done";
   await cleanAbandonedPrivatePdfTemps();
   for(const key of await listPrivatePdfKeys()){
     const id=key.slice(0,36);const rows=await query("SELECT a.status,r.pdf_keys FROM assessments a LEFT JOIN reports r ON r.assessment_id=a.id WHERE a.id=$1",[id]);
-    const r=rows[0];if(!r||r.status==="failed"||(r.pdf_keys&&!Object.values(r.pdf_keys).includes(key)))await removePrivatePdf(key);
+    const r=rows[0];if(!r||r.status==="failed"||(r.pdf_keys&&!Object.values(r.pdf_keys).includes(key))){
+      if(await removePrivatePdf(key)==="busy")return "busy";
+    }
   }
+  return "done";
 }
 // Refreshes this region's heartbeat row. A stale heartbeat is the only reliable
 // signal that the report pipeline has stopped, since an idle queue looks healthy

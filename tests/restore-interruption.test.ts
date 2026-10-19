@@ -138,7 +138,11 @@ async function interruptedRestore(signal: "SIGINT" | "SIGTERM", descendant: bool
     expect(await fs.readlink(path.join(root, ".restore-sibling-link"))).toBe(previous);
   } finally {
     if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-    if (ownedGroup) { try { process.kill(-ownedGroup, "SIGKILL"); } catch {} }
+    if (ownedGroup) {
+      try { process.kill(-ownedGroup, "SIGKILL"); } catch {
+        // The owned process group may already have exited.
+      }
+    }
     await exited;
   }
 }

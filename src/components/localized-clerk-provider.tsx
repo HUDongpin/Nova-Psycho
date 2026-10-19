@@ -27,12 +27,12 @@ function IdentityBridge({ children }: { children: ReactNode }) {
   const value = useMemo(() => ({ enabled: true, signOut: () => clerk.signOut(() => undefined), manageAccount: () => clerk.openUserProfile() }), [clerk]);
   return <IdentityAuth.Provider value={value}>{children}</IdentityAuth.Provider>;
 }
-export function LocalizedClerkProvider({ children, publishableKey, initialLocale = "zh-CN" }: { children: ReactNode; publishableKey: string; initialLocale?: Locale }) {
+export function LocalizedClerkProvider({ children, publishableKey, initialLocale = "zh-CN", nonce }: { children: ReactNode; publishableKey: string; initialLocale?: Locale; nonce?: string }) {
   const [locale, setLocale] = useState(initialLocale);
   useEffect(() => {
     const read = () => { const saved = localStorage.getItem("nova-locale"); if (saved === "zh-CN" || saved === "zh-HK") setLocale(saved); };
     read(); window.addEventListener("nova-locale-change", read);
     return () => window.removeEventListener("nova-locale-change", read);
   }, []);
-  return <LocaleContext.Provider value={locale}><ClerkProvider publishableKey={publishableKey} localization={clerkLocalizations[locale]} signInUrl="/sign-in" signUpUrl="/sign-up"><IdentityBridge>{children}</IdentityBridge></ClerkProvider></LocaleContext.Provider>;
+  return <LocaleContext.Provider value={locale}><ClerkProvider publishableKey={publishableKey} nonce={nonce} localization={clerkLocalizations[locale]} signInUrl="/sign-in" signUpUrl="/sign-up"><IdentityBridge>{children}</IdentityBridge></ClerkProvider></LocaleContext.Provider>;
 }

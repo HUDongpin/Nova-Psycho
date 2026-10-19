@@ -13,6 +13,12 @@ import type { AssessmentSnapshot, ScaleDefinition, ScaleItem, StoredAnswer } fro
 
 const oldParentHash = "e6262dc928c2945d491ce8ebf96f6eada93997e683642729d8b1cda190a64d57";
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+function withoutItemsAndVersion(scale: ScaleDefinition): Omit<ScaleDefinition, "items" | "version"> {
+  const rest: Record<string, unknown> = { ...scale };
+  delete rest.items;
+  delete rest.version;
+  return rest as Omit<ScaleDefinition, "items" | "version">;
+}
 const supplements = [
   ["p_together", 5, "其他共同生活安排（选填）"], ["p_grade", 6, "其他年级（选填）"],
   ["p_curriculum", 6, "其他课程体系（选填）"], ["p_care", 7, "其他照顾安排（选填）"],
@@ -50,8 +56,8 @@ describe("versioned parent questionnaire", () => {
     const next = instruments.parentScale, previous = instruments.parentScaleV1;
     expect(previous).toBeDefined();
     expect(next.items).toHaveLength(152);
-    const { items: _newItems, version: _newVersion, ...newMetadata } = next;
-    const { items: _oldItems, version: _oldVersion, ...oldMetadata } = previous;
+    const newMetadata = withoutItemsAndVersion(next);
+    const oldMetadata = withoutItemsAndVersion(previous);
     expect(newMetadata).toEqual(oldMetadata);
     for (const old of previous.items) {
       const expected = structuredClone(old);

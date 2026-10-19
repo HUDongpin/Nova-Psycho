@@ -12,7 +12,7 @@ const {acknowledgeSafetyAlert}=await import("../src/lib/triad");
 const {closeDatabase}=await import("../src/lib/db");
 const client=new pg.Client({connectionString:databaseUrl,statement_timeout:10000}),blocker=new pg.Client({connectionString:databaseUrl,statement_timeout:10000}),revoker=new pg.Client({connectionString:databaseUrl,statement_timeout:10000});
 const userId=randomUUID(),familyId=randomUUID(),alertId=randomUUID();let gated=false;
-const receipts:unknown[]=[];
+const receipts: { change: string; expected: string; waited: boolean; outcome: { ok?: true; error?: string }; marked: boolean; audits: number }[] = [];
 await client.connect();await blocker.connect();await revoker.connect();
 try{
  assert.deepEqual((await client.query("SELECT region,mode FROM deployment_settings WHERE singleton=true")).rows,[{region:"CN",mode:"demo"}]);
@@ -28,7 +28,7 @@ try{
   await blocker.query("SELECT id FROM families WHERE id=$1 FOR UPDATE",[familyId]);
   await blocker.query("SELECT id FROM staff_alerts WHERE id=$1 FOR UPDATE",[alertId]);
   const pid=(await blocker.query("SELECT pg_backend_pid() AS id")).rows[0].id;
-  const pending=acknowledgeSafetyAlert(actor,alertId).then(()=>({ok:true}),error=>({error:error.code}));
+  const pending=acknowledgeSafetyAlert(actor,alertId).then(()=>({ok:true as const}),(error: { code: string })=>({error:error.code}));
   let waited=false;
   for(let i=0;i<200;i++){
    if((await client.query("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid))) AS waiting",[pid])).rows[0].waiting){waited=true;break;}
@@ -43,7 +43,7 @@ try{
   receipts.push({change,expected,waited,outcome,marked:alert.viewed_at!==null,audits});
  }
  console.log(JSON.stringify({synthetic:true,operationalSqlBoundary:true,cases:receipts},null,2));
- assert.equal(receipts.every((row:any)=>row.outcome.error===row.expected&&!row.marked&&row.audits===0),true);
+ assert.equal(receipts.every(row=>row.outcome.error===row.expected&&!row.marked&&row.audits===0),true);
  await client.query("UPDATE users SET disabled=false,role='staff',region='CN' WHERE id=$1",[userId]);
  await Promise.all([acknowledgeSafetyAlert(actor,alertId),acknowledgeSafetyAlert(actor,alertId)]);
  assert.equal((await client.query("SELECT count(*)::int AS count FROM audit_events WHERE entity_id=$1",[alertId])).rows[0].count,1);

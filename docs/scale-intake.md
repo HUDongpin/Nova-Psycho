@@ -1,11 +1,11 @@
 # Professional instrument intake
 
-The current example, `nova-family-demo@1.0.0`, is fictional and is not a professional psychological instrument. A service environment refuses to create, collect or publish demo-instrument tasks, and refuses to connect to a database classified as demo.
+The 9-item `nova-family-demo@1.0.0` example and the bundled parent / child / teacher `growth-triad` instruments are demonstration content, not validated professional instruments. A service environment refuses to assign, collect or publish demo or unvalidated instruments, including legacy snapshots, and refuses to connect to a database classified as demo.
 
 ## Materials required
 
 1. Instrument name, author, official version, and publication or acquisition source.
-2. Optional operator notes for electronic/commercial context and Chinese translation provenance (`rights.reference` and related flags are recorded, not enforced as import blockers).
+2. Required operator-supplied rights metadata (`rights.digital`, `rights.commercial`, and a nonempty `rights.reference`), including the electronic/commercial context and translation provenance. The boolean values are recorded, not verified as licensing permission or used as import blockers.
 3. The explicit ages of use, the respondent (student / parent / teacher), the applicable regions, and simplified and traditional text. Different translations must not be machine-converted and then treated as the same validated version.
 4. Original items, discrete response options, positive and reverse items, item membership per subscale, and aggregation rules.
 5. Missing-answer rules, interpretation thresholds, norm source and applicable population, and the recommended retest interval.
@@ -30,8 +30,8 @@ Main fields:
 | `demo` | Whether this is a demo; setting it to false does not by itself make the instrument clinically validated |
 | `rights` | Recorded electronic/commercial flags and a reference string for operator notes; the importer no longer blocks on these flags |
 | `minAge/maxAge`, `regions`, `roles` | The boundary of who the instrument applies to |
-| `norm` | Norm description, source, region, age range and a verified flag |
-| `items` | Bilingual items, optional observer wording, discrete numeric options, reverse and required flags |
+| `norm` | Norm description, source, region, age range and the operator's `validated` attestation; a non-demo definition requires `validated: true` |
+| `items` | Bilingual single-choice, multiple-choice or text items; numeric choices, exclusive options, reverse/required flags, optional visibility/age rules and reporting destinations |
 | `dimensions` | Item membership, sum or mean aggregation, missing-data ceiling, prorating, interpretive bands |
 | `riskRules` | Fixed bilingual notices triggered by specific items and response values |
 | `retakeDays` | The minimum retest interval for the same respondent and instrument version |
@@ -54,4 +54,8 @@ Subsequent literature and mainland China / Hong Kong applicability checks use th
 
 Background notes live under `work/scale-intake-20260916/` (no copyrighted item text, licences or credentials). The operator obtains questionnaires independently; Nova does not require questionnaire-vendor product partnerships.
 
-**Import policy (updated):** `parseScale` no longer rejects non-demo instruments for `rights.digital`, `rights.commercial` or `norm.validated`. Those fields remain on the scale JSON as operator-managed attestations/notes. Structural scoring rules, bilingual packs and age/region gates still apply. Clinical and legal responsibility for what is imported stays with the operator.
+**Import policy:** `parseScale` rejects a non-demo instrument unless `norm.validated` is true. An unvalidated definition must be labelled demo. Service mode separately rejects both demo and unvalidated content at assignment, draft, submission and report generation; changing an old row's demo flag is not an upgrade path. Publish a new immutable version and retain old tasks on their original definitions.
+
+`rights.digital`, `rights.commercial` and `rights.reference` remain required operator-managed metadata; the importer does not independently verify permissions or make the two booleans import blockers. A norm flag likewise records an attestation and does not establish psychometric validity by itself. Structural scoring rules, bilingual text and age/region gates continue to apply.
+
+Setup installs the triad advice/template under its own stable `growth-triad` library key. General administrator-managed content is kept separate. The public content API edits the general library; it is not an endpoint for overwriting seeded triad content. Normal signup and join requests do not run schema migrations.

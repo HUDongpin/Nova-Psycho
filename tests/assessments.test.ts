@@ -296,9 +296,10 @@ describe("submitting",()=>{
         if(sql.includes("SELECT id FROM families"))return {rows:[{id:FAMILY_ID}]};
         if(sql.includes("SELECT a.*,r.id AS report_id"))return {rows:[{id:ASSESSMENT_ID,status:"pending",draft_revision:0,family_id:FAMILY_ID,respondent_id:USER_ID,respondent_role:"student"}]};
         if(sql.includes("AS scopes FROM consents WHERE family_id=$1"))return {rows};
+        if(sql.includes("SELECT id FROM report_jobs"))return {rows:[{id:"job"}]};
         return {rows:[]};
       });
-      await expect(submitAssessment(actor("student"),ASSESSMENT_ID,submission)).resolves.toMatchObject({status:"queued",phase:null});
+      await expect(submitAssessment(actor("student"),ASSESSMENT_ID,submission)).resolves.toMatchObject({status:"queued",phase:"reporting"});
       expect(client.query.mock.calls.some(([sql])=>String(sql).includes("INSERT INTO report_jobs"))).toBe(true);
       const snapshot=JSON.parse(String(client.query.mock.calls.find(([sql])=>String(sql).includes("UPDATE assessments SET answers"))?.[1]?.[1]));
       expect(snapshot.aiConsented).toBe(true);
@@ -449,7 +450,7 @@ describe("submission phase follows parent-report consent",()=>{
     await expect(assessmentDetail(actor(role),ASSESSMENT_ID,"zh-CN")).resolves.toMatchObject({status:"queued",phase:"consent"});
   });
 
-  it("is not a consent hold while another triad role is still out",async()=>{
+  it("keeps waiting while another triad role is still out, even without parent-report consent",async()=>{
     const row=install({definition:childScale,role:"student",scopes:participation,submittedRoles:["student"]});
     await expect(submitAssessment(actor("student"),ASSESSMENT_ID,{answers:previewAnswers(childScale,"calm"),acknowledged:true,revision:0})).resolves.toMatchObject({status:"queued",phase:"waiting",reportId:null});
     expect(client.query.mock.calls.some(([sql])=>String(sql).includes("INSERT INTO report_jobs"))).toBe(false);
@@ -457,13 +458,13 @@ describe("submission phase follows parent-report consent",()=>{
     await expect(assessmentDetail(actor("student"),ASSESSMENT_ID,"zh-CN")).resolves.toMatchObject({phase:"waiting"});
   });
 
-  it("replays a partial triad submission without a consent hold and does not score it again",async()=>{
+  it("replays a partial triad submission as waiting and does not score it again",async()=>{
     install({definition:childScale,role:"student",status:"queued",scopes:participation,submittedRoles:["student"],snapshot:{score:{risk:false}}});
-    await expect(submitAssessment(actor("student"),ASSESSMENT_ID,{answers:previewAnswers(childScale,"calm"),acknowledged:true,revision:0})).resolves.toMatchObject({status:"queued",phase:"waiting"});
+    await expect(submitAssessment(actor("student"),ASSESSMENT_ID,{answers:previewAnswers(childScale,"calm"),acknowledged:true,revision:0})).resolves.toMatchObject({status:"queued",phase:"waiting",safetyGuidance:false});
     expect(client.query.mock.calls.some(([sql])=>String(sql).includes("UPDATE assessments SET answers"))).toBe(false);
   });
 
-  it("is not held when the finished triad has parent-report consent and a job",async()=>{
+  it("returns reporting when the finished triad has parent-report consent and a job",async()=>{
     const row=install({definition:teacherScale,role:"teacher",scopes:withReport,submittedRoles:["parent","student","teacher"],job:true});
     await expect(submitAssessment(actor("teacher"),ASSESSMENT_ID,{answers:previewAnswers(teacherScale,"calm"),acknowledged:true,revision:0})).resolves.toMatchObject({status:"queued",phase:"reporting",reportId:null});
     expect(client.query.mock.calls.some(([sql])=>String(sql).includes("INSERT INTO report_jobs"))).toBe(true);
@@ -479,24 +480,24 @@ describe("submission phase follows parent-report consent",()=>{
     await expect(assessmentDetail(actor("student"),ASSESSMENT_ID,"zh-CN")).resolves.toMatchObject({phase:"consent"});
   });
 
-  it("is not held for the 9-item demo when parent-report consent created a job",async()=>{
+  it("returns reporting for the 9-item demo when parent-report consent created a job",async()=>{
     const row=install({definition:scale,role:"parent",scopes:withReport,job:true});
-    await expect(submitAssessment(actor("parent"),ASSESSMENT_ID,{answers:{q1:1,q2:2,q3:1,q4:2,q5:1,q6:2,q7:1,q8:2,q9:0},acknowledged:true,revision:0})).resolves.toMatchObject({status:"queued",phase:null});
+    await expect(submitAssessment(actor("parent"),ASSESSMENT_ID,{answers:{q1:1,q2:2,q3:1,q4:2,q5:1,q6:2,q7:1,q8:2,q9:0},acknowledged:true,revision:0})).resolves.toMatchObject({status:"queued",phase:"reporting"});
     expect(client.query.mock.calls.some(([sql])=>String(sql).includes("INSERT INTO report_jobs"))).toBe(true);
     row.status="queued";
-    await expect(assessmentDetail(actor("parent"),ASSESSMENT_ID,"zh-CN")).resolves.toMatchObject({phase:null});
+    await expect(assessmentDetail(actor("parent"),ASSESSMENT_ID,"zh-CN")).resolves.toMatchObject({phase:"reporting"});
   });
 
   it("replays a submitted demo assessment without parent-report consent as consent",async()=>{
     install({definition:scale,role:"student",status:"queued",scopes:participation,snapshot:{score:{risk:false}}});
-    await expect(submitAssessment(actor("student"),ASSESSMENT_ID,{answers:{q1:1,q2:2,q3:1,q4:2,q5:1,q6:2,q7:1,q8:2,q9:0},acknowledged:true,revision:0})).resolves.toMatchObject({status:"queued",phase:"consent"});
+    await expect(submitAssessment(actor("student"),ASSESSMENT_ID,{answers:{q1:1,q2:2,q3:1,q4:2,q5:1,q6:2,q7:1,q8:2,q9:0},acknowledged:true,revision:0})).resolves.toMatchObject({status:"queued",phase:"consent",safetyGuidance:false});
     expect(client.query.mock.calls.some(([sql])=>String(sql).includes("UPDATE assessments SET answers"))).toBe(false);
     await expect(assessmentDetail(actor("student"),ASSESSMENT_ID,"zh-HK")).resolves.toMatchObject({status:"queued",phase:"consent"});
   });
 
   it("replays the last triad role without parent-report consent as consent and does not score again",async()=>{
     install({definition:teacherScale,role:"teacher",status:"queued",scopes:participation,submittedRoles:["parent","student","teacher"],snapshot:{score:{risk:true}}});
-    await expect(submitAssessment(actor("teacher"),ASSESSMENT_ID,{answers:previewAnswers(teacherScale,"risk"),acknowledged:true,revision:0})).resolves.toMatchObject({status:"queued",phase:"consent",reportId:null});
+    await expect(submitAssessment(actor("teacher"),ASSESSMENT_ID,{answers:previewAnswers(teacherScale,"risk"),acknowledged:true,revision:0})).resolves.toMatchObject({status:"queued",phase:"consent",safetyGuidance:true,reportId:null});
     expect(client.query.mock.calls.some(([sql])=>String(sql).includes("UPDATE assessments SET answers"))).toBe(false);
     expect(client.query.mock.calls.some(([sql])=>String(sql).includes("INSERT INTO report_jobs"))).toBe(false);
   });
