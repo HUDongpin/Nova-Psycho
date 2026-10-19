@@ -5,6 +5,19 @@ import { createContext, useContext, useEffect, useMemo, useState, type ReactNode
 import type { Locale } from "./api";
 import { LocaleContext } from "./ui";
 
+// @clerk/localizations 4.22.1 leaves these authentication hints untranslated.
+const clerkLocalizations: Record<Locale, typeof zhCN> = {
+  "zh-CN": {
+    ...zhCN,
+    formFieldInputPlaceholder__signUpPassword: "设置密码",
+    formFieldInput__emailAddress_format: "示例格式：name@example.com",
+  },
+  "zh-HK": {
+    ...zhTW,
+    formFieldInputPlaceholder__signUpPassword: "設定密碼",
+  },
+};
+
 const IdentityAuth = createContext<{ enabled: boolean; signOut: () => Promise<void>; manageAccount: () => void }>({ enabled: false, signOut: async () => undefined, manageAccount: () => undefined });
 export const useIdentityAuth = () => useContext(IdentityAuth);
 function IdentityBridge({ children }: { children: ReactNode }) {
@@ -21,5 +34,5 @@ export function LocalizedClerkProvider({ children, publishableKey, initialLocale
     read(); window.addEventListener("nova-locale-change", read);
     return () => window.removeEventListener("nova-locale-change", read);
   }, []);
-  return <LocaleContext.Provider value={locale}><ClerkProvider publishableKey={publishableKey} localization={locale === "zh-HK" ? zhTW : zhCN} signInUrl="/sign-in" signUpUrl="/sign-up"><IdentityBridge>{children}</IdentityBridge></ClerkProvider></LocaleContext.Provider>;
+  return <LocaleContext.Provider value={locale}><ClerkProvider publishableKey={publishableKey} localization={clerkLocalizations[locale]} signInUrl="/sign-in" signUpUrl="/sign-up"><IdentityBridge>{children}</IdentityBridge></ClerkProvider></LocaleContext.Provider>;
 }
