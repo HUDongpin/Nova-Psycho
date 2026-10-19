@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 
 vi.mock("../src/lib/db",()=>({query:vi.fn(),transaction:vi.fn()}));
 import { query,transaction } from "../src/lib/db";
-import { actorOf,audit,checkPassword,cookieName,endSession,hashPassword,hashToken,limitLogin,listAuditEvents,requireActor,setPasswordSession,setSession } from "../src/lib/auth";
+import { actorOf,audit,checkPassword,cookieName,endSession,hashPassword,hashToken,limitLogin,listAuditEvents,requireActor,setDemoSession,setPasswordSession } from "../src/lib/auth";
 
 const mockQuery=vi.mocked(query);
 const mockTransaction=vi.mocked(transaction);
@@ -61,30 +61,34 @@ describe("password hashing",()=>{
 });
 
 describe("session cookies",()=>{
+  function prepareDemoSession(available=true){
+    const client={query:vi.fn(async(sql:string)=>({rows:sql.startsWith("SELECT")&&available?[{id:"11111111-2222-4333-8444-555555555555"}]:[]}))};
+    mockTransaction.mockImplementation((async(fn:(value:unknown)=>Promise<unknown>)=>fn(client)) as never);
+  }
   it("names the cookie after the region",()=>{
     expect(cookieName()).toBe("nova_cn_session");
     config({NOVA_REGION:"HK",NOVA_PUBLIC_URL:"http://127.0.0.1:3101"});
     expect(cookieName()).toBe("nova_hk_session");
   });
   it("sets an http-only, lax, 12-hour cookie",async()=>{
-    mockQuery.mockResolvedValueOnce([{token_hash:"x"}]);
+    prepareDemoSession();
     const response=NextResponse.json({ok:true});
-    await setSession(response,"11111111-2222-4333-8444-555555555555");
+    await setDemoSession(response,"11111111-2222-4333-8444-555555555555");
     const cookie=response.cookies.get("nova_cn_session")!;
     expect(cookie.httpOnly).toBe(true);
     expect(cookie.sameSite).toBe("lax");
     expect(cookie.maxAge).toBe(43200);
     expect(cookie.path).toBe("/");
   });
-  it("only marks the cookie secure in service mode",async()=>{
-    mockQuery.mockResolvedValueOnce([{token_hash:"x"}]);
+  it("allows the demo cookie on a loopback HTTP origin",async()=>{
+    prepareDemoSession();
     const demo=NextResponse.json({ok:true});
-    await setSession(demo,"11111111-2222-4333-8444-555555555555");
+    await setDemoSession(demo,"11111111-2222-4333-8444-555555555555");
     expect(demo.cookies.get("nova_cn_session")!.secure).toBe(false);
   });
   it("refuses to open a session for a revoked account",async()=>{
-    mockQuery.mockResolvedValueOnce([]);
-    await expect(setSession(NextResponse.json({}),"11111111-2222-4333-8444-555555555555")).rejects.toMatchObject({code:"ACCOUNT_REVOKED"});
+    prepareDemoSession(false);
+    await expect(setDemoSession(NextResponse.json({}),"11111111-2222-4333-8444-555555555555")).rejects.toMatchObject({status:403,code:"INVALID_DEMO_ACCOUNT"});
   });
   it("clears the cookie on logout",async()=>{
     mockQuery.mockResolvedValue([]);

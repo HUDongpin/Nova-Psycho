@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll,beforeEach,describe,expect,it,vi } from "vitest";
+import { afterAll,beforeAll,beforeEach,describe,expect,it,vi } from "vitest";
 vi.mock("../src/lib/pdf",()=>({renderPdf:vi.fn(async()=>Buffer.from("%PDF-1.4 SYNTHETIC DATABASE TEST ONLY")),closePdfBrowser:vi.fn()}));
 import { demoAdvice,demoScale,demoTemplate } from "../src/domain/demo";
 import { scoreAssessment } from "../src/domain/scoring";
@@ -17,9 +17,11 @@ if(!["127.0.0.1","localhost"].includes(address.hostname)||!address.pathname.star
 const fakePdf=Buffer.from("%PDF-1.4 SYNTHETIC DATABASE TEST ONLY");
 const answers={q1:1,q2:2,q3:1,q4:2,q5:1,q6:2,q7:1,q8:2,q9:0};
 const actor:Actor={id:randomUUID(),name:"Synthetic admin",role:"admin",region:"CN"};
+const users=[actor.id],families:string[]=[],assessments:string[]=[];
 
 async function fixture(region:Region="CN"){
   const userId=randomUUID(),familyId=randomUUID(),assessmentId=randomUUID(),jobId=randomUUID();
+  users.push(userId);families.push(familyId);assessments.push(assessmentId);
   const submittedAt=new Date().toISOString();
   const snapshot:AssessmentSnapshot={scale:demoScale,advice:{id:randomUUID(),version:"1.0.0",content:demoAdvice},template:{id:randomUUID(),version:"1.0.0",content:demoTemplate},score:scoreAssessment(demoScale,answers,{age:12,region,role:"parent"}),childName:"Synthetic persistence child",grade:"S2",submittedAt,aiConsented:false};
   await transaction(async client=>{
@@ -32,8 +34,15 @@ async function fixture(region:Region="CN"){
   return {userId,familyId,assessmentId,jobId};
 }
 async function fileCount(reportId:string){return (await query<{n:number}>("SELECT count(*)::int AS n FROM report_files WHERE report_id=$1",[reportId]))[0].n;}
+beforeAll(async()=>{await query("INSERT INTO users(id,region,name,role,demo) VALUES($1,$2,$3,$4,true)",[actor.id,actor.region,actor.name,actor.role]);});
 beforeEach(()=>{vi.mocked(renderPdf).mockReset().mockResolvedValue(fakePdf);});
-afterAll(async()=>{await closeDatabase();});
+afterAll(async()=>{
+  try{
+    await query("DELETE FROM families WHERE id=ANY($1::uuid[])",[families]);
+    await query("DELETE FROM audit_events WHERE actor_id=ANY($1::uuid[]) OR entity_id=ANY($2::text[])",[users,[...families,...assessments]]);
+    await query("DELETE FROM users WHERE id=ANY($1::uuid[])",[users]);
+  }finally{await closeDatabase();}
+});
 
 describe("real PostgreSQL serverless persistence (PDF rendering intentionally stubbed)",()=>{
   it("publishes both encrypted locales atomically and deduplicates later delivery",async()=>{

@@ -20,6 +20,7 @@ export interface ScaleItem {
   /** Single-choice safety items must not advance on a timer. */
   noAutoAdvance?: boolean;
   showIf?: { itemId: string; anyOf: number[] };
+  supplementFor?: string;
   page?: string;
   pageTitle?: TextPair;
   panel?: TextPair;

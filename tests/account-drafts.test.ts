@@ -67,6 +67,15 @@ describe("single-owner draft bank",()=>{
     reject(new ApiError("Old response","UNAUTHENTICATED",401));await oldRead;
     expect(expired).not.toHaveBeenCalled();expect(store.state).toBe("active");expect(store.isCurrent(other,store.epoch)).toBe(true);
   });
+  it("suspends every retained draft when a fresh read reports account revocation",async()=>{
+    const {store,draft,expired}=dirtyStore();store.suspend();store.activate(owner);
+    mockApi.mockRejectedValueOnce(new ApiError("Revoked","ACCOUNT_REVOKED",403));
+    await expect(store.load(owner,record().id,locale)).rejects.toMatchObject({code:"ACCOUNT_REVOKED"});
+    expect(store.state).toBe("suspended");expect(store.activeOwner).toBeNull();
+    expect(expired).toHaveBeenCalledTimes(1);
+    expect(store.get(owner,record().id)).toBeUndefined();
+    expect(draft.getSnapshot()).toMatchObject({authenticationPaused:true,hasUnsavedChanges:true});
+  });
   it("ignores an old success instead of installing another owner's assessment",async()=>{
     let release:(value:unknown)=>void=()=>undefined;
     const {store}=dirtyStore();store.suspend();store.activate(owner);

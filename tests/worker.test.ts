@@ -2,7 +2,7 @@ import { describe,it,expect,beforeEach,afterEach,vi } from "vitest";
 
 vi.mock("../src/lib/db",()=>({query:vi.fn(),transaction:vi.fn()}));
 vi.mock("../src/lib/pdf",()=>({renderPdf:vi.fn(async()=>Buffer.from("%PDF-1.4 stub")),closePdfBrowser:vi.fn()}));
-vi.mock("../src/lib/storage",()=>({writePrivatePdf:vi.fn(async()=>undefined),removePrivatePdf:vi.fn(async()=>undefined),listPrivatePdfKeys:vi.fn(async()=>[])}));
+vi.mock("../src/lib/storage",()=>({writePrivatePdf:vi.fn(async()=>undefined),removePrivatePdf:vi.fn(async()=>undefined),listPrivatePdfKeys:vi.fn(async()=>[]),cleanAbandonedPrivatePdfTemps:vi.fn(async()=>undefined)}));
 vi.mock("../src/domain/narrative",()=>({selectNarrative:vi.fn(async()=>({selectedAdviceIds:["listen"],generationMode:"template",fallbackReason:"ai_disabled",aiModel:null}))}));
 import { query,transaction } from "../src/lib/db";
 import { renderPdf } from "../src/lib/pdf";
@@ -30,7 +30,7 @@ const snapshot:AssessmentSnapshot={
 };
 
 const clientCalls:string[]=[];
-const client={query:vi.fn(async(sql:string)=>{clientCalls.push(String(sql));return {rows:[]};})};
+const client={query:vi.fn(async(sql:string,_values:unknown[]=[])=>{clientCalls.push(String(sql));return {rows:[]};})};
 
 function config(){
   vi.stubEnv("NOVA_REGION","CN");vi.stubEnv("NOVA_MODE","demo");
@@ -44,6 +44,7 @@ beforeEach(()=>{
   config();
   mockQuery.mockReset();mockTransaction.mockReset();mockWrite.mockClear();mockRemove.mockClear();mockList.mockReset();mockRender.mockClear();
   clientCalls.length=0;
+  client.query.mockClear();
   mockTransaction.mockImplementation((async(fn:(c:unknown)=>Promise<unknown>)=>fn(client)) as never);
   mockList.mockResolvedValue([]);
 });
@@ -173,9 +174,11 @@ describe("processing one job",()=>{
       .mockResolvedValue([]);
     mockRender.mockRejectedValueOnce(new Error("render failed"));
     await processOneJob();
-    const failure=mockQuery.mock.calls.find(call=>String(call[0]).includes("UPDATE report_jobs SET state=$1"))!;
+    const failure=client.query.mock.calls.find(call=>String(call[0]).includes("UPDATE report_jobs SET state=$1"))!;
     expect(failure[1]).toContain("failed");
-    expect(mockQuery.mock.calls.some(call=>String(call[0]).includes("UPDATE assessments SET status='failed'"))).toBe(true);
+    expect(client.query.mock.calls[0][0]).toContain("FOR UPDATE OF f");
+    expect(client.query.mock.calls[0][1]).toEqual([ASSESSMENT_ID,"CN"]);
+    expect(failure[0]).toContain("UPDATE assessments SET status='failed'");
   });
   it("cleans up partially written files when rendering fails",async()=>{
     mockQuery.mockResolvedValueOnce([{...job,attempts:3}])
@@ -220,10 +223,13 @@ describe("fixed triad report sources",()=>{
     expect(calls.some(call=>call.sql.includes("staff_alerts"))).toBe(false);
   });
   it("fails an unbound legacy job without selecting historical answers or rendering",async()=>{
-    configure(null);await processOneJob();
+    configure(null);
+    const calls:{sql:string;values:unknown[]}[]=[];
+    mockTransaction.mockImplementation((async(fn:(c:unknown)=>Promise<unknown>)=>fn({query:async(sql:string,values:unknown[])=>{calls.push({sql,values});return {rows:[{assessment_id:parent.id}]};}})) as never);
+    await processOneJob();
     expect(mockRender).not.toHaveBeenCalled();
-    const failure=mockQuery.mock.calls.find(([sql])=>String(sql).includes("UPDATE report_jobs SET state=$1"));
-    expect(failure?.[1]).toEqual(["failed","triad-job",expect.any(String),"TRIAD_SOURCES_UNBOUND"]);
+    const failure=calls.find(({sql})=>sql.includes("UPDATE report_jobs SET state=$1"));
+    expect(failure?.values).toEqual(["failed","triad-job",expect.any(String),"TRIAD_SOURCES_UNBOUND"]);
     expect(mockQuery.mock.calls.some(([sql])=>String(sql).includes("SELECT id,respondent_role,answers"))).toBe(false);
   });
   it("refuses incomplete pinned sources instead of filling a role from history",async()=>{
@@ -259,10 +265,68 @@ describe("targeted queue execution",()=>{
   });
   it("does not run a fourth render after three crashed claims",async()=>{
     mockQuery.mockResolvedValueOnce([{id:JOB_ID,assessment_id:ASSESSMENT_ID,attempts:3,attempt_limit_reached:true}])
-      .mockResolvedValueOnce([{assessment_id:ASSESSMENT_ID}]).mockResolvedValue([]);
+      .mockResolvedValue([]);
+    const calls:{sql:string;values:unknown[]}[]=[];
+    mockTransaction.mockImplementation((async(fn:(c:unknown)=>Promise<unknown>)=>fn({query:async(sql:string,values:unknown[])=>{calls.push({sql,values});return {rows:[{assessment_id:ASSESSMENT_ID}]};}})) as never);
     await expect(processReportJob(JOB_ID)).resolves.toEqual({status:"terminal"});
     expect(mockRender).not.toHaveBeenCalled();
-    expect(mockQuery.mock.calls[1][1]).toContain("REPORT_ATTEMPTS_EXHAUSTED");
+    expect(calls[0].sql).toContain("FOR UPDATE OF f");
+    expect(calls[1].values).toContain("REPORT_ATTEMPTS_EXHAUSTED");
+  });
+  it.each([1,3])("preserves published filesystem PDFs when attempt %s loses the commit response",async attempts=>{
+    const files=new Set<string>();
+    let publishedKeys:Record<string,string>|undefined;
+    mockWrite.mockImplementation(async key=>{files.add(key);});
+    mockRemove.mockImplementation(async key=>{files.delete(key);});
+    mockQuery.mockImplementation((async(sql:string)=>{
+      if(sql.includes("WITH candidate AS"))return [{id:JOB_ID,assessment_id:ASSESSMENT_ID,attempts}];
+      if(sql.includes("SELECT * FROM assessments WHERE id="))return [{id:ASSESSMENT_ID,family_id:"family",snapshot,submitted_at:snapshot.submittedAt}];
+      if(sql.includes("SELECT pdf_keys FROM reports"))return publishedKeys?[{pdf_keys:publishedKeys}]:[];
+      return [];
+    }) as never);
+    mockTransaction.mockImplementation((async(fn:(c:unknown)=>Promise<unknown>)=>{
+      let publication=false;
+      const result=await fn({query:async(sql:string,values:unknown[])=>{
+        if(sql.includes("INSERT INTO reports")){publishedKeys=JSON.parse(values[4] as string);publication=true;}
+        if(sql.includes("UPDATE report_jobs SET state=$1"))return {rows:[]};
+        return {rows:[{id:"locked"}]};
+      }});
+      if(publication)throw new Error("Connection lost after COMMIT succeeded");
+      return result;
+    }) as never);
+    try{
+      await expect(processReportJob(JOB_ID)).resolves.toEqual({status:"already_done"});
+      expect(publishedKeys).toBeDefined();
+      expect([...files].sort()).toEqual(Object.values(publishedKeys!).sort());
+      expect(files.size).toBe(2);
+      expect(mockRemove).not.toHaveBeenCalled();
+    }finally{
+      mockWrite.mockImplementation(async()=>undefined);
+      mockRemove.mockImplementation(async()=>undefined);
+    }
+  });
+  it.each(["UPDATE report_jobs SET state=$1","SELECT pdf_keys FROM reports"])("leaves filesystem PDFs intact when recovery cannot confirm %s",async failedLookup=>{
+    mockQuery.mockImplementation((async(sql:string)=>{
+      if(sql.includes("WITH candidate AS"))return [{id:JOB_ID,assessment_id:ASSESSMENT_ID,attempts:1}];
+      if(sql.includes("SELECT * FROM assessments WHERE id="))return [{id:ASSESSMENT_ID,family_id:"family",snapshot,submitted_at:snapshot.submittedAt}];
+      if(sql.includes(failedLookup))throw new Error("Recovery database unavailable");
+      return [];
+    }) as never);
+    mockTransaction.mockRejectedValueOnce(new Error("Publication connection lost"));
+    await expect(processReportJob(JOB_ID)).rejects.toThrow("Recovery database unavailable");
+    expect(mockWrite).toHaveBeenCalledTimes(2);
+    expect(mockRemove).not.toHaveBeenCalled();
+  });
+  it("removes unreferenced filesystem PDFs after losing a claim",async()=>{
+    mockQuery.mockImplementation((async(sql:string)=>{
+      if(sql.includes("WITH candidate AS"))return [{id:JOB_ID,assessment_id:ASSESSMENT_ID,attempts:1}];
+      if(sql.includes("SELECT * FROM assessments WHERE id="))return [{id:ASSESSMENT_ID,family_id:"family",snapshot,submitted_at:snapshot.submittedAt}];
+      return [];
+    }) as never);
+    mockTransaction.mockRejectedValueOnce(new Error("Report claim expired"));
+    await expect(processReportJob(JOB_ID)).resolves.toEqual({status:"already_done"});
+    expect(mockWrite).toHaveBeenCalledTimes(2);
+    expect(mockRemove.mock.calls.map(([key])=>key)).toEqual(mockWrite.mock.calls.map(([key])=>key));
   });
   it("stores both database PDFs only after family and claim locks in the publication transaction",async()=>{
     vi.stubEnv("NOVA_REPORT_STORAGE","database");

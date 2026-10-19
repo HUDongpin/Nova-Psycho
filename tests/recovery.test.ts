@@ -27,6 +27,7 @@ async function defaultClientQuery(sql:string){
   if(String(sql).includes("SELECT id FROM users"))return {rows:[{id:USER_ID}]};
   if(String(sql).includes("SELECT user_id FROM recovery_tokens"))return {rows:[{user_id:USER_ID}]};
   if(String(sql).includes("FOR UPDATE OF r"))return {rows:[{user_id:USER_ID}]};
+  if(String(sql).includes("INSERT INTO recovery_tokens"))return {rows:[],rowCount:1};
   return {rows:[]};
 }
 const client={query:vi.fn(defaultClientQuery)};
@@ -104,15 +105,26 @@ describe("issuing a recovery link",()=>{
     await createRecovery(admin,USER_ID);
     expect(clientCalls.some(sql=>sql.includes("UPDATE recovery_tokens SET used_at=now() WHERE user_id=$1 AND used_at IS NULL"))).toBe(true);
   });
+  it("rejects issuance if the current issuer no longer qualifies and does not audit success",async()=>{
+    client.query.mockImplementation(async(sql:string)=>String(sql).includes("INSERT INTO recovery_tokens")?{rows:[],rowCount:0}:defaultClientQuery(sql));
+    await expect(createRecovery(admin,USER_ID)).rejects.toMatchObject({status:403,code:"FORBIDDEN"});
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+  it.each(["demo","service"])("checks current administrator authority and %s classification at token insertion",async mode=>{
+    vi.stubEnv("NOVA_MODE",mode);
+    if(mode==="service")vi.stubEnv("NOVA_PUBLIC_URL","https://synthetic.invalid");
+    await createRecovery(admin,USER_ID);
+    expect(client.query).toHaveBeenCalledWith(expect.stringContaining("u.id=$5 AND u.region=$3 AND u.role='admin' AND NOT u.disabled AND ($6::boolean OR NOT u.demo)"),[expect.any(String),USER_ID,"CN",expect.any(Date),admin.id,mode==="demo"]);
+  });
   it("serializes issuance on the account row inside the transaction",async()=>{
     await createRecovery(admin,USER_ID);
-    const lock=clientCalls.find(sql=>sql.includes("FROM users")&&sql.includes("FOR UPDATE"));
-    expect(lock).toContain("SELECT id,name,role,disabled FROM users WHERE id=$1 AND region=$2 FOR UPDATE");
+    const lock=clientCalls.find(sql=>sql.includes("FROM users")&&sql.includes("FOR NO KEY UPDATE"));
+    expect(lock).toContain("SELECT id,name,role,disabled FROM users WHERE id=$1 AND region=$2 FOR NO KEY UPDATE");
     expect(mockQuery.mock.calls.some(call=>String(call[0]).includes("FROM users"))).toBe(false);
   });
   it("locks the account before it writes recovery tokens",async()=>{
     await createRecovery(admin,USER_ID);
-    const userLock=clientCalls.findIndex(sql=>sql.includes("FROM users")&&sql.includes("FOR UPDATE"));
+    const userLock=clientCalls.findIndex(sql=>sql.includes("FROM users")&&sql.includes("FOR NO KEY UPDATE"));
     const retire=clientCalls.findIndex(sql=>sql.includes("UPDATE recovery_tokens SET used_at=now() WHERE user_id=$1 AND used_at IS NULL"));
     const insert=clientCalls.findIndex(sql=>sql.includes("INSERT INTO recovery_tokens"));
     expect(userLock).toBeGreaterThanOrEqual(0);
