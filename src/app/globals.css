@@ -348,6 +348,8 @@ input:-webkit-autofill {
 .survey-submit-panel > .button { margin-top: 8px; }
 .modal { padding: 0; border: 1px solid var(--line); border-radius: 16px; width: min(560px, calc(100vw - 32px)); max-height: 88dvh; background: var(--paper); color: var(--ink); box-shadow: var(--shadow); overflow: auto; opacity: 1; transform: translateY(0); transition: opacity 180ms var(--ease), transform 180ms var(--ease); }
 .modal.modal-wide { width: min(760px, calc(100vw - 32px)); }
+.modal.privacy-modal { margin-block: 6dvh auto; scrollbar-gutter: stable; }
+.privacy-modal .modal-header { align-items: flex-start; }
 .modal::backdrop { background: rgb(30 62 55 / 0.46); }
 @starting-style {
   .modal { opacity: 0; transform: translateY(8px); }
