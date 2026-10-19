@@ -64,7 +64,19 @@ Attach both `www.tope.hk` and `tope.hk` to the same Vercel project, with the ape
 
 Neon and queue connection details stay out of AI payloads and ordinary logs. Keep AI disabled during these deployment checks; do not send real family data to a live provider to test the application.
 
+## Parent questionnaire 1.1.0 release
+
+Before deploying code that defaults to `growth-parent@1.1.0`, register that immutable version in the existing TopE `HK/service` database. Run the bounded migration with the authorized restricted environment file:
+
+```sh
+node --env-file=/secure/nova-init.env --import tsx scripts/migrations/20261016-parent-questionnaire.ts
+node --env-file=/secure/nova-init.env --import tsx scripts/migrations/20261016-parent-questionnaire.ts --apply
+```
+
+The first command checks the target and content without writing. The second adds only the missing `1.1.0` row in a transaction. It rejects a conflicting existing definition or retired version and preserves all previous questionnaire rows. Repeated application is safe. It does not run schema setup, rewrite existing assessments or publish reports. Existing parent tasks keep `1.0.0`; new tasks use `1.1.0`. Retain the new version if reverting application code because existing tasks may reference it.
+
 ## Queue execution and recovery
+
 
 Submitting the final required questionnaire creates a durable SQL job. The API awaits a queue publish containing only `{jobId, region}`. The consumer claims that specific regional job, renders both PDFs, and publishes under the existing family lock and claim token. Duplicate or stale deliveries cannot publish twice or claim a different job. A report has at most three render attempts, including attempts interrupted by a crash.
 
@@ -117,7 +129,7 @@ The report key itself is never included. The fingerprint exists so that a restor
 
 The dump contains answer and snapshot data in plaintext. Set `NOVA_BACKUP_KEY` (64 hex characters) to encrypt both archives with AES-256-GCM; without it the command warns loudly and protection rests entirely on the storage medium. Files are written `0600` inside a `0700` directory. The database password is passed through the environment rather than as a command argument, so it does not appear in the process table.
 
-A backup is refused if `pg_restore --list` reports no table data, so an empty or failed dump is never recorded as a valid backup. Private staging directories and plaintext dumps are removed if encryption or a later step fails.
+A backup is refused if `pg_restore --list` reports no table data, so an empty or failed dump is never recorded as a valid backup. Private staging directories and plaintext dumps are removed during normal error handling if encryption or a later step fails. Process termination, a crash or a cleanup filesystem error can leave private staging behind; interruption handling is described below.
 
 #### Restoring a filesystem deployment
 
@@ -141,9 +153,17 @@ The restore refuses to proceed when any of the following holds. Each refusal is 
 - the checksums do not match, so a damaged archive is never applied
 - `NOVA_REPORT_KEY` does not match the manifest fingerprint
 - the target database already contains tables in the `public` schema
-- the target report directory is not empty
+- the target report directory is not empty, cannot be created or cannot accept a preflight write
 
-After restoring it verifies the region, the mode, every known per-table row count, the report file count, and **each `reports.pdf_keys` filename against the restored directory**. A matching total file count is not enough: a missing referenced PDF fails the drill. Manifest table names are matched against an allowlist; unknown names are not interpolated into SQL. Stop the report worker before restoring and start it afterwards: it is also the service that completes physical deletion. Switch service traffic only after that verification.
+After restoring it verifies the region, the mode, every known per-table row count, the report file count, and **each `reports.pdf_keys` filename against the restored directory**. A matching total file count is not enough: a missing referenced PDF fails the drill. Manifest table names are matched against an allowlist; unknown names are not interpolated into SQL. Keep the target web service isolated from traffic. Keep report workers and queue consumers stopped until the authorization, consent and deletion reconciliation below is complete; run subsequent validation only in the isolated target.
+
+The database restore uses a single transaction: an SQL failure rolls back the database changes. The database and report filesystem are **not** restored in one atomic transaction. A later extraction, disk, permission or verification failure exits unsuccessfully but can leave a restored database with incomplete files. Region/mode checks and health responses do not certify a completed restore, and there is no automatic quarantine flag. Do not start service against that target. Preserve the failure evidence and retry into a fresh isolated database and report directory; the script deliberately refuses to overwrite a partial target and does not drop or repair it automatically.
+
+A backup restores authorization and consent **as of its snapshot**. Before starting workers or admitting traffic, reconcile later password changes, local sessions, recovery links, invitation acceptance or revocation, Clerk revocations, disabled accounts, roles, assignments, memberships, deletions and consent withdrawals against an authoritative post-snapshot record. Clearing sessions alone does not suffice: an older password hash can allow a new login, and old consent can permit report processing. Clerk manages its own credentials, while restored Nova identity mappings and local revocations can still be stale. If the later state cannot be established, keep the target isolated until the service owner chooses a recovery and re-verification policy; this script cannot reconstruct lost history or choose that policy. The same snapshot-freshness requirement applies to database-backed report recovery.
+
+After authorization and consent reconciliation, start the report worker to complete physical deletion, confirm that the deletion queue drains, open and decrypt a historical PDF, and publish one new authorized synthetic assessment end to end. Switch service traffic only after these checks succeed. Neither `--verify-only` nor the final row/file checks certify authorization freshness or render every historical PDF.
+
+Encrypted restores decrypt only into their own unique `.restore-*` staging directory, with directory mode `0700` and plaintext file mode `0600`, and remove that directory on ordinary completion or failure. On the supported macOS/Linux process environment, during decryption and database/file restoration, `SIGINT` and `SIGTERM` request coordinated cancellation: stop and wait for the owned restore commands before removing their plaintext staging. If command termination cannot be confirmed within the cancellation window, the command fails and reports the retained private staging path rather than deleting potentially active inputs. An interrupted restore exits unsuccessfully; interruption after the database commit can still leave a partial target. An uncatchable `SIGKILL`, a process crash or filesystem cleanup failure can prevent removal. Keep backups on restricted encrypted media. After an interrupted drill, confirm that its restore process and subprocesses have stopped, identify that exact drill's owned staging directory, and handle its plaintext under the applicable retention policy. Do not delete all `.restore-*` directories by name or age: another drill may still be using one, and an unrelated sibling may not belong to this run.
 
 A restore drill was run against the local CN environment on 2026-09-15. Seventeen tables and twelve report files were restored into a throwaway database; every row count matched the manifest, and all twelve restored report files decrypted back to valid PDFs with the report key. The live database was not modified, and the drill database was dropped afterwards.
 

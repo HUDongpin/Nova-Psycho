@@ -21,7 +21,7 @@ export function validateAnswers(scale: ScaleDefinition, answers: Record<string, 
   const items=new Map(scale.items.map(item=>[item.id,item]));
   for(const [id,value] of Object.entries(answers)) {
     const item=items.get(id);
-    if(!item) throw new ScoringError("Unknown item or invalid response value");
+    if(!item||!answerVisible(answers,item)) throw new ScoringError("Unknown item, hidden item or invalid response value");
     const kind=kindOf(item);
     const single=kind==="single"&&typeof value==="number"&&Number.isFinite(value)&&item.choices.some(choice=>choice.value===value);
     const exclusive=new Set(item.choices.filter(choice=>choice.exclusive).map(choice=>choice.value));

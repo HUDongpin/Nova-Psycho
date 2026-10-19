@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Model } from "survey-core";
-import { bindChoiceAutoAdvance, focusFirstUnanswered, questionProgressLabel } from "../src/components/survey-navigation";
+import { bindChoiceAutoAdvance, bindCompletionNavigation, CHOICE_AUTO_ADVANCE_MS, configureQuestionProgress, focusFirstUnanswered, questionProgressLabel } from "../src/components/survey-navigation";
+import { teacherScale } from "../src/domain/triad-scales";
+import { surveyDefinition } from "../src/domain/survey";
 
 afterEach(() => { vi.useRealTimers(); });
 
@@ -55,7 +57,97 @@ describe("one question at a time", () => {
   });
 });
 
+describe("rendered progress notifications", () => {
+  it.each([false, true])("publishes the correct ordinal after saved teacher navigation (traditional=%s)", traditional => {
+    const survey = new Model(surveyDefinition(teacherScale, "teacher", traditional ? "zh-HK" : "zh-CN"));
+    survey.questionsOnPageMode = "inputPerPage";
+    const answers = Object.fromEntries(teacherScale.items.slice(0, 8).map(item => [item.id, item.id === "t8_1" ? 2 : item.kind === "multi" ? [item.choices[0].value] : item.choices[0].value]));
+    survey.data = answers;
+    focusFirstUnanswered(survey);
+    configureQuestionProgress(survey, traditional);
+    const suffix = traditional ? "題" : "题";
+    expect(survey.currentSingleQuestion?.name).toBe("t8_2");
+    expect(survey.progressText).toBe(`第 9/63 ${suffix}`);
+    const displayed: unknown[] = [];
+    survey.progressTextModel.onPropertyChanged.add((_sender, event) => {
+      if (event.name === "progressText" && event.newValue !== undefined) displayed.push(event.newValue);
+    });
+    survey.prevPage();
+    expect(survey.currentSingleQuestion?.name).toBe("t8_1");
+    expect(displayed.at(-1)).toBe(`第 8/63 ${suffix}`);
+    survey.prevPage();
+    expect(survey.currentSingleQuestion?.name).toBe("t_focus");
+    expect(displayed.at(-1)).toBe(`第 7/63 ${suffix}`);
+    survey.nextPage();
+    expect(displayed.at(-1)).toBe(`第 8/63 ${suffix}`);
+    survey.nextPage();
+    expect(displayed.at(-1)).toBe(`第 9/63 ${suffix}`);
+    expect(survey.data).toEqual(answers);
+  });
+
+  it("publishes the new ordinal after timed single-choice auto-advance", () => {
+    const survey = choiceSurvey();
+    configureQuestionProgress(survey, true);
+    expect(survey.progressText).toBe("第 1/5 題");
+    const displayed: unknown[] = [];
+    survey.progressTextModel.onPropertyChanged.add((_sender, event) => {
+      if (event.name === "progressText" && event.newValue !== undefined) displayed.push(event.newValue);
+    });
+    vi.useFakeTimers();
+    const stop = bindChoiceAutoAdvance(survey);
+    survey.setValue("q1", "a");
+    vi.advanceTimersByTime(CHOICE_AUTO_ADVANCE_MS);
+    expect(survey.currentSingleQuestion?.name).toBe("q2");
+    expect(displayed.at(-1)).toBe("第 2/5 題");
+    stop();
+  });
+});
+
 describe("choice auto-advance", () => {
+  it("does not start a timer while the full notice is open", () => {
+    const survey = choiceSurvey();
+    vi.useFakeTimers();
+    const onPending = vi.fn();
+    const stop = bindChoiceAutoAdvance(survey, { isSuspended: () => true, onPending });
+    survey.setValue("q1", "a");
+    vi.advanceTimersByTime(CHOICE_AUTO_ADVANCE_MS * 2);
+    expect(survey.currentSingleQuestion?.name).toBe("q1");
+    expect(onPending).not.toHaveBeenCalled();
+    stop();
+  });
+
+  it("checks reading suspension again at the timer boundary and does not revive the old timer", () => {
+    const survey = choiceSurvey();
+    vi.useFakeTimers();
+    let suspended = false;
+    const hooks = { delay: CHOICE_AUTO_ADVANCE_MS, isSuspended: () => suspended };
+    const stop = bindChoiceAutoAdvance(survey, hooks);
+    survey.setValue("q1", "a");
+    vi.advanceTimersByTime(CHOICE_AUTO_ADVANCE_MS - 1);
+    suspended = true;
+    vi.advanceTimersByTime(1);
+    expect(survey.currentSingleQuestion?.name).toBe("q1");
+    suspended = false;
+    vi.advanceTimersByTime(CHOICE_AUTO_ADVANCE_MS);
+    expect(survey.currentSingleQuestion?.name).toBe("q1");
+    survey.setValue("q1", "b");
+    vi.advanceTimersByTime(CHOICE_AUTO_ADVANCE_MS);
+    expect(survey.currentSingleQuestion?.name).toBe("q2");
+    stop();
+  });
+
+  it("can cancel a pending advance without leaving the current question", () => {
+    const survey = choiceSurvey();
+    vi.useFakeTimers();
+    const stop = bindChoiceAutoAdvance(survey);
+    survey.setValue("q1", "a");
+    vi.advanceTimersByTime(1000);
+    stop.cancel();
+    vi.advanceTimersByTime(CHOICE_AUTO_ADVANCE_MS);
+    expect(survey.currentSingleQuestion?.name).toBe("q1");
+    stop();
+  });
+
   it("moves exactly one question five seconds after a single choice", () => {
     const survey = choiceSurvey();
     vi.useFakeTimers();
@@ -163,5 +255,59 @@ describe("choice auto-advance", () => {
     vi.advanceTimersByTime(5000);
     expect(survey.currentSingleQuestion?.name).toBe("q1");
     stop();
+  });
+});
+
+describe("completion issue navigation", () => {
+  it("can reconnect after an effect cleanup and still focus newly rendered questions", () => {
+    const survey = choiceSurvey();
+    const navigation = bindCompletionNavigation(survey, vi.fn(), () => true);
+    navigation.connect();
+    navigation.dispose();
+    navigation.connect();
+    const target = survey.getQuestionByName("q3");
+    const focus = vi.spyOn(target, "focus").mockImplementation(() => undefined);
+    navigation.jump("q3");
+    survey.onAfterRenderQuestion.fire(survey, { question: target, htmlElement: { isConnected: true, scrollIntoView: vi.fn() } as unknown as HTMLElement });
+    expect(focus).toHaveBeenCalledOnce();
+    navigation.dispose();
+  });
+
+  it("waits for the target to render and focuses it again on a same-question jump", () => {
+    const survey = choiceSurvey();
+    const cancel = vi.fn();
+    const navigation = bindCompletionNavigation(survey, cancel, () => true);
+    navigation.connect();
+    const target = survey.getQuestionByName("q3");
+    const focus = vi.spyOn(target, "focus").mockImplementation(() => undefined);
+    expect(navigation.jump("q3")).toBe(true);
+    expect(survey.currentSingleQuestion?.name).toBe("q3");
+    expect(focus).not.toHaveBeenCalled();
+    const element = { isConnected: true, scrollIntoView: vi.fn() } as unknown as HTMLElement;
+    survey.onAfterRenderQuestion.fire(survey, { question: target, htmlElement: element });
+    expect(focus).toHaveBeenCalledTimes(1);
+    expect(element.scrollIntoView).toHaveBeenCalledWith({ block: "start" });
+    navigation.jump("q3");
+    expect(focus).toHaveBeenCalledTimes(2);
+    expect(cancel).toHaveBeenCalledTimes(2);
+    navigation.dispose();
+  });
+
+  it("does not navigate or later focus after the session locks, or to a hidden question", () => {
+    const survey = choiceSurvey();
+    let unlocked = true;
+    const navigation = bindCompletionNavigation(survey, vi.fn(), () => unlocked);
+    navigation.connect();
+    const target = survey.getQuestionByName("q3");
+    const focus = vi.spyOn(target, "focus").mockImplementation(() => undefined);
+    navigation.jump("q3");
+    unlocked = false;
+    survey.onAfterRenderQuestion.fire(survey, { question: target, htmlElement: { isConnected: true, scrollIntoView: vi.fn() } as unknown as HTMLElement });
+    expect(focus).not.toHaveBeenCalled();
+    expect(navigation.jump("q1")).toBe(false);
+    unlocked = true;
+    target.visible = false;
+    expect(navigation.jump("q3")).toBe(false);
+    navigation.dispose();
   });
 });

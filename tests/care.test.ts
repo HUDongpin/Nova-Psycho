@@ -1,7 +1,9 @@
 import { describe,it,expect,beforeEach,afterEach,vi } from "vitest";
+import type { PoolClient } from "pg";
 
-vi.mock("../src/lib/db",()=>({query:vi.fn()}));
-import { query } from "../src/lib/db";
+vi.mock("../src/lib/db",()=>({query:vi.fn(),transaction:vi.fn()}));
+vi.mock("../src/lib/triad",()=>({lockRegistrationActor:vi.fn(async (_client:unknown,user:Actor)=>user)}));
+import { query, transaction } from "../src/lib/db";
 import { addGoal,addObservation,updateGoal } from "../src/lib/care";
 import type { Actor,Role } from "../src/domain/types";
 
@@ -17,7 +19,9 @@ beforeEach(()=>{
   vi.stubEnv("NOVA_REPORT_DIR","work/test-private");
   vi.stubEnv("NOVA_REPORT_KEY","0".repeat(64));
   mockQuery.mockReset();
+  vi.mocked(transaction).mockImplementation(async fn=>fn({query:async(sql:string,values:unknown[])=>({rows:await query(sql,values)})} as unknown as PoolClient));
   mockQuery.mockImplementation((async(sql:string)=>{
+    if(String(sql).includes("FROM families")&&String(sql).includes("FOR UPDATE"))return [{id:FAMILY_ID}];
     if(String(sql).includes("FROM families f WHERE f.id=$1"))return [{id:FAMILY_ID,region:"CN",family_name:"Synthetic",child_name:"Synthetic child",birth_date:"2013-04-12",grade:"S2",guardian_label:"Mother",assigned_to:null,created_at:new Date()}];
     if(String(sql).includes("SELECT family_id FROM goals"))return [{family_id:FAMILY_ID}];
     return [];
