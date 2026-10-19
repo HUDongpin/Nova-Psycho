@@ -52,6 +52,7 @@ beforeEach(() => {
     if (sql.includes("FROM families f WHERE")) return { rows: [family] };
     if (sql.includes("SELECT m.role FROM memberships")) return { rows: [{ role: "parent" }] };
     if (sql.includes("creation_request_id=$2")) return { rows: replayFamily ? [family] : [] };
+    if (sql.includes("AS scopes FROM consents")) return { rows: [{ scopes: ["assessment"] }, { scopes: ["sensitive_data"] }, { scopes: ["parent_report"] }] };
     if (sql.startsWith("SELECT status FROM scales")) return { rows: [{ status: "active" }] };
     if (sql.startsWith("SELECT id FROM scales")) return { rows: missingDefault ? [] : [{ id: values[0] }] };
     if (sql.includes("FROM assessments") && sql.includes("status='pending'")) {
@@ -125,14 +126,14 @@ describe("new defaults without replacing historical records", () => {
   });
 
   it("initial registration and authenticated new-family creation both select the current parent revision", async () => {
-    await startParentCase({ parentName: "Synthetic", username: "synthetic.parent", password: "synthetic-password", relationship: "母亲", childName: "Synthetic", birthDate: "2014-01-01", grade: "初中", accepted: true }, "zh-CN");
-    await createParentFamily(actor, { requestId: "33333333-4444-4555-8666-777777777777", relationship: "母亲", childName: "Synthetic", birthDate: "2014-01-01", grade: "初中", accepted: true }, "zh-CN");
+    await startParentCase({ parentName: "Synthetic", username: "synthetic.parent", password: "synthetic-password", relationship: "母亲", childName: "Synthetic", birthDate: "2014-01-01", grade: "初中", assessment: true, sensitiveData: true, parentReport: true }, "zh-CN");
+    await createParentFamily(actor, { requestId: "33333333-4444-4555-8666-777777777777", relationship: "母亲", childName: "Synthetic", birthDate: "2014-01-01", grade: "初中", assessment: true, sensitiveData: true, parentReport: true }, "zh-CN");
     expect(tasks.map(task => task.version)).toEqual(["growth-parent@1.2.0", "growth-parent@1.2.0"]);
   });
 
   it("replays an existing family before looking up the new default or creating a task", async () => {
     replayFamily = true; missingDefault = true;
-    await expect(createParentFamily(actor, { requestId: "33333333-4444-4555-8666-777777777777", relationship: "母亲", childName: "Synthetic", birthDate: "2014-01-01", grade: "初中", accepted: true }, "zh-CN")).resolves.toMatchObject({ familyId });
+    await expect(createParentFamily(actor, { requestId: "33333333-4444-4555-8666-777777777777", relationship: "母亲", childName: "Synthetic", birthDate: "2014-01-01", grade: "初中", assessment: true, sensitiveData: true, parentReport: true }, "zh-CN")).resolves.toMatchObject({ familyId });
     expect(tasks).toEqual([]);
   });
 

@@ -59,7 +59,7 @@ async function fixture(targetId: string) {
   const api = async (path: string, method = "GET", data?: unknown) => context.request.fetch(base + path, { method, headers: { Origin: base }, ...(data === undefined ? {} : { data }) });
   const session = await (await api("/api/session")).json();
   assert.equal(session.mode, "demo"); assert.equal(session.region, hk ? "HK" : "CN");
-  const register = await api("/api/triad/parent", "POST", { parentName: "合成展示家长", childName: "合成展示孩子", username: `presentation_${randomBytes(8).toString("hex")}`, password: randomBytes(24).toString("base64url"), relationship: "母亲", birthDate: `${new Date().getUTCFullYear() - 12}-01-01`, grade: "初中", accepted: true });
+  const register = await api("/api/triad/parent", "POST", { parentName: "合成展示家长", childName: "合成展示孩子", username: `presentation_${randomBytes(8).toString("hex")}`, password: randomBytes(24).toString("base64url"), relationship: "母亲", birthDate: `${new Date().getUTCFullYear() - 12}-01-01`, grade: "初中", assessment: true, sensitiveData: true, parentReport: true });
   assert.equal(register.status(), 201);
   const created = await register.json();
   const workspace = await (await api("/api/workspace")).json();

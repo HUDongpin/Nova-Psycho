@@ -292,7 +292,8 @@ try {
       const submit = family.getByRole("button", { name: "填寫家庭情況", exact: true });
       await submit.click();
       assert.equal(f.writes(), 1, "Missing guardian consent must block family enrollment");
-      await family.getByRole("checkbox").check();
+      await family.locator("input[name=assessment]").check();
+      await family.locator("input[name=sensitiveData]").check();
       f.state.familySuccess = true;
       let familyRequests = 0;
       await f.page.route("**/api/triad/family?*", async route => { familyRequests++; await pending; await route.fallback(); });
@@ -307,7 +308,7 @@ try {
       assert.equal(f.writes(), 2, "Exactly one account/profile request and one family request");
       const input = f.state.writes[1].body;
       assert.match(String(input.requestId), /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
-      assert.deepEqual(input, { requestId: input.requestId, relationship: "母亲", childName: "合成孩子", birthDate: "2014-01-01", grade: "小学四至六年级", accepted: true });
+      assert.deepEqual(input, { requestId: input.requestId, relationship: "母亲", childName: "合成孩子", birthDate: "2014-01-01", grade: "小学四至六年级", assessment: true, sensitiveData: true, parentReport: false });
       assert.equal(f.state.writes.some(write => write.path === "/api/triad/parent"), false);
       await f.page.locator(".family-entry").getByRole("button", { name: "關閉", exact: true }).click();
       await f.page.getByRole("button", { name: "登出", exact: true }).waitFor();

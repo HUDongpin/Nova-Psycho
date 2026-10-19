@@ -54,7 +54,7 @@ async function fixture(target: string, otherSaved = false) {
   const ctx = await context();
   const api = async (path: string, method = "GET", data?: unknown) => ctx.request.fetch(base + path, { method, headers: { Origin: base }, ...(data === undefined ? {} : { data }) });
   const session = await (await api("/api/session")).json(); assert.equal(session.mode, "demo"); assert.equal(session.region, region);
-  const response = await api("/api/triad/parent", "POST", { parentName: "合成新版家长", childName: "合成新版孩子", username: `version_${randomBytes(8).toString("hex")}`, password: randomBytes(24).toString("base64url"), relationship: "母亲", birthDate: `${new Date().getUTCFullYear() - 12}-01-01`, grade: "初中", accepted: true });
+  const response = await api("/api/triad/parent", "POST", { parentName: "合成新版家长", childName: "合成新版孩子", username: `version_${randomBytes(8).toString("hex")}`, password: randomBytes(24).toString("base64url"), relationship: "母亲", birthDate: `${new Date().getUTCFullYear() - 12}-01-01`, grade: "初中", assessment: true, sensitiveData: true, parentReport: true });
   assert.equal(response.status(), 201, "Synthetic new parent registration succeeds");
   const created = await response.json();
   const w = await (await api("/api/workspace")).json();

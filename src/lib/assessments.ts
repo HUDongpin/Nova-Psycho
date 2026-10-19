@@ -8,14 +8,14 @@ import { completionIssues,completionRules } from "../domain/completion";
 import { surveyDefinition } from "../domain/survey";
 import { titleEmphasis } from "../domain/survey-presentation";
 import { surveySupplements } from "../domain/survey-supplements";
-import { TRIAD_BUNDLE } from "../domain/triad-report";
+import { TRIAD_BUNDLE, triadRolesReady } from "../domain/triad-report";
 import { reportRetryBlocker } from "../domain/report-retry";
 import { lockRegistrationActor,queueTriadReport,requireRegistrationConsent,triadRoundFor } from "./triad";
-import { ensureAdviceReferences } from "../domain/validation";
+import { effectiveDemo, ensureAdviceReferences, normValidated } from "../domain/validation";
 import { ageAt,canManageFamilyReports,consentFor,familyFor } from "./access";
+import { ACTIVE_CONSENT_ROWS_SQL, PARENT_REPORT_SCOPE, PARTICIPATION_SCOPES, grantedScopes, hasGranted } from "./consent";
 import { audit } from "./auth";
-import { isDemoMode } from "./config";
-import { effectiveDemo, normValidated } from "../domain/validation";
+import { getConfig, isDemoMode } from "./config";
 import { currentContent,getScale,lockContent } from "./content";
 import { query,transaction } from "./db";
 import { HttpError,requireRole,validateId } from "./http";
@@ -30,14 +30,35 @@ const answerSchema=z.record(z.string(),z.union([z.number(),z.array(z.number()).m
   return answers;
 });
 export { surveyDefinition };
-type SubmissionPhase = "waiting" | "reporting" | null;
-async function submissionPhase(client:PoolClient,id:string,status:string,scale:ScaleDefinition):Promise<SubmissionPhase>{
-  if(scale.bundle!==TRIAD_BUNDLE||status!=="queued")return null;
-  const jobs=await client.query("SELECT id FROM report_jobs WHERE assessment_id=$1 OR $1=ANY(source_assessment_ids) LIMIT 1",[id]);
-  return jobs.rows[0]?"reporting":"waiting";
+type SubmissionPhase = "waiting" | "reporting" | "consent" | null;
+interface PhaseReader { query(sql:string,values?:unknown[]):Promise<{rows:Record<string,unknown>[]}> }
+// Same predicate queueTriadReport uses, so a round is "ready" only when parent, student and teacher have all submitted.
+const TRIAD_SUBMITTED_ROLES_SQL="SELECT id,respondent_role FROM assessments WHERE family_id=$1 AND region=$2 AND triad_round_id=$3 AND submitted_at IS NOT NULL ORDER BY respondent_role";
+function poolPhaseReader():PhaseReader{
+  return {query:async(sql,values)=>({rows:await query(sql,values??[]) as Record<string,unknown>[]})};
+}
+function clientPhaseReader(client:PoolClient):PhaseReader{
+  return {query:async(sql,values)=>({rows:(await client.query(sql,values)).rows as Record<string,unknown>[]})};
 }
 function safetyGuidanceFor(snapshot:AssessmentSnapshot|null|undefined):boolean{
   return snapshot?.score?.risk===true;
+}
+// Matches the workspace list. A missing parent_report grant holds a published
+// assessment, a single-role submission, or a finished triad round. A triad that
+// still waits on another role stays "waiting" until that round is ready.
+// Effective scopes already drop purposes named in consent_scope_revocations.
+async function submissionPhase(db:PhaseReader,assessmentId:string,familyId:string,roundId:string|null,status:string,scale:ScaleDefinition):Promise<SubmissionPhase>{
+  if(status!=="queued"&&status!=="published")return null;
+  const consent=await db.query(ACTIVE_CONSENT_ROWS_SQL,[familyId]);
+  const parentReport=hasGranted(consent.rows,[PARENT_REPORT_SCOPE]);
+  const triad=scale.bundle===TRIAD_BUNDLE;
+  const submitted=triad&&roundId?await db.query(TRIAD_SUBMITTED_ROLES_SQL,[familyId,getConfig().region,roundId]):{rows:[]};
+  const roundReady=triadRolesReady(submitted.rows.map(row=>String(row.respondent_role)));
+  if(status==="published"&&!parentReport)return "consent";
+  if(status==="queued"&&!parentReport&&(!triad||roundReady))return "consent";
+  if(!triad||status!=="queued")return null;
+  const jobs=await db.query("SELECT id FROM report_jobs WHERE assessment_id=$1 OR $1=ANY(source_assessment_ids) LIMIT 1",[assessmentId]);
+  return jobs.rows[0]?"reporting":"waiting";
 }
 async function refuseDemoBesideOfficial(familyId:string,respondentId:string,region:"CN"|"HK",role:RespondentRole,age:number,client?:PoolClient){
   const read=async(sql:string,values:unknown[])=>client?(await client.query(sql,values)).rows:query(sql,values);
@@ -103,12 +124,8 @@ async function ownAssessment(actor:Actor,id:string){
 }
 export async function assessmentDetail(actor:Actor,id:string,locale:Locale){
   const a=await ownAssessment(actor,id),s=a.definition as ScaleDefinition;
+  const phase=await submissionPhase(poolPhaseReader(),id,String(a.family_id),a.triad_round_id??null,a.status,s);
   const safetyGuidance=a.status!=="pending"&&safetyGuidanceFor(a.snapshot);
-  let phase:SubmissionPhase=null;
-  if(s.bundle===TRIAD_BUNDLE&&a.status==="queued"){
-    const jobs=await query("SELECT id FROM report_jobs WHERE assessment_id=$1 OR $1=ANY(source_assessment_ids) LIMIT 1",[id]);
-    phase=jobs[0]?"reporting":"waiting";
-  }
   const emphasis=titleEmphasis(s,a.respondent_role,locale);
   const supplements=surveySupplements(s,locale);
   return {id,status:a.status,childName:a.child_name,scaleTitle:text(s.title,locale),demo:effectiveDemo(s),description:text(s.description,locale),surveyJson:surveyDefinition(s,a.respondent_role,locale),...(s.bundle===TRIAD_BUNDLE?{completionRules:completionRules(s)}:{}),...(emphasis.length?{titleEmphasis:emphasis}:{}),...(supplements.length?{supplements}:{}),draftAnswers:a.status==="pending"?a.draft_answers:{},draftRevision:a.draft_revision,consentRequired:!await consentFor(a.family_id),phase,safetyGuidance};
@@ -138,11 +155,11 @@ export async function submitAssessment(actor:Actor,id:string,input:unknown){
     await lockRegistrationActor(client,actor,"SHARE");
     const locked=await client.query("SELECT a.*,r.id AS report_id FROM assessments a LEFT JOIN reports r ON r.assessment_id=a.id WHERE a.id=$1 AND a.respondent_id=$2 FOR UPDATE OF a",[id,actor.id]);
     const a=locked.rows[0];if(!a)throw new HttpError(404,"测评不存在。","NOT_FOUND");
-    if(a.status!=="pending")return {id,status:a.status,reportId:a.report_id??null,phase:await submissionPhase(client,id,a.status,scale),safetyGuidance:safetyGuidanceFor(a.snapshot)};
+    if(a.status!=="pending")return {id,status:a.status,reportId:a.report_id??null,phase:await submissionPhase(clientPhaseReader(client),id,a.family_id,a.triad_round_id??null,a.status,scale),safetyGuidance:safetyGuidanceFor(a.snapshot)};
     if(a.draft_revision!==d.revision)throw new HttpError(409,"草稿已在另一个页面更新，请重新载入并核对答案。","DRAFT_CONFLICT");
-    const consent=await client.query("SELECT scopes FROM consents WHERE family_id=$1 AND revoked_at IS NULL ORDER BY created_at DESC LIMIT 1",[a.family_id]);
-    const scopes=consent.rows[0]?.scopes as string[]|undefined;
-    if(!scopes||!["assessment","parent_report","sensitive_data"].every(s=>scopes.includes(s)))throw new HttpError(409,"请先完成监护人授权。","GUARDIAN_CONSENT_REQUIRED");
+    const consent=await client.query(ACTIVE_CONSENT_ROWS_SQL,[a.family_id]);
+    if(!hasGranted(consent.rows,PARTICIPATION_SCOPES))throw new HttpError(409,"请先完成测评与敏感资料的监护人授权。","GUARDIAN_CONSENT_REQUIRED");
+    const scopes=grantedScopes(consent.rows);
     let score;try{score=scoreAssessment(scale,d.answers,{age:ageAt(family.birth_date),region:actor.region,role:a.respondent_role});}catch(e){if(e instanceof ScoringError)throw new HttpError(422,"答案格式不符合量表要求。","INVALID_ANSWERS");throw e;}
     if(score.status==="ineligible")throw new HttpError(422,"当前量表不适用于此孩子。","INELIGIBLE");
     if(scale.items.some(item=>item.gate!==undefined&&d.answers[item.id]!==item.gate))throw new HttpError(422,"需要先同意参加这次了解，才能提交。","ENTRY_GATE");
@@ -154,7 +171,7 @@ export async function submitAssessment(actor:Actor,id:string,input:unknown){
     try{ensureAdviceReferences(scale,advice.content);}catch{throw new HttpError(409,"量表的报告建议配置需要更新。","ADVICE_MISMATCH");}
     const roundId=scale.bundle===TRIAD_BUNDLE?(a.triad_round_id??await triadRoundFor(client,a.family_id,a.respondent_role)):null;
     const submittedAt=new Date().toISOString();
-    const snapshot:AssessmentSnapshot={scale,advice,template,score,childName:family.child_name,grade:family.grade,submittedAt,aiConsented:scopes.includes("ai_processing")};
+    const snapshot:AssessmentSnapshot={scale,advice,template,score,childName:family.child_name,grade:family.grade,submittedAt,aiConsented:scopes.has("ai_processing")};
     await client.query("UPDATE assessments SET answers=$1,draft_answers='{}',snapshot=$2,status='queued',submitted_at=$3,acknowledged_at=COALESCE(acknowledged_at,$3),triad_round_id=$5 WHERE id=$4",[JSON.stringify(d.answers),JSON.stringify(snapshot),submittedAt,id,roundId]);
     if(scale.bundle===TRIAD_BUNDLE){
       if(score.risk){
@@ -162,9 +179,10 @@ export async function submitAssessment(actor:Actor,id:string,input:unknown){
         if(alert.rows[0])await client.query("INSERT INTO audit_events(region,action,entity_id) VALUES($1,'triad.safety_notified',$2)",[actor.region,id]);
       }
       await queueTriadReport(client,a.family_id,roundId);
-      return {id,status:"queued",reportId:null,phase:await submissionPhase(client,id,"queued",scale),safetyGuidance:score.risk};
+      return {id,status:"queued",reportId:null,phase:await submissionPhase(clientPhaseReader(client),id,a.family_id,roundId,"queued",scale),safetyGuidance:score.risk===true};
     }
-    await client.query("INSERT INTO report_jobs(id,assessment_id) VALUES($1,$2) ON CONFLICT(assessment_id) DO NOTHING",[randomUUID(),id]);return {id,status:"queued",reportId:null,phase:null,safetyGuidance:score.risk};
+    if(scopes.has(PARENT_REPORT_SCOPE))await client.query("INSERT INTO report_jobs(id,assessment_id) VALUES($1,$2) ON CONFLICT(assessment_id) DO NOTHING",[randomUUID(),id]);
+    return {id,status:"queued",reportId:null,phase:await submissionPhase(clientPhaseReader(client),id,a.family_id,null,"queued",scale),safetyGuidance:score.risk===true};
   });await audit(actor,"assessment.submitted",id);return result;
 }
 export async function retryReport(actor:Actor,id:string){
@@ -181,9 +199,8 @@ export async function retryReport(actor:Actor,id:string){
     const a=locked.rows[0];if(!a)throw new HttpError(404,"未找到该测评。","NOT_FOUND");
     const jobs=await client.query("SELECT * FROM report_jobs WHERE assessment_id=$1 OR $1=ANY(source_assessment_ids) FOR UPDATE",[id]);
     const job=jobs.rows[0];
-    const consent=await client.query("SELECT scopes FROM consents WHERE family_id=$1 AND revoked_at IS NULL ORDER BY created_at DESC LIMIT 1",[a.family_id]);
-    const scopes=consent.rows[0]?.scopes as string[]|undefined;
-    const blocker=reportRetryBlocker({status:a.status,jobState:job?.state??null,hasSnapshot:a.snapshot!=null,hasAnswers:a.answers!=null,hasSubmission:a.submitted_at!=null,isTriad:a.snapshot?.scale?.bundle===TRIAD_BUNDLE,hasRoundSources:a.triad_round_id!=null&&job?.source_assessment_ids!=null,hasConsent:!!scopes&&["assessment","parent_report","sensitive_data"].every(s=>scopes.includes(s))});
+    const consent=await client.query(ACTIVE_CONSENT_ROWS_SQL,[a.family_id]);
+    const blocker=reportRetryBlocker({status:a.status,jobState:job?.state??null,hasSnapshot:a.snapshot!=null,hasAnswers:a.answers!=null,hasSubmission:a.submitted_at!=null,isTriad:a.snapshot?.scale?.bundle===TRIAD_BUNDLE,hasRoundSources:a.triad_round_id!=null&&job?.source_assessment_ids!=null,hasConsent:hasGranted(consent.rows,[PARENT_REPORT_SCOPE])});
     if(blocker){
       const messages={TRIAD_LEGACY_REVIEW_REQUIRED:"旧三方报告缺少已核实的轮次来源，请联系服务团队处理。",GUARDIAN_CONSENT_REQUIRED:"请先完成监护人授权。",REPORT_NOT_FAILED:"仅可重新排队生成失败的报告，不会重新开始作答。"};
       throw new HttpError(409,messages[blocker],blocker);

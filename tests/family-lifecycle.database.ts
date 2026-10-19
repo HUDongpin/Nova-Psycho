@@ -34,7 +34,11 @@ async function newFamily(owner = admin) {
   const { id } = await createFamily(owner, { familyName: "Synthetic lifecycle family", childName: "Synthetic lifecycle child", birthDate: "2014-01-01", grade: "Synthetic grade", guardianLabel: "Synthetic guardian" });
   families.add(id); return id;
 }
-async function consent(id: string) { await recordConsent(admin, id, { accepted: true, guardianName: "Synthetic guardian", reference: "SYNTHETIC-LIFECYCLE" }); }
+async function consent(id: string) {
+  for (const scope of ["assessment", "sensitive_data", "parent_report"] as const) {
+    await recordConsent(admin, id, { action: "grant", scope, guardianName: "Synthetic guardian", reference: "SYNTHETIC-LIFECYCLE" });
+  }
+}
 function invitationToken(url: string) { return new URLSearchParams(new URL(url).hash.slice(1)).get("token")!; }
 async function waitForLock(sqlFragment: string) {
   for (let attempt = 0; attempt < 100; attempt++) {

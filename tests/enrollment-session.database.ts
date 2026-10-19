@@ -38,7 +38,7 @@ try{
    const username=prefix+flow+(recovered?'_race':'_valid');names.push(username);let path='',body:Record<string,unknown>={};
    if(flow==='profile'){path='auth/register';body={name:'Synthetic parent',role:'parent',username,password:oldPassword};}
    if(flow==='invitation'){const f=await family();const invite=await post(`families/${f.id}/invites`,{role:'parent'},adminCookie);assert.equal(invite.status,201,JSON.stringify(invite));path='invite';body={token:invite.body.url.split('token=')[1],name:'Synthetic parent',username,password:oldPassword};}
-   if(flow==='parent'){path='triad/parent';body={parentName:'Synthetic parent',username,password:oldPassword,relationship:'母亲',childName:'Synthetic child',birthDate:'2014-01-01',grade:'初中',accepted:true};}
+   if(flow==='parent'){path='triad/parent';body={parentName:'Synthetic parent',username,password:oldPassword,relationship:'母亲',childName:'Synthetic child',birthDate:'2014-01-01',grade:'初中',assessment:true,sensitiveData:true,parentReport:true};}
    if(flow==='join'){const f=await family(true);path='triad/join';body={code:f.code,role:'student',name:'Synthetic student',username,password:oldPassword};}
    body.username=`  ${username.toUpperCase()}  `;
    // Delay only dispatch of the real pool query. The route, creation services,

@@ -46,7 +46,7 @@ beforeEach(() => {
     if (sql.includes("FROM users WHERE id=$1")) return { rows: [{ ...actor, disabled: revoked, demo: false }] };
     if (sql.includes("SELECT id FROM families")) return { rows: [{ id: familyId }] };
     if (sql.includes("SELECT a.*,r.id AS report_id")) return { rows: [{ id: assessmentId, status, draft_revision: revision, family_id: familyId, respondent_role: "parent", triad_round_id: "synthetic-round", report_id: status === "published" ? "existing-report" : null }] };
-    if (sql.includes("SELECT scopes FROM consents")) return { rows: consent ? [{ scopes: ["assessment", "parent_report", "sensitive_data"] }] : [] };
+    if (sql.includes("AS scopes FROM consents") || sql.includes("SELECT scopes FROM consents")) return { rows: consent ? [{ scopes: ["assessment", "parent_report", "sensitive_data"] }] : [] };
     return { rows: [] };
   });
   vi.mocked(transaction).mockImplementation(async fn => fn(client as unknown as PoolClient));

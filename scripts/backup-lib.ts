@@ -129,7 +129,7 @@ export function timestampSlug(date = new Date()): string {
 }
 
 export const COUNTED_TABLES = [
-  "users","families","memberships","consents","invitations","scales","content_versions",
+  "users","families","memberships","consents","consent_scope_revocations","invitations","scales","content_versions",
   "assessments","reports","report_jobs","goals","observations","audit_events","file_deletion_jobs"
 ] as const;
 export type CountedTable = typeof COUNTED_TABLES[number];

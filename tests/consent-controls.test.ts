@@ -14,22 +14,22 @@ function markup(role: Role, canInviteMembers: boolean, locale: Locale, consent =
 describe.each(["zh-CN", "zh-HK"] as const)("%s consent controls", locale => {
   it("hides consent mutation from staff with safety-only family visibility", () => {
     const html = markup("staff", false, locale);
-    expect(html).not.toContain(copy(locale)("consentTitle"));
-    expect(html).toContain(copy(locale)("noConsent"));
+    expect(html).not.toContain(copy(locale)("consentUpdate"));
+    expect(html).toContain(copy(locale)("consentNotGranted"));
     expect(html).toContain(copy(locale)("addObservation"));
   });
   it.each(["staff", "admin"] as const)("shows consent mutation for a %s with the server family capability", role => {
-    expect(markup(role, true, locale)).toContain(copy(locale)("consentTitle"));
+    expect(markup(role, true, locale)).toContain(copy(locale)("consentUpdate"));
   });
   it("preserves online consent for the parent of a server-scoped family", () => {
-    expect(markup("parent", false, locale)).toContain(copy(locale)("consentTitle"));
+    expect(markup("parent", false, locale)).toContain(copy(locale)("consentUpdate"));
   });
   it.each(["student", "teacher"] as const)("does not offer guardian consent to a %s", role => {
-    expect(markup(role, false, locale)).not.toContain(copy(locale)("consentTitle"));
+    expect(markup(role, false, locale)).not.toContain(copy(locale)("consentUpdate"));
   });
   it("preserves the completed-consent status", () => {
     const html = markup("parent", false, locale, true);
-    expect(html).not.toContain(copy(locale)("consentTitle"));
-    expect(html).toContain(copy(locale)("consented"));
+    expect(html).toContain(copy(locale)("consentGranted"));
+    expect(html).toContain(copy(locale)("consentUpdate"));
   });
 });

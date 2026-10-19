@@ -32,7 +32,7 @@ try{
   const record:Record<string,unknown>={actorRole,status:'running'};evidence.cases.push(record);
   try{
    const parent=await context(),id=randomUUID().slice(0,8),password=randomUUID()+'aA9',childName='合成删除竞争'+id;
-   const f=await call(parent,'/api/triad/parent',{parentName:'合成删除家长',username:'delete-'+id,password,relationship:'母亲',childName,birthDate:'2013-06-15',grade:'小学四至六年级',accepted:true});
+   const f=await call(parent,'/api/triad/parent',{parentName:'合成删除家长',username:'delete-'+id,password,relationship:'母亲',childName,birthDate:'2013-06-15',grade:'小学四至六年级',assessment:true,sensitiveData:true,parentReport:true});
    let reportId:string|undefined;
    if(actorRole==='admin'){
     const p=(await call(parent,'/api/workspace')).assessments[0];reportId=p.id;

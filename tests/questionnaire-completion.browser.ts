@@ -62,7 +62,7 @@ async function fixture(answers: Record<string, StoredAnswer>) {
   assert.equal(initial.mode, "demo");
   const registered = await api("/api/triad/parent", "POST", {
     parentName: "合成核查家长", username: `completion_${randomBytes(8).toString("hex")}`, password: randomBytes(24).toString("base64url"),
-    relationship: "母亲", childName: "合成核查孩子", birthDate: `${new Date().getUTCFullYear() - 12}-01-01`, grade: "初中", accepted: true,
+    relationship: "母亲", childName: "合成核查孩子", birthDate: `${new Date().getUTCFullYear() - 12}-01-01`, grade: "初中", assessment: true, sensitiveData: true, parentReport: true,
   });
   assert.equal(registered.status(), 201, "Synthetic parent registration must succeed on the isolated local server");
   const created = await registered.json();

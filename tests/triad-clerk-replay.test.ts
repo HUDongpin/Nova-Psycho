@@ -23,7 +23,7 @@ let tasks: { id: string; respondent_id: string; respondent_role: string }[];
 const sql = vi.fn(async (text: string, values: unknown[] = []) => {
   if (text.includes("FROM families WHERE join_code=$1")) return { rows: values[0] === input.code ? [family] : [] };
   if (text.includes("FROM users WHERE id=$1")) return { rows: user ? [{ ...user }] : [] };
-  if (text.includes("FROM consents WHERE family_id=$1")) return { rows: [{ id: "synthetic-consent" }] };
+  if (text.includes("FROM consents WHERE family_id=$1")) return { rows: [{ scopes: ["assessment", "sensitive_data", "parent_report"] }] };
   if (text.includes("FROM memberships WHERE family_id=$1")) return { rows: members };
   if (text.includes("s.scale_id=$5")) return { rows: tasks.filter(task => task.respondent_id === values[1] && task.respondent_role === values[2]) };
   if (text.startsWith("SELECT id FROM scales")) return { rows: [{ id: "growth-child@1.0.0" }] };

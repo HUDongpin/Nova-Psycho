@@ -148,7 +148,7 @@ function allOtherAnswers(items: Supplement[], region: Region, withText: boolean)
 }
 async function registerParent(regional: Regional, scenario: string): Promise<Case> {
   const visitor = { base: regional.base, cookie: "" };
-  const response = await request(visitor, `/api/triad/parent?locale=${regional.locale}`, "POST", { parentName: "版本验证合成家长", username: `dv_${regional.region.toLowerCase()}_${scenario}_${nonce}`, password: randomBytes(24).toString("base64url"), relationship: "母亲", childName: "版本验证合成孩子", birthDate: `${new Date().getUTCFullYear() - 12}-01-01`, grade: "初中", accepted: true });
+  const response = await request(visitor, `/api/triad/parent?locale=${regional.locale}`, "POST", { parentName: "版本验证合成家长", username: `dv_${regional.region.toLowerCase()}_${scenario}_${nonce}`, password: randomBytes(24).toString("base64url"), relationship: "母亲", childName: "版本验证合成孩子", birthDate: `${new Date().getUTCFullYear() - 12}-01-01`, grade: "初中", assessment: true, sensitiveData: true, parentReport: true });
   equal(response.status, 201, "New synthetic parent registration must succeed");
   const value = await response.json() as { familyId: string; joinCode: string };
   const parent = authenticated(regional.base, response), parentTask = task(await workspace(parent, regional.locale), value.familyId, "parent");
@@ -325,7 +325,8 @@ async function extraCases(regional: Regional, items: Supplement[]): Promise<void
     const response = await request({ base: regional.base, cookie: "" }, "/api/invite", "POST", { token, name: "旧版验证合成家长", username: `dv_legacy_reject_${nonce}`, password: randomBytes(24).toString("base64url") });
     equal(response.status, 200, "Independent legacy respondent must accept invitation");
     const client = authenticated(regional.base, response), session = await ok<Session>(client, "/api/session"); requireCondition(session.user, "Synthetic legacy respondent must authenticate");
-    await ok(client, `/api/families/${family.id}/consent`, "POST", { accepted: true, guardianName: "合成家长", aiProcessing: false });
+    await ok(client, `/api/families/${family.id}/consent`, "POST", { action: "grant", scope: "assessment", guardianName: "合成家长" });
+    await ok(client, `/api/families/${family.id}/consent`, "POST", { action: "grant", scope: "sensitive_data", guardianName: "合成家长" });
     const assigned = await ok<{ id: string }>(regional.admin, "/api/assessments", "POST", { familyId: family.id, respondentId: session.user.id, scaleVersionId: "growth-parent@1.0.0", locale: regional.locale });
     created.push({ region: regional.region, scenario: "legacy-field-reject", familyId: family.id, assessmentId: assigned.id });
     equal((await row(regional, assigned.id)).scale_version_id, "growth-parent@1.0.0", "Independent legacy rejection fixture must actually use version 1.0.0");

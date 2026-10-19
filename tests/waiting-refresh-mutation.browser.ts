@@ -33,7 +33,7 @@ async function call(c:BrowserContext,url:string,data?:unknown,method=data===unde
 }
 async function family(){
  const parent=await context(),suffix=randomUUID().slice(0,8),password=randomUUID()+'aA9';
- const started=await call(parent,'/api/triad/parent',{parentName:'合成突变家长',username:`mutation-${suffix}-parent`,password,relationship:'母亲',childName:'合成突变孩子',birthDate:'2013-06-15',grade:'小学四至六年级',accepted:true});
+ const started=await call(parent,'/api/triad/parent',{parentName:'合成突变家长',username:`mutation-${suffix}-parent`,password,relationship:'母亲',childName:'合成突变孩子',birthDate:'2013-06-15',grade:'小学四至六年级',assessment:true,sensitiveData:true,parentReport:true});
  const workspace=await call(parent,'/api/workspace');assert.equal(workspace.assessments.length,1);
  const id=workspace.assessments[0].id;assert.equal(workspace.assessments[0].status,'pending');
  const joinOthers=async()=>{

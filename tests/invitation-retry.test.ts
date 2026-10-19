@@ -34,7 +34,7 @@ beforeEach(() => {
     if (sql.includes("SELECT family_id FROM invitations")) return { rows: [{ family_id: FAMILY_ID }] };
     if (sql.includes("FROM families WHERE id=$1")) return { rows: [{ id: FAMILY_ID, region: "CN", birth_date: "2014-01-01", join_code: "TOPE-A2B3C4D5" }] };
     if (sql.includes("FOR UPDATE OF i")) return { rows: [invite] };
-    if (sql.includes("FROM consents")) return { rows: [{ id: "synthetic-consent" }] };
+    if (sql.includes("FROM consents")) return { rows: [{ scopes: ["assessment", "sensitive_data", "parent_report"] }] };
     if (sql.includes("pg_advisory_xact_lock")) return { rows: [] };
     if (sql.includes("FROM external_identities i")) return { rows: linked && user ? [user] : [] };
     if (sql.startsWith("INSERT INTO users")) {

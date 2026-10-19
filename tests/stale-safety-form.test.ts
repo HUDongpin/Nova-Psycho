@@ -58,7 +58,7 @@ function setup(definition: typeof opened) {
     if (sql.includes("FROM users WHERE id=$1")) return { rows: [{ id: userId, name: "Synthetic", role: "student", region: "CN", disabled: false, demo: false }] };
     if (sql.includes("SELECT id FROM families")) return { rows: [{ id: familyId }] };
     if (sql.includes("SELECT a.*,r.id AS report_id")) return { rows: [assessment] };
-    if (sql.includes("SELECT scopes FROM consents")) return { rows: [{ scopes: ["assessment", "parent_report", "sensitive_data"] }] };
+    if (sql.includes("AS scopes FROM consents") || sql.includes("SELECT scopes FROM consents")) return { rows: [{ scopes: ["assessment", "parent_report", "sensitive_data"] }] };
     if (sql.includes("INSERT INTO staff_alerts")) return { rows: [{ id: "new-alert" }] };
     return { rows: [] };
   });

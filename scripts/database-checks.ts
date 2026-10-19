@@ -6,6 +6,7 @@ import {createFamily,recordConsent,deleteFamily,createInvitation,acceptInvitatio
 import {query,transaction,closeDatabase} from "../src/lib/db";
 import {getConfig} from "../src/lib/config";
 import type {Actor,ReportPayload} from "../src/domain/types";
+import {ACTIVE_CONSENT_ROWS_SQL,consentScopeGrantedSql,scopeList} from "../src/lib/consent";
 import {reportDetail,reportFor} from "../src/lib/reports";
 import {readPrivatePdf} from "../src/lib/storage";
 import {processDeletionJobs,cleanOrphanReports} from "../src/lib/worker";
@@ -19,20 +20,32 @@ const createdFamilies=new Set<string>();
 const familyFixtures=new Set<string>(),createdUsers=new Set<string>();
 async function newFamily(){const f=await createFamily(admin,{familyName:"并发测试家庭",childName:"并发合成孩子",birthDate:"2014-04-10",grade:"六年级",guardianLabel:"母亲"});createdFamilies.add(f.id);familyFixtures.add(f.id);return f.id;}
 try{
-  await check("consent renewals serialize and allow exactly one active grant",async()=>{
+  await check("separate consent grants stay one row per purpose",async()=>{
     const id=await newFamily();
-    const grant=(allow:boolean)=>recordConsent(admin,id,{accepted:true,guardianName:"合成监护人",reference:"SYNTHETIC-REGRESSION",aiProcessing:allow});
-    await grant(true);
-    await Promise.all([grant(true),grant(false),grant(true),grant(false)]);
-    assert.equal((await query("SELECT id FROM consents WHERE family_id=$1 AND revoked_at IS NULL",[id])).length,1);
-    await grant(false);
-    const current=await query("SELECT scopes FROM consents WHERE family_id=$1 AND revoked_at IS NULL",[id]);assert.ok(!current[0].scopes.includes("ai_processing"));
-    await assert.rejects(()=>query("INSERT INTO consents(id,family_id,guardian_name,method,notice_version,scopes) VALUES($1,$2,'synthetic','synthetic','test','[]')",[randomUUID(),id]),(e:unknown)=>(e as {code?:string}).code==="23505");
+    const grant=(scope:string)=>recordConsent(admin,id,{action:"grant",scope,guardianName:"合成监护人",reference:"SYNTHETIC-REGRESSION"});
+    await Promise.all([grant("assessment"),grant("assessment"),grant("sensitive_data"),grant("parent_report")]);
+    const during=await query<{scopes:string[]}>("SELECT scopes FROM consents WHERE family_id=$1 AND revoked_at IS NULL",[id]);
+    assert.deepEqual(during.map(row=>row.scopes[0]).sort(),["assessment","parent_report","sensitive_data"]);
+    await recordConsent(admin,id,{action:"withdraw",scope:"parent_report",guardianName:"合成监护人",reference:"SYNTHETIC-REGRESSION"});
+    const current=await query<{scopes:unknown}>(ACTIVE_CONSENT_ROWS_SQL,[id]);
+    assert.deepEqual(current.flatMap(row=>scopeList(row.scopes)).sort(),["assessment","sensitive_data"]);
+    await assert.rejects(()=>query("INSERT INTO consents(id,family_id,guardian_name,method,notice_version,scopes) VALUES($1,$2,'synthetic','synthetic','test',$3)",[randomUUID(),id,JSON.stringify(["assessment"])]),(e:unknown)=>(e as {code?:string}).code==="23505");
+    await assert.rejects(()=>query("INSERT INTO consents(id,family_id,guardian_name,method,notice_version,scopes) VALUES($1,$2,'synthetic','synthetic','test','[]')",[randomUUID(),id]),(e:unknown)=>(e as {code?:string}).code==="23514");
+  });
+  await check("a legacy combined consent row still grants every listed purpose",async()=>{
+    const id=await newFamily();
+    await query("INSERT INTO consents(id,family_id,guardian_name,method,notice_version,scopes) VALUES($1,$2,'synthetic','synthetic','legacy',$3)",[randomUUID(),id,JSON.stringify(["assessment","parent_report","sensitive_data"])]);
+    const rows=await query<{scopes:string[]}>("SELECT scopes FROM consents WHERE family_id=$1 AND revoked_at IS NULL",[id]);
+    assert.equal(rows.length,1);
+    assert.deepEqual(rows[0].scopes,["assessment","parent_report","sensitive_data"]);
+    const granted=await query<{ok:boolean}>(`SELECT (${consentScopeGrantedSql("$1","assessment")} AND ${consentScopeGrantedSql("$1","parent_report")} AND ${consentScopeGrantedSql("$1","sensitive_data")}) AS ok`,[id]);
+    assert.equal(granted[0].ok,true);
   });
   await check("invitation admission and deletion preserve independent accounts without family access",async()=>{
     for(const order of ["admission-first","deletion-first",...Array<string>(5).fill("concurrent")]){
       const id=await newFamily();
-      await recordConsent(admin,id,{accepted:true,guardianName:"合成监护人",reference:"SYNTHETIC-ADMISSION-RACE"});
+      await recordConsent(admin,id,{action:"grant",scope:"assessment",guardianName:"合成监护人",reference:"SYNTHETIC-ADMISSION-RACE"});
+      await recordConsent(admin,id,{action:"grant",scope:"sensitive_data",guardianName:"合成监护人",reference:"SYNTHETIC-ADMISSION-RACE"});
       const inv=await createInvitation(admin,id,{role:"student"});const token=new URLSearchParams(new URL(inv.url).hash.slice(1)).get("token")!;
       const username=`qa_race_${randomBytes(6).toString("hex")}`;
       const admit=async()=>{const userId=await acceptInvitation({token,name:"并发合成学生",username,password:randomBytes(18).toString("base64url")});createdUsers.add(userId);return userId;};

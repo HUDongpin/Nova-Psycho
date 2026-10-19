@@ -25,7 +25,7 @@ async function fixture(name:string,open=true):Promise<Fixture>{
   const context=await browser.newContext({viewport:{width:1440,height:1000}});contexts.push(context);
   await context.route("**/*",route=>new URL(route.request().url()).origin===base?route.continue():route.abort());
   const username=`session_${name}_${randomUUID()}`,password=randomUUID()+"A9!";
-  const family=await call(context,"/api/triad/parent",{parentName:"合成恢复家长",username,password,relationship:"母亲",childName:`合成恢复${name}`,birthDate:"2014-01-01",grade:"初中",accepted:true});
+  const family=await call(context,"/api/triad/parent",{parentName:"合成恢复家长",username,password,relationship:"母亲",childName:`合成恢复${name}`,birthDate:"2014-01-01",grade:"初中",assessment:true,sensitiveData:true,parentReport:true});
   const workspace=await call(context,"/api/workspace"),assessment=workspace.assessments.find((a:any)=>a.familyId===family.familyId);assert.ok(assessment);
   const answers:Record<string,unknown>={};for(const item of parentScale.items){if(item.id==="p_worry")break;answers[item.id]=item.gate??(item.kind==="multi"?[item.choices[0].value]:item.choices[0].value);}
   await call(context,`/api/assessments/${assessment.id}`,{answers,acknowledged:true,revision:0},"PATCH");
