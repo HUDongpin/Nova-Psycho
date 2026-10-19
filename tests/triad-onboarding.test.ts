@@ -8,6 +8,7 @@ import { hashPassword, limitLogin } from "../src/lib/auth";
 import { startParentCase, joinWithCode } from "../src/lib/triad";
 import { handle } from "../src/lib/http";
 import { noticeVersion } from "../src/lib/privacy";
+import { currentTriadScaleIds } from "../src/domain/triad-scales";
 
 const parent = { parentName: "Synthetic parent", username: "synthetic.parent", password: "synthetic-password", relationship: "母亲", childName: "Synthetic child", birthDate: "2014-10-08", grade: "小学四至六年级", accepted: true };
 const joining = { code: "TOPE-A2B3C4D5", role: "student", name: "Synthetic student", username: "synthetic.student", password: "synthetic-password" };
@@ -92,14 +93,14 @@ describe("P27/P36/P42 correct family, role, locale and consent binding", () => {
     expect(values("INSERT INTO memberships")).toEqual([result.familyId, result.userId]);
     expect(values("INSERT INTO consents").slice(1, 5)).toEqual([result.familyId, result.userId, parent.parentName, noticeVersion]);
     expect(JSON.parse(String(values("INSERT INTO consents")[5]))).toEqual(["assessment", "parent_report", "sensitive_data"]);
-    expect(values("INSERT INTO assessments").slice(1, 6)).toEqual([result.familyId, "HK", result.userId, "growth-parent@1.2.0", "zh-HK"]);
+    expect(values("INSERT INTO assessments").slice(1, 6)).toEqual([result.familyId, "HK", result.userId, currentTriadScaleIds.parent, "zh-HK"]);
   });
   it.each(["student", "teacher"] as const)("assigns the correct %s instrument under a regional family lock", async role => {
     const result = await joinWithCode({ ...joining, role }, "zh-HK");
     const family = sql.mock.calls.find(([text]) => text.startsWith("SELECT id,birth_date"))!;
     expect(family[0]).toContain("region=$2 FOR UPDATE"); expect(family[1]).toEqual([joining.code, "HK"]);
     const task = sql.mock.calls.find(([text]) => text.startsWith("INSERT INTO assessments"))![1]!;
-    expect(task.slice(1, 7)).toEqual(["synthetic-family", "HK", result.userId, role, role === "student" ? "growth-child@1.2.0" : "growth-teacher@1.2.0", "zh-HK"]);
+    expect(task.slice(1, 7)).toEqual(["synthetic-family", "HK", result.userId, role, currentTriadScaleIds[role], "zh-HK"]);
   });
   it("rejects reuse of an occupied role before creating another user or task", async () => {
     roleTaken = true;

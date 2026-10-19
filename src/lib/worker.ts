@@ -8,7 +8,7 @@ import { normValidated } from "../domain/validation";
 import { getConfig, isDemoMode } from "./config";
 import { query,transaction } from "./db";
 import { renderPdf } from "./pdf";
-import { listPrivatePdfKeys,removePrivatePdf,writePrivatePdf } from "./storage";
+import { cleanAbandonedPrivatePdfTemps,listPrivatePdfKeys,removePrivatePdf,writePrivatePdf } from "./storage";
 import { validateId } from "./http";
 export type ReportJobResult=
   |{status:"published"}
@@ -22,6 +22,7 @@ export async function processDeletionJobs():Promise<void>{
 }
 export async function cleanOrphanReports():Promise<void>{
   if(getConfig().reportStorage==="database")return;
+  await cleanAbandonedPrivatePdfTemps();
   for(const key of await listPrivatePdfKeys()){
     const id=key.slice(0,36);const rows=await query("SELECT a.status,r.pdf_keys FROM assessments a LEFT JOIN reports r ON r.assessment_id=a.id WHERE a.id=$1",[id]);
     const r=rows[0];if(!r||r.status==="failed"||(r.pdf_keys&&!Object.values(r.pdf_keys).includes(key)))await removePrivatePdf(key);
@@ -128,18 +129,29 @@ async function runReportJob(jobId?:string):Promise<ReportJobResult>{
     });
     return {status:"published"};
   }catch{
-    if(getConfig().reportStorage==="filesystem")for(const key of Object.values(keys))await removePrivatePdf(key).catch(()=>{});
     const terminal=unboundTriad||blockCode!==null||job.attempts>=3;
     const reason=blockCode??(unboundTriad?"TRIAD_SOURCES_UNBOUND":job.attempt_limit_reached?"REPORT_ATTEMPTS_EXHAUSTED":"REPORT_GENERATION_FAILED");
-    const changed=await query(`WITH changed AS (
+    const failureSql=`WITH changed AS (
       UPDATE report_jobs SET state=$1,lease_until=NULL,available_at=now()+interval '10 seconds',last_error_code=$4
       WHERE id=$2 AND claim_token=$3 AND state='running' RETURNING assessment_id,source_assessment_ids,available_at
     ), failed_assessments AS (
       UPDATE assessments SET status='failed' WHERE $1='failed' AND status='queued'
         AND id IN (SELECT unnest(COALESCE(source_assessment_ids,ARRAY[assessment_id])) FROM changed) RETURNING id
-    ) SELECT assessment_id,source_assessment_ids,available_at FROM changed`,[terminal?"failed":"ready",job.id,token,reason]);
+    ) SELECT assessment_id,source_assessment_ids,available_at FROM changed`;
+    const failureValues=[terminal?"failed":"ready",job.id,token,reason];
+    const changed=terminal?await transaction(async client=>{
+      await client.query("SELECT f.id FROM families f JOIN assessments a ON a.family_id=f.id WHERE a.id=$1 AND f.region=$2 FOR UPDATE OF f",[job.assessment_id,getConfig().region]);
+      return (await client.query(failureSql,failureValues)).rows;
+    }):await query(failureSql,failureValues);
+    if(getConfig().reportStorage==="filesystem"&&Object.keys(keys).length){
+      // COMMIT may succeed even if its response is lost. The job update above
+      // waits for that transaction before deciding which files are unreferenced.
+      const published=changed.length?[]:await query<{pdf_keys:Record<Locale,string>}>("SELECT pdf_keys FROM reports WHERE assessment_id=$1 AND region=$2",[job.assessment_id,getConfig().region]);
+      const referenced=new Set(Object.values(published[0]?.pdf_keys??{}));
+      for(const key of Object.values(keys))if(!referenced.has(key))await removePrivatePdf(key).catch(()=>{});
+    }
     console.error("nova_report_generation_failed",{region:getConfig().region,attempt:job.attempts});
-    if(!changed[0])return {status:"already_done"};
+    if(!changed[0])return unclaimedJobResult(job.id);
     return terminal?{status:"terminal"}:{status:"retry_at",retryAt:new Date(changed[0].available_at??Date.now()+10000).toISOString()};
   }
 }

@@ -8,9 +8,10 @@ import { demoAdvice,demoScale,demoTemplate } from "../src/domain/demo";
 import { scoreAssessment } from "../src/domain/scoring";
 import type { ReportPayload } from "../src/domain/types";
 
-// Rendering needs a real Chromium, which CI and some sandboxes do not have. The suite
-// skips there rather than pretending to pass, and the skip is announced so it cannot be
-// mistaken for coverage. Run `npx playwright install chromium` to enable it anywhere.
+// Rendering needs a real Chromium. Without one the suite skips rather than pretending
+// to pass, and the skip is announced so it cannot be mistaken for coverage. CI installs
+// Playwright Chromium into the cache detected below and fails the job if these tests
+// do not run. Run `npx playwright install chromium` to enable them locally.
 //
 // Gate 1 is path-based and conservative: an explicit NOVA_CHROMIUM_EXECUTABLE, Chrome
 // on macOS, or Playwright's own browser cache. Guessing at Linux paths risks matching a

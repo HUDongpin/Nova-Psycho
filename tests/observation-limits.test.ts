@@ -1,17 +1,19 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { PoolClient } from "pg";
 import type { Actor } from "../src/domain/types";
 import type { Family } from "../src/components/api";
 
 vi.mock("../src/lib/access", () => ({ familyFor: vi.fn(async () => ({})) }));
 vi.mock("../src/lib/auth", () => ({ audit: vi.fn(async () => undefined) }));
-vi.mock("../src/lib/db", () => ({ query: vi.fn(async () => []) }));
+vi.mock("../src/lib/triad", () => ({ lockRegistrationActor: vi.fn(async (_client: unknown, actor: Actor) => actor) }));
+vi.mock("../src/lib/db", () => ({ query: vi.fn(async (sql: string) => sql.includes("SELECT id FROM families") ? [{ id: "22222222-3333-4444-8555-666666666666" }] : []), transaction: vi.fn() }));
 
 import { ObservationForm } from "../src/components/forms";
 import { addObservation } from "../src/lib/care";
 import { familyFor } from "../src/lib/access";
-import { query } from "../src/lib/db";
+import { query, transaction } from "../src/lib/db";
 
 const family: Family = {
   id: "22222222-3333-4444-8555-666666666666", familyName: "Synthetic family", childName: "Synthetic child",
@@ -20,7 +22,10 @@ const family: Family = {
 };
 const actor: Actor = { id: "99999999-8888-4777-8666-555555555555", name: "Synthetic staff", role: "staff", region: "CN" };
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(transaction).mockImplementation(async fn => fn({ query: async (sql: string, values: unknown[]) => ({ rows: await query(sql, values) }) } as unknown as PoolClient));
+});
 
 describe("observation length contract", () => {
   it.each(["zh-CN", "zh-HK"] as const)("limits the %s input to the same 4000 characters the server accepts", locale => {
@@ -42,5 +47,6 @@ describe("observation length contract", () => {
     });
     expect(familyFor).not.toHaveBeenCalled();
     expect(query).not.toHaveBeenCalled();
+    expect(transaction).not.toHaveBeenCalled();
   });
 });
