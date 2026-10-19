@@ -2,7 +2,8 @@ import { NextResponse } from "next/server";
 import { ZodError } from "zod";
 import { getConfig } from "./config";
 import type { Locale, Role } from "../domain/types";
-export class HttpError extends Error{constructor(public status:number,message:string,public code="REQUEST_FAILED",public field?:string){super(message);}}
+import type { CompletionIssue } from "../domain/completion";
+export class HttpError extends Error{constructor(public status:number,message:string,public code="REQUEST_FAILED",public field?:string,public completionIssues?:CompletionIssue[]){super(message);}}
 export function localeOf(request:Request):Locale{return new URL(request.url).searchParams.get("locale")==="zh-HK"?"zh-HK":"zh-CN";}
 export function json(value:unknown,status=200):NextResponse{return NextResponse.json(value,{status,headers:{"Cache-Control":"no-store"}});}
 export async function body(request:Request):Promise<unknown>{
@@ -20,7 +21,7 @@ export function requireRole(actual:Role,allowed:Role[]):void{if(!allowed.include
 export function validateId(id:string):string{if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))throw new HttpError(404,"未找到该记录。","NOT_FOUND");return id;}
 export async function handle(fn:()=>Promise<Response>):Promise<Response>{
   try{return await fn();}catch(e){
-    if(e instanceof HttpError)return json({error:e.message,code:e.code,...(e.field?{field:e.field}:{})},e.status);
+    if(e instanceof HttpError)return json({error:e.message,code:e.code,...(e.field?{field:e.field}:{}),...(e.code==="INCOMPLETE_TRIAD"&&e.completionIssues?{completionIssues:e.completionIssues}:{})},e.status);
     if(e instanceof ZodError){
       const field=e.issues[0]?.path[0];
       const messages:Record<string,string>={username:"用户名须为 3 至 100 个英文字母、数字或 _ . @ -。",password:"密码须为 12 至 256 个字符。",name:"请输入你的姓名，不超过 100 个字符。",parentName:"请输入家长姓名，不超过 100 个字符。",accepted:"请先阅读并确认监护人知情同意。",birthDate:"请输入有效的孩子出生日期。"};

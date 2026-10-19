@@ -1,13 +1,13 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
-import type { Actor, Locale, RespondentRole } from "../domain/types";
+import type { Actor, Locale, RespondentRole, Role } from "../domain/types";
 import { z } from "zod";
-import { childScale, parentScale, teacherScale, triadScales } from "../domain/triad-scales";
+import { childScale, currentTriadScaleIds, teacherScale, triadScales } from "../domain/triad-scales";
 import { TRIAD_BUNDLE, triadRolesReady } from "../domain/triad-report";
 import { pair } from "../domain/zh-pair";
-import { parseAdvice, parseScale, parseTemplate } from "../domain/validation";
-import { ageAt, familyFor } from "./access";
-import { audit, hashPassword, limitLogin } from "./auth";
+import { parseAdvice, parseStoredScale, parseTemplate } from "../domain/validation";
+import { ageAt } from "./access";
+import { hashPassword, limitLogin } from "./auth";
 import { getConfig, isDemoMode } from "./config";
 import { query, transaction } from "./db";
 import { HttpError, requireRole, validateId } from "./http";
@@ -16,16 +16,13 @@ import type { VerifiedClerkIdentity } from "./clerk-auth";
 import { formatJoinCode, joinCodeFormatMessage, parseJoinCode, registrationName, registrationPassword, registrationUsername } from "../domain/registration";
 export { formatJoinCode } from "../domain/registration";
 
-const SCALE_ID = {
-  parent: `${parentScale.id}@${parentScale.version}`,
-  student: `${childScale.id}@${childScale.version}`,
-  teacher: `${teacherScale.id}@${teacherScale.version}`
-} as const;
+const SCALE_ID = currentTriadScaleIds;
 const short = registrationName;
 const username = registrationUsername;
 const password = registrationPassword;
 const grades = ["学前大班", "小学一至三年级", "小学四至六年级", "初中", "高中", "其他"] as const;
 const relationships = ["母亲", "父亲", "祖父母或外祖父母", "其他主要照顾者"] as const;
+const clerkStudentJoinInput = z.object({ code: z.string(), name: short, role: z.literal("student") }).strict();
 
 function normalizeCode(code: string): string {
   const parsed = parseJoinCode(code);
@@ -51,10 +48,12 @@ export interface RegistrationFamily {
   join_code: string | null;
 }
 
-export async function lockRegistrationActor(client: PoolClient, actor: Actor): Promise<Actor> {
+export async function lockRegistrationActor(client: PoolClient, actor: Actor, lockMode: "UPDATE" | "SHARE" = "UPDATE"): Promise<Actor> {
   const config = getConfig();
   if (actor.region !== config.region) throw new HttpError(403, "请使用账号所属地区的入口。", "REGION_MISMATCH");
-  const result = await client.query<Actor & { disabled: boolean; demo: boolean }>("SELECT id,name,role,region,disabled,demo FROM users WHERE id=$1 FOR UPDATE", [actor.id]);
+  // Registration needs exclusivity for request replay. Other mutations can share
+  // this lock, protecting account changes without blocking user foreign keys.
+  const result = await client.query<Actor & { disabled: boolean; demo: boolean }>(`SELECT id,name,role,region,disabled,demo FROM users WHERE id=$1 FOR ${lockMode === "SHARE" ? "SHARE" : "UPDATE"}`, [actor.id]);
   const current = result.rows[0];
   if (!current || current.disabled || (config.mode !== "demo" && current.demo)) throw new HttpError(403, "账号已停用，请联系服务人员。", "ACCOUNT_REVOKED");
   if (current.region !== actor.region) throw new HttpError(403, "请使用账号所属地区的入口。", "REGION_MISMATCH");
@@ -85,8 +84,9 @@ export interface FamilyJoinResult { userId: string; familyId: string; assessment
 // version these routes assign still has norm.validated !== true.
 export function assertPublicTriadOpen(): void {
   if (isDemoMode()) return;
-  const assigned = [childScale, parentScale, teacherScale];
-  if (assigned.some(scale => scale.norm.validated !== true)) throw new HttpError(409, "正式服务尚未提供已验证常模的三方问卷，暂时不能创建或加入家庭。", "UNVALIDATED_INSTRUMENT");
+  const assignedIds = new Set<string>(Object.values(currentTriadScaleIds));
+  const assigned = triadScales.filter(scale => assignedIds.has(`${scale.id}@${scale.version}`));
+  if (assigned.length !== assignedIds.size || assigned.some(scale => scale.norm.validated !== true)) throw new HttpError(409, "正式服务尚未提供已验证常模的三方问卷，暂时不能创建或加入家庭。", "UNVALIDATED_INSTRUMENT");
   if (assigned.some(scale => scale.demo)) throw new HttpError(409, "正式服务环境不能使用演示问卷创建或加入家庭。", "DEMO_INSTRUMENT");
 }
 
@@ -119,7 +119,9 @@ export async function joinTriadFamilyInTransaction(client: PoolClient, actor: Ac
 export async function joinFamily(actor: Actor, input: unknown, locale: Locale): Promise<FamilyJoinResult> {
   assertPublicTriadOpen();
   requireRole(actor.role, ["student", "teacher"]);
-  const data = z.object({ code: z.string() }).strict().parse(input);
+  const authenticatedInput = z.object({ code: z.string() }).strict();
+  // A lost onboarding response can be retried after Clerk resolves the new student.
+  const data = (actor.role === "student" ? z.union([authenticatedInput, clerkStudentJoinInput]) : authenticatedInput).parse(input);
   const code = normalizeCode(data.code);
   return transaction(async client => {
     const family = await familyByJoinCode(client, code);
@@ -131,7 +133,7 @@ export async function joinFamily(actor: Actor, input: unknown, locale: Locale): 
 
 export async function joinClerkStudent(principal: VerifiedClerkIdentity, input: unknown, locale: Locale): Promise<FamilyJoinResult> {
   assertPublicTriadOpen();
-  const data = z.object({ code: z.string(), name: short, role: z.literal("student") }).strict().parse(input);
+  const data = clerkStudentJoinInput.parse(input);
   const code = normalizeCode(data.code);
   if (principal.region !== getConfig().region) throw new HttpError(403, "请使用账号所属地区的入口。", "REGION_MISMATCH");
   return transaction(async client => {
@@ -174,18 +176,21 @@ export async function ensureTriadInstruments(): Promise<void> {
   await query("ALTER TABLE families ADD COLUMN IF NOT EXISTS join_code text");
   await query("CREATE UNIQUE INDEX IF NOT EXISTS families_join_code ON families(join_code) WHERE join_code IS NOT NULL");
   await query("UPDATE families SET join_code = 'TOPE-' || join_code WHERE join_code IS NOT NULL AND join_code !~ '^TOPE-'");
-  await query("CREATE TABLE IF NOT EXISTS staff_alerts(id uuid PRIMARY KEY,family_id uuid NOT NULL REFERENCES families(id) ON DELETE CASCADE,region text NOT NULL,assessment_id uuid,created_at timestamptz NOT NULL DEFAULT now(),viewed_at timestamptz,viewed_by uuid)");
+  await query("CREATE TABLE IF NOT EXISTS staff_alerts(id uuid PRIMARY KEY,family_id uuid NOT NULL REFERENCES families(id) ON DELETE CASCADE,region text NOT NULL,assessment_id uuid,created_at timestamptz NOT NULL DEFAULT now(),viewed_at timestamptz,viewed_by uuid,resolved_at timestamptz,resolved_by uuid)");
   await query("ALTER TABLE staff_alerts ADD COLUMN IF NOT EXISTS viewed_at timestamptz");
   await query("ALTER TABLE staff_alerts ADD COLUMN IF NOT EXISTS viewed_by uuid");
+  await query("ALTER TABLE staff_alerts ADD COLUMN IF NOT EXISTS resolved_at timestamptz");
+  await query("ALTER TABLE staff_alerts ADD COLUMN IF NOT EXISTS resolved_by uuid");
   await query("CREATE UNIQUE INDEX IF NOT EXISTS staff_alerts_assessment ON staff_alerts(assessment_id) WHERE assessment_id IS NOT NULL");
   for (const scale of triadScales) {
-    const parsed = parseScale(scale);
+    const parsed = parseStoredScale(scale);
     const id = `${parsed.id}@${parsed.version}`;
     // Insert only. scales_immutable rejects definition rewrites, and an open assessment scores the row it was opened with.
     await query("INSERT INTO scales(id,scale_id,version,definition) VALUES($1,$2,$3,$4) ON CONFLICT(id) DO NOTHING", [id, parsed.id, parsed.version, JSON.stringify(parsed)]);
-    for (const previous of ["1.0.0", "1.1.0"]) {
-      if (previous === parsed.version) continue;
-      await query("UPDATE scales SET status='retired' WHERE id=$1 AND status='active'", [`${parsed.id}@${previous}`]);
+    // Child and teacher 1.0.0 stay stored for open forms, but new assignments use the safety revision.
+    // Parent 1.0.0 and 1.1.0 remain active so an explicit historical choice is still accepted.
+    if ((parsed.id === "growth-child" || parsed.id === "growth-teacher") && parsed.version !== "1.0.0") {
+      await query("UPDATE scales SET status='retired' WHERE id=$1 AND status='active'", [`${parsed.id}@1.0.0`]);
     }
   }
   const advice = parseAdvice({ title: pair("三方了解说明"), blocks: [{ id: "triad_context", title: pair("先看具体情境"), body: pair("这份报告把孩子、家长和老师的观察放在一起，不合成一个总分，也不做诊断。"), source: "Nova growth triad intake, 2026-10", dimensionKeys: ["cognition"] }] });
@@ -293,14 +298,50 @@ export async function queueTriadReport(client: PoolClient, familyId: string, rou
   await client.query("INSERT INTO report_jobs(id,assessment_id,source_assessment_ids) VALUES($1,$2,$3) ON CONFLICT(assessment_id) DO NOTHING", [randomUUID(), parent.id, rows.rows.map(row => row.id)]);
 }
 
-export async function acknowledgeSafetyAlert(actor: Actor, alertId: string) {
+// Alert handling is not report management: an unassigned family's regional staff may
+// acknowledge or resolve, but canManageFamilyReports stays assignee-or-admin only.
+function mayHandleSafetyAlert(role: Role, assignedTo: string | null, actorId: string, resolvedAt: Date | string | null): boolean {
+  if (role === "admin") return true;
+  if (role !== "staff") return false;
+  if (assignedTo === actorId) return true;
+  return assignedTo === null && resolvedAt === null;
+}
+
+// Family, then the actor, then the alert. deleteFamily locks the family and the actor
+// before DELETE cascades into staff_alerts; locking the alert first deadlocks with that.
+// The unlocked read only discovers family_id. Authority is decided after the family lock.
+async function settleSafetyAlert(actor: Actor, alertId: string, action: "viewed" | "resolved") {
   requireRole(actor.role, ["admin", "staff"]);
   validateId(alertId);
-  const rows = await query<{ id: string; family_id: string; viewed_at: Date | string | null }>("SELECT id,family_id,viewed_at FROM staff_alerts WHERE id=$1 AND region=$2", [alertId, actor.region]);
-  if (!rows[0]) throw new HttpError(404, "未找到这条安全提示。", "NOT_FOUND");
-  await familyFor(actor, rows[0].family_id);
-  if (rows[0].viewed_at) return { ok: true };
-  const updated = await query("UPDATE staff_alerts SET viewed_at=now(),viewed_by=$1 WHERE id=$2 AND region=$3 AND viewed_at IS NULL RETURNING id", [actor.id, alertId, actor.region]);
-  if (updated[0]) await audit(actor, "safety.viewed", alertId);
-  return { ok: true };
+  return transaction(async client => {
+    const located = await client.query<{ family_id: string }>("SELECT family_id FROM staff_alerts WHERE id=$1 AND region=$2", [alertId, actor.region]);
+    if (!located.rows[0]) throw new HttpError(404, "未找到这条安全提示。", "NOT_FOUND");
+    const families = await client.query<{ id: string; region: "CN" | "HK"; assigned_to: string | null }>("SELECT id,region,assigned_to FROM families WHERE id=$1 AND region=$2 FOR UPDATE", [located.rows[0].family_id, actor.region]);
+    const family = families.rows[0];
+    if (!family) throw new HttpError(404, "未找到该家庭或没有访问权限。", "NOT_FOUND");
+    const current = await lockRegistrationActor(client, actor, "SHARE");
+    if (current.region !== family.region) throw new HttpError(403, "请使用账号所属地区的入口。", "REGION_MISMATCH");
+    const alerts = await client.query<{ id: string; family_id: string; resolved_at: Date | string | null; viewed_at: Date | string | null }>("SELECT id,family_id,resolved_at,viewed_at FROM staff_alerts WHERE id=$1 AND region=$2 FOR UPDATE", [alertId, current.region]);
+    const alert = alerts.rows[0];
+    if (!alert || alert.family_id !== family.id) throw new HttpError(404, "未找到这条安全提示。", "NOT_FOUND");
+    if (!mayHandleSafetyAlert(current.role, family.assigned_to, current.id, alert.resolved_at)) throw new HttpError(403, "您没有执行此操作的权限。", "ROLE_DENIED");
+    if (action === "resolved") {
+      if (alert.resolved_at) return { ok: true };
+      const updated = await client.query("UPDATE staff_alerts SET resolved_at=now(),resolved_by=$1 WHERE id=$2 AND region=$3 AND resolved_at IS NULL RETURNING id", [current.id, alertId, current.region]);
+      if (updated.rows[0]) await client.query("INSERT INTO audit_events(region,actor_id,action,entity_id) VALUES($1,$2,$3,$4)", [current.region, current.id, "safety.resolved", alertId]);
+      return { ok: true };
+    }
+    if (alert.viewed_at) return { ok: true };
+    const updated = await client.query("UPDATE staff_alerts SET viewed_at=now(),viewed_by=$1 WHERE id=$2 AND region=$3 AND viewed_at IS NULL RETURNING id", [current.id, alertId, current.region]);
+    if (updated.rows[0]) await client.query("INSERT INTO audit_events(region,actor_id,action,entity_id) VALUES($1,$2,$3,$4)", [current.region, current.id, "safety.viewed", alertId]);
+    return { ok: true };
+  });
+}
+
+export async function acknowledgeSafetyAlert(actor: Actor, alertId: string) {
+  return settleSafetyAlert(actor, alertId, "viewed");
+}
+
+export async function resolveSafetyAlert(actor: Actor, alertId: string) {
+  return settleSafetyAlert(actor, alertId, "resolved");
 }

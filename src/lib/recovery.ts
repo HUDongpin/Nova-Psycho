@@ -35,8 +35,9 @@ export async function createRecovery(actor: Actor, userId: string) {
   const user = await transaction(async client => {
     // Serialize on the account first. Two issuers sharing this row must not both
     // leave an outstanding token, and acceptance uses the same users-then-token order.
+    // NO KEY UPDATE also permits reciprocal issuers' created_by foreign-key checks.
     const users = await client.query<{ id: string; name: string; role: Role; disabled: boolean }>(
-      "SELECT id,name,role,disabled FROM users WHERE id=$1 AND region=$2 FOR UPDATE",
+      "SELECT id,name,role,disabled FROM users WHERE id=$1 AND region=$2 FOR NO KEY UPDATE",
       [userId, actor.region]
     );
     const found = users.rows[0];
@@ -45,10 +46,14 @@ export async function createRecovery(actor: Actor, userId: string) {
 
     // Issuing a new link retires any earlier outstanding one for the same account.
     await client.query("UPDATE recovery_tokens SET used_at=now() WHERE user_id=$1 AND used_at IS NULL", [userId]);
-    await client.query(
-      "INSERT INTO recovery_tokens(token_hash,user_id,region,expires_at,created_by) VALUES($1,$2,$3,$4,$5)",
-      [hashToken(token), userId, actor.region, expiresAt, actor.id]
+    const issued = await client.query(
+      `INSERT INTO recovery_tokens(token_hash,user_id,region,expires_at,created_by)
+       SELECT $1,$2,$3,$4,u.id FROM users u
+       WHERE u.id=$5 AND u.region=$3 AND u.role='admin' AND NOT u.disabled AND ($6::boolean OR NOT u.demo)
+       RETURNING token_hash`,
+      [hashToken(token), userId, actor.region, expiresAt, actor.id, getConfig().mode === "demo"]
     );
+    if (issued.rowCount !== 1) throw new HttpError(403, "账号权限已变更，请重新登录。", "FORBIDDEN");
     return found;
   });
 

@@ -16,7 +16,8 @@ const admin=rows[0] as Actor;assert.ok(admin);
 const results:{name:string;passed:boolean}[]=[];
 async function check(name:string,fn:()=>Promise<void>){await fn();results.push({name,passed:true});console.log(`PASS ${name}`);}
 const createdFamilies=new Set<string>();
-async function newFamily(){const f=await createFamily(admin,{familyName:"并发测试家庭",childName:"并发合成孩子",birthDate:"2014-04-10",grade:"六年级",guardianLabel:"母亲"});createdFamilies.add(f.id);return f.id;}
+const familyFixtures=new Set<string>(),createdUsers=new Set<string>();
+async function newFamily(){const f=await createFamily(admin,{familyName:"并发测试家庭",childName:"并发合成孩子",birthDate:"2014-04-10",grade:"六年级",guardianLabel:"母亲"});createdFamilies.add(f.id);familyFixtures.add(f.id);return f.id;}
 try{
   await check("consent renewals serialize and allow exactly one active grant",async()=>{
     const id=await newFamily();
@@ -28,14 +29,30 @@ try{
     const current=await query("SELECT scopes FROM consents WHERE family_id=$1 AND revoked_at IS NULL",[id]);assert.ok(!current[0].scopes.includes("ai_processing"));
     await assert.rejects(()=>query("INSERT INTO consents(id,family_id,guardian_name,method,notice_version,scopes) VALUES($1,$2,'synthetic','synthetic','test','[]')",[randomUUID(),id]),(e:unknown)=>(e as {code?:string}).code==="23505");
   });
-  await check("concurrent invitation admission and deletion leave no orphan account",async()=>{
-    for(let i=0;i<5;i++){
-      const id=await newFamily(),inv=await createInvitation(admin,id,{role:"student"});const token=new URLSearchParams(new URL(inv.url).hash.slice(1)).get("token")!;
+  await check("invitation admission and deletion preserve independent accounts without family access",async()=>{
+    for(const order of ["admission-first","deletion-first",...Array<string>(5).fill("concurrent")]){
+      const id=await newFamily();
+      await recordConsent(admin,id,{accepted:true,guardianName:"合成监护人",reference:"SYNTHETIC-ADMISSION-RACE"});
+      const inv=await createInvitation(admin,id,{role:"student"});const token=new URLSearchParams(new URL(inv.url).hash.slice(1)).get("token")!;
       const username=`qa_race_${randomBytes(6).toString("hex")}`;
-      const results=await Promise.allSettled([acceptInvitation({token,name:"并发合成学生",username,password:randomBytes(18).toString("base64url")}),deleteFamily(admin,id,{confirmation:"并发合成孩子"})]);
-      assert.equal(results[1].status,"fulfilled");createdFamilies.delete(id);
-      assert.equal((await query("SELECT id FROM users WHERE username=$1",[username])).length,0);
+      const admit=async()=>{const userId=await acceptInvitation({token,name:"并发合成学生",username,password:randomBytes(18).toString("base64url")});createdUsers.add(userId);return userId;};
+      const remove=()=>deleteFamily(admin,id,{confirmation:"并发合成孩子"});
+      let admission:PromiseSettledResult<string>;
+      if(order==="admission-first"){
+        admission={status:"fulfilled",value:await admit()};await remove();
+      }else if(order==="deletion-first"){
+        await remove();[admission]=await Promise.allSettled([admit()]);assert.equal(admission.status,"rejected");
+      }else{
+        const settled=await Promise.allSettled([admit(),remove()]);admission=settled[0];assert.equal(settled[1].status,"fulfilled");
+      }
+      createdFamilies.delete(id);
+      const accounts=await query("SELECT id FROM users WHERE username=$1",[username]);
+      if(admission.status==="fulfilled")assert.deepEqual(accounts,[{id:admission.value}]);
+      else{assert.equal(admission.reason?.code,"INVALID_INVITATION");assert.equal(accounts.length,0);}
       assert.equal((await query("SELECT id FROM families WHERE id=$1",[id])).length,0);
+      assert.equal((await query("SELECT 1 FROM memberships WHERE family_id=$1",[id])).length,0);
+      assert.equal((await query("SELECT 1 FROM invitations WHERE family_id=$1",[id])).length,0);
+      console.log(`  ${order}: ${admission.status}; independent accounts: ${accounts.length}`);
     }
   });
   await check("published answers, reports, scales and content are immutable in PostgreSQL",async()=>{
@@ -69,6 +86,8 @@ try{
   await processDeletionJobs();await cleanOrphanReports();
 }finally{
   for(const id of createdFamilies)await deleteFamily(admin,id,{confirmation:"并发合成孩子"});
+  await query("DELETE FROM audit_events WHERE entity_id=ANY($1::text[]) OR actor_id=ANY($2::uuid[])",[[...familyFixtures],[...createdUsers]]);
+  await query("DELETE FROM users WHERE id=ANY($1::uuid[])",[[...createdUsers]]);
   await processDeletionJobs();
   await fs.mkdir("work/qa",{recursive:true});await fs.writeFile("work/qa/database-checks.json",JSON.stringify({timestamp:new Date().toISOString(),region:getConfig().region,syntheticDataOnly:true,results},null,2));
   await closeDatabase();

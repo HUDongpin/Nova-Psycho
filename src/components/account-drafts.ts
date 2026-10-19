@@ -1,4 +1,4 @@
-import {api,ApiError,type Locale,type Region,type SurveyRecord} from "./api";
+import {api,ApiError,isAuthenticationLost,type Locale,type Region,type SurveyRecord} from "./api";
 import {AssessmentDraftSession} from "./draft-session";
 
 export interface DraftOwner { id:string; region:Region }
@@ -69,7 +69,7 @@ export class AccountDraftStore {
       return {record,draft};
     }catch(error){
       if(this.isCurrent(owner,epoch)&&!signal?.aborted&&error instanceof ApiError){
-        if(error.status===401)this.authenticationLost(owner);
+        if(isAuthenticationLost(error))this.authenticationLost(owner);
         else if(error.status===403||error.status===404)existing?.suspendAuthentication();
       }
       throw error;
