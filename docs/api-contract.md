@@ -162,3 +162,21 @@ Parent reports exclude child raw free text, situation responses, priorities and 
 - GET `/api/privacy?locale=...` → `{version,title,sections:[{title,body}]}`. The UI must make this notice reachable before consent.
 
 The UI must retain demo labels, loading/empty/error states, field errors and the server-provided capabilities. Do not calculate clinical scores in the browser, fabricate success, expose demo roles in service mode, or turn an alert/phase flag into permission to read or mutate a report.
+
+### Restricted synthetic retake
+
+`POST /api/families/:id/synthetic-retake` is available only to the designated
+parent test session in a configured synthetic family. Body:
+`{ "previousRoundId": "<uuid>", "locale": "zh-CN" | "zh-HK" }`.
+Returns HTTP 201 with `{ roundId, assessmentIds: { parent, student, teacher }, reused }`.
+The previous round must have three published, correctly bound sources and one
+published synthetic triad report. Required consents remain active. The new tasks
+use the same scale versions and preserve historical answers and reports. Duplicate
+requests return the same successor (`reused: true`). Ordinary sessions and other
+roles receive `SYNTHETIC_RETAKE_DENIED`; incomplete history receives
+`SYNTHETIC_RETAKE_NOT_READY`; inconsistent successors receive
+`SYNTHETIC_RETAKE_CONFLICT`.
+
+Eligible parent workspaces expose `family.syntheticRetake: { previousRoundId }`.
+No capability is exposed for an unfinished latest round. This endpoint does not
+change the ordinary `POST /api/assessments` retake interval or email authentication.

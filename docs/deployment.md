@@ -252,3 +252,21 @@ teacher login and workspace loading on the deployed domain. A ready deployment o
 successful login alone does not prove that `/api/workspace` can read the production
 schema. Keep the additive schema during a code rollback; do not drop consent history
 or restore a database over subsequent user activity as a routine rollback.
+
+### Starting another synthetic round
+
+The designated parent test session can start a new round from its synthetic
+family's detail page after the latest three-person round has a published synthetic
+report. `POST /api/families/:id/synthetic-retake` accepts exactly
+`{ previousRoundId, locale }`. It checks the same synthetic family membership and
+all three participation/report consent scopes under a family lock, then creates
+three empty tasks using the prior round's same active questionnaire versions.
+Existing answers, timestamps and reports remain untouched. Repeating a request
+for the same previous round returns the same immediate successor rather than
+creating another round. An incomplete or inconsistent next round blocks creation.
+
+This separate endpoint alone permits immediate synthetic retesting. Ordinary
+assignment and its `RETAKE_INTERVAL` check are unchanged, as are Clerk email
+registration and verification. Disabling the existing test-account/family scope
+also disables this entry. Retake eligibility does not grant permission to change
+questionnaire definitions or mark norms validated.

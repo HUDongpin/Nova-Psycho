@@ -10,6 +10,7 @@ import { consentScopeGrantedSql, effectiveScopesSelect, grantedScopes } from "./
 import { getConfig } from "./config";
 import { query } from "./db";
 import { reportSummary } from "./reports";
+import { syntheticRetakeCapability } from "./synthetic-retake";
 import { isSyntheticTestActorForFamily } from "./synthetic-testing";
 
 export async function workspaceFor(actor:Actor,locale:Locale){
@@ -43,12 +44,14 @@ export async function workspaceFor(actor:Actor,locale:Locale){
     list.push({scopes:row.scopes});
     scopesByFamily.set(row.family_id,list);
   }
+  const retakeEntries=actor.role==="parent"?await Promise.all([...syntheticFamilies].map(async id=>[id,await syntheticRetakeCapability(actor,id)] as const)):[];
+  const retakes=new Map(retakeEntries);
   const scopedFamilies=families.map(f=>{
     const canInviteMembers=canInviteFamilyMembers(actor,f);
     const showCode=actor.role==="parent"||canInviteMembers;
     const granted=grantedScopes(scopesByFamily.get(f.id)??[]);
     const consentChoices={assessment:granted.has("assessment"),sensitiveData:granted.has("sensitive_data"),parentReport:granted.has("parent_report"),aiProcessing:granted.has("ai_processing")};
-    return {id:f.id,familyName:f.family_name,childName:f.child_name,age:ageAt(f.birth_date),birthDate:f.birth_date,grade:f.grade,region:f.region,guardianLabel:care?f.guardian_label:"",assignedTo:team?f.assigned_to:null,assignedName:team?f.assigned_name??null:null,canInviteMembers,joinCode:showCode&&f.join_code?formatJoinCode(f.join_code):null,createdAt:iso(f.created_at),consent:consentChoices.assessment&&consentChoices.sensitiveData,consents:consentChoices,members:members.filter(m=>m.family_id===f.id&&(care||m.id===actor.id)).map(m=>({id:m.id,name:m.name,role:m.role}))};
+    return {...(retakes.get(f.id)?{syntheticRetake:retakes.get(f.id)!}:{}),id:f.id,familyName:f.family_name,childName:f.child_name,age:ageAt(f.birth_date),birthDate:f.birth_date,grade:f.grade,region:f.region,guardianLabel:care?f.guardian_label:"",assignedTo:team?f.assigned_to:null,assignedName:team?f.assigned_name??null:null,canInviteMembers,joinCode:showCode&&f.join_code?formatJoinCode(f.join_code):null,createdAt:iso(f.created_at),consent:consentChoices.assessment&&consentChoices.sensitiveData,consents:consentChoices,members:members.filter(m=>m.family_id===f.id&&(care||m.id===actor.id)).map(m=>({id:m.id,name:m.name,role:m.role}))};
   });
   const reportPhase=(row:typeof assessments[number],status:string):"waiting"|"reporting"|"consent"|null=>{
     const triad=(row.definition as ScaleDefinition).bundle===TRIAD_BUNDLE;

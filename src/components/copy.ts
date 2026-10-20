@@ -1,6 +1,9 @@
 import type { Locale, Role, AssessmentStatus } from "./api";
 // Exported so tests can assert that every entry carries both locales.
 export const dictionary = {
+  syntheticRetake: ["开始下一轮合成测试", "開始下一輪合成測試"],
+  syntheticRetakeNote: ["仅限指定测试家庭。使用上一轮相同问卷版本创建三方新任务；已有回答和报告保持不变。", "僅限指定測試家庭。使用上一輪相同問卷版本建立三方新任務；已有回答和報告保持不變。"],
+  syntheticRetakeCreating: ["正在创建测试任务…", "正在建立測試任務…"],
   syntheticTest: ["线上合成测试", "線上合成測試"],
   syntheticTestNotice: ["这是指定测试账号的合成数据测试。请勿填写真实个人资料；报告使用规则模板，不调用 AI，也不作为正式测评或诊断。", "這是指定測試帳號的合成資料測試。請勿填寫真實個人資料；報告使用規則模板，不呼叫 AI，也不作為正式評估或診斷。"],
   instrumentUnavailable: ["此问卷暂不能填写", "此問卷暫不能填寫"],

@@ -156,6 +156,8 @@ input:-webkit-autofill {
 .main-content:has(.dashboard-screen) { padding-top: 28px; }
 .main-content:has(.dashboard-screen) .workspace-footer { margin-top: 12px; padding: 8px 0 10px; }
 .dashboard-screen .dashboard-title { align-items: center; margin-bottom: 20px; }
+.synthetic-retake-panel { padding: 20px; }
+.synthetic-retake-panel .section-heading { padding: 0 0 14px; }
 .dashboard-greeting { display: flex; align-items: center; gap: 20px; min-width: 0; }
 .dashboard-figure { width: 156px; height: 117px; object-fit: cover; object-position: left center; border-radius: 12px; border: 1px solid var(--line); flex-shrink: 0; }
 .dashboard-screen .dashboard-title h1 { font-size: 32px; line-height: 1.25; }
