@@ -16,7 +16,7 @@ const flatten=(region:Region,locale:Locale)=>{
 
 describe("privacy notice",()=>{
   it("pins the notice version",()=>{
-    expect(noticeVersion).toBe("nova-privacy-2026-10-v3");
+    expect(noticeVersion).toBe("nova-privacy-2026-10-v4");
   });
 
   it.each(combinations)("returns a complete bilingual notice for %s + %s",(region,locale)=>{

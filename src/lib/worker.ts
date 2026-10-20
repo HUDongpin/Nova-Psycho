@@ -3,6 +3,7 @@ import type { PoolClient } from "pg";
 import type { AssessmentSnapshot,Locale,ReportPayload,StoredAnswer } from "../domain/types";
 import { selectNarrative } from "../domain/narrative";
 import { composeTriad,TRIAD_BUNDLE,triadRolesReady } from "../domain/triad-report";
+import { compareTriad, type TriadComparisonSource } from "../domain/triad-comparison";
 import { compareResults } from "../domain/scoring";
 import { reportHtml } from "../domain/report-html";
 import { normValidated } from "../domain/validation";
@@ -151,12 +152,36 @@ async function runReportJob(jobId?:string):Promise<ReportJobResult>{
       if(unboundTriad)throw new Error("Triad sources require review");
       const sourceIds=job.source_assessment_ids as string[];
       if(sourceIds.length!==3||new Set(sourceIds).size!==3||!sourceIds.includes(assessment.id))throw new Error("Invalid triad sources");
-      const siblings=await query("SELECT id,respondent_role,answers,snapshot,submitted_at FROM assessments WHERE id=ANY($1::uuid[]) AND family_id=$2 AND region=$3 AND triad_round_id=$4 AND submitted_at IS NOT NULL",[sourceIds,assessment.family_id,getConfig().region,assessment.triad_round_id]);
+      const siblings=await query("SELECT id,respondent_role,answers,snapshot,submitted_at,respondent_id FROM assessments WHERE id=ANY($1::uuid[]) AND family_id=$2 AND region=$3 AND triad_round_id=$4 AND submitted_at IS NOT NULL",[sourceIds,assessment.family_id,getConfig().region,assessment.triad_round_id]);
       if(siblings.length!==3||!triadRolesReady(siblings.map(row=>row.respondent_role))||siblings.some(row=>row.snapshot?.scale?.bundle!==TRIAD_BUNDLE))throw new Error("Triad incomplete");
       for(const row of siblings)rejectSnapshot(row.snapshot as AssessmentSnapshot);
       sources.splice(0,sources.length,...siblings.map(row=>row.snapshot as AssessmentSnapshot));
+      // Select one completed round before this round, even when its report failed
+      // or this job is retried after newer rounds. Frozen snapshots are the source.
+      const firstSubmission=new Date(Math.min(...siblings.map(row=>new Date(row.submitted_at).getTime()))).toISOString();
+      const previous=await query(`WITH prior_round AS (
+        SELECT prior.id FROM triad_rounds prior
+        JOIN triad_rounds current_round ON current_round.id=$3 AND current_round.family_id=$1 AND current_round.region=$2
+        JOIN assessments a ON a.triad_round_id=prior.id AND a.family_id=prior.family_id AND a.region=prior.region
+        WHERE prior.family_id=$1 AND prior.region=$2 AND (prior.created_at,prior.id)<(current_round.created_at,current_round.id)
+        GROUP BY prior.id,prior.created_at
+        HAVING count(*)=3 AND count(DISTINCT a.respondent_role)=3
+          AND bool_and(a.submitted_at IS NOT NULL AND a.snapshot IS NOT NULL AND COALESCE(a.snapshot->'scale'->>'bundle'=$4,false))
+          AND max(a.submitted_at)<$5::timestamptz
+        ORDER BY prior.created_at DESC,prior.id DESC LIMIT 1
+      ) SELECT a.respondent_role,a.respondent_id,a.snapshot,a.submitted_at
+        FROM assessments a JOIN prior_round ON prior_round.id=a.triad_round_id
+        WHERE a.family_id=$1 AND a.region=$2`,[assessment.family_id,getConfig().region,assessment.triad_round_id,TRIAD_BUNDLE,firstSubmission]);
+      const comparisonSource=(row:typeof siblings[number]):TriadComparisonSource=>{
+        const stored=row.snapshot as AssessmentSnapshot;
+        return {role:row.respondent_role,respondentId:row.respondent_id,scale:stored.scale,score:stored.score,submittedAt:new Date(row.submitted_at).toISOString()};
+      };
+      const comparisons=compareTriad(siblings.map(comparisonSource),previous.length?previous.map(comparisonSource):null);
       const triad=composeTriad(siblings.map(row=>{const stored=row.snapshot as AssessmentSnapshot;return {role:row.respondent_role,scale:stored.scale,answers:row.answers as Record<string,StoredAnswer>,score:stored.score,submittedAt:new Date(row.submitted_at).toISOString()};}));
-      payload={...snapshot,selectedAdviceIds:[],generationMode:"template",fallbackReason:"triad_combined",aiModel:null,comparison:{available:false,reason:"first_assessment"},triad,score:{...snapshot.score,risk:triad.safety.length>0,riskMessages:triad.safety}};
+      triad.comparisons=comparisons;
+      payload={...snapshot,selectedAdviceIds:[],generationMode:"template",fallbackReason:"triad_combined",aiModel:null,
+        comparison:comparisons.some(comparison=>comparison.available)?{available:true}:{available:false,reason:previous.length?"incomplete":"first_assessment"},
+        triad,score:{...snapshot.score,risk:triad.safety.length>0,riskMessages:triad.safety}};
       publishIds=siblings.map(row=>row.id);
     }else{
       // Consent may be withdrawn after submission. Never contact AI without current permission too.

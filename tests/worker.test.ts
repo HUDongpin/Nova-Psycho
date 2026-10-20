@@ -10,11 +10,11 @@ import { listPrivatePdfKeys,removePrivatePdf,writePrivatePdf } from "../src/lib/
 import { cleanOrphanReports,processDeletionJobs,processOneJob,processReportJob,recordHeartbeat } from "../src/lib/worker";
 import { demoAdvice,demoScale,demoTemplate } from "../src/domain/demo";
 import { scoreAssessment } from "../src/domain/scoring";
-import { childScale,parentScale,teacherScale } from "../src/domain/triad-scales";
+import { childScaleStaffNotes as childScale,parentScaleStaffNotes as parentScale,teacherScaleStaffNotes as teacherScale } from "../src/domain/triad-scales";
 import { childScale as oldChild,parentScale as oldParent,teacherScale as oldTeacher } from "./fixtures/triad-scales-ed66f27";
 import { previewAnswers } from "../src/domain/triad-report";
 import { selectNarrative } from "../src/domain/narrative";
-import type { AssessmentSnapshot } from "../src/domain/types";
+import type { AssessmentSnapshot, ReportPayload } from "../src/domain/types";
 
 const mockQuery=vi.mocked(query);
 const mockTransaction=vi.mocked(transaction);
@@ -245,19 +245,22 @@ describe("processing one job",()=>{
 
 describe("fixed triad report sources",()=>{
   const rows=([childScale,parentScale,teacherScale]).map((scale,index)=>{
-    const role=scale.roles[0],answers=previewAnswers(scale);
-    return {id:`source-${index}`,family_id:"family",triad_round_id:"round",respondent_role:role,answers,submitted_at:snapshot.submittedAt,
+    const role=scale.roles[0],preview=structuredClone(scale);
+    for(const item of preview.items)if(item.id==="c_age"||item.id==="p_age")item.choices=item.choices.filter(choice=>choice.value===12);
+    const answers=previewAnswers(preview);
+    return {id:`source-${index}`,family_id:"family",triad_round_id:"round",respondent_id:`respondent-${role}`,respondent_role:role,answers,submitted_at:snapshot.submittedAt,
       snapshot:{...snapshot,scale,score:scoreAssessment(scale,answers,{age:12,region:"CN",role})}};
   });
   const parent=rows[1],sourceIds=rows.map(row=>row.id);
-  function configure(sources:string[]|null=sourceIds,returned=rows){
+  function configure(sources:string[]|null=sourceIds,returned=rows,previous:typeof rows=[]){
     mockQuery.mockImplementation((async(sql:string)=>{
       if(sql.includes("WITH candidate AS"))return [{id:"triad-job",assessment_id:parent.id,attempts:1,source_assessment_ids:sources}];
       if(sql.includes("SELECT * FROM assessments WHERE id="))return [parent];
       if(sql.includes("SELECT id,respondent_role,answers"))return returned;
+      if(sql.includes("WITH prior_round AS"))return previous;
       return [];
     }) as never);
-    mockTransaction.mockImplementation((async(fn:(c:unknown)=>Promise<unknown>)=>fn({query:async()=>({rows:[{id:"locked"}]})})) as never);
+    mockTransaction.mockImplementation((async(fn:(c:unknown)=>Promise<unknown>)=>fn({query:async(sql:string)=>sql.includes("AS scopes FROM consents WHERE family_id=$1")?{rows:[{scopes:["parent_report"]}]}:{rows:[{id:"locked"}]}})) as never);
   }
   it("renders only the pinned round and publishes those three sources",async()=>{
     configure();
@@ -271,6 +274,72 @@ describe("fixed triad report sources",()=>{
     expect(publish?.values).toEqual([sourceIds]);
     expect(mockQuery.mock.calls.some(([sql])=>String(sql).includes("staff_alerts"))).toBe(false);
     expect(calls.some(call=>call.sql.includes("staff_alerts"))).toBe(false);
+  });
+  it("publishes comparison for the second complete triad round",async()=>{
+    const previous=rows.map(row=>{
+      const answers={...row.answers};
+      if(row.respondent_role==="parent")for(const item of row.snapshot.scale.dimensions.find(d=>d.key==="q14")!.items)answers[item]=2;
+      return {...row,id:`prior-${row.id}`,triad_round_id:"prior-round",submitted_at:"2026-06-01T00:00:00.000Z",
+        snapshot:{...row.snapshot,score:scoreAssessment(row.snapshot.scale,answers,{age:12,region:"CN",role:row.respondent_role})}};
+    });
+    configure(sourceIds,rows,previous);
+    let published:ReportPayload|undefined;
+    mockTransaction.mockImplementation((async(fn:(c:unknown)=>Promise<unknown>)=>fn({query:async(sql:string,values:unknown[])=>{
+      if(sql.includes("AS scopes FROM consents WHERE family_id=$1"))return {rows:[{scopes:["parent_report"]}]};
+      if(sql.includes("INSERT INTO reports"))published=JSON.parse(values[3] as string) as ReportPayload;
+      return {rows:[{id:"locked"}]};
+    }})) as never);
+    await processOneJob();
+    expect(published).toBeDefined();
+    expect(published!.comparison.available).toBe(true);
+    expect(published!.triad!.comparisons!.find(item=>item.role==="parent")!.changes!.find(item=>item.key==="q14")).toMatchObject({previous:2,current:4,delta:2});
+    expect(published!.triad!.comparisons!.every(item=>item.previousDate==="2026-06-01T00:00:00.000Z")).toBe(true);
+    expect(JSON.stringify(published!.triad!.comparisons)).not.toContain("respondent-");
+    const lookup=mockQuery.mock.calls.find(([sql])=>String(sql).includes("WITH prior_round AS"));
+    expect(lookup?.[1]).toEqual(["family","CN","round","growth-triad",snapshot.submittedAt]);
+  });
+  it("records a first-round reason for each role without fabricating changes",async()=>{
+    configure();
+    let published:ReportPayload|undefined;
+    mockTransaction.mockImplementation((async(fn:(c:unknown)=>Promise<unknown>)=>fn({query:async(sql:string,values:unknown[])=>{
+      if(sql.includes("AS scopes FROM consents WHERE family_id=$1"))return {rows:[{scopes:["parent_report"]}]};
+      if(sql.includes("INSERT INTO reports"))published=JSON.parse(values[3] as string) as ReportPayload;
+      return {rows:[{id:"locked"}]};
+    }})) as never);
+    await processOneJob();
+    expect(published!.comparison).toEqual({available:false,reason:"first_assessment"});
+    expect(published!.triad!.comparisons).toEqual(["student","parent","teacher"].map(role=>({
+      role,currentDate:snapshot.submittedAt,available:false,reason:"first_assessment"
+    })));
+  });
+  it("preserves other roles when the previous teacher is a different person",async()=>{
+    const previous=rows.map(row=>({...row,respondent_id:row.respondent_role==="teacher"?"old-teacher":row.respondent_id,submitted_at:"2026-06-01T00:00:00.000Z"}));
+    configure(sourceIds,rows,previous);
+    let published:ReportPayload|undefined;
+    mockTransaction.mockImplementation((async(fn:(c:unknown)=>Promise<unknown>)=>fn({query:async(sql:string,values:unknown[])=>{
+      if(sql.includes("AS scopes FROM consents WHERE family_id=$1"))return {rows:[{scopes:["parent_report"]}]};
+      if(sql.includes("INSERT INTO reports"))published=JSON.parse(values[3] as string) as ReportPayload;
+      return {rows:[{id:"locked"}]};
+    }})) as never);
+    await processOneJob();
+    expect(published!.comparison.available).toBe(true);
+    expect(published!.triad!.comparisons!.map(item=>item.available)).toEqual([true,true,false]);
+    expect(published!.triad!.comparisons![2]).toMatchObject({reason:"different_respondent",previousDate:"2026-06-01T00:00:00.000Z"});
+  });
+  it("pauses a computed triad comparison when parent-report consent is withdrawn before publication",async()=>{
+    configure(sourceIds,rows,rows.map(row=>({...row,submitted_at:"2026-06-01T00:00:00.000Z"})));
+    const calls:string[]=[];
+    mockTransaction.mockImplementation((async(fn:(c:unknown)=>Promise<unknown>)=>fn({query:async(sql:string)=>{
+      calls.push(sql);
+      if(sql.includes("AS scopes FROM consents WHERE family_id=$1"))return {rows:[{scopes:["assessment","sensitive_data"]}]};
+      return {rows:[{id:"locked"}]};
+    }})) as never);
+    await processOneJob();
+    expect(mockQuery.mock.calls.some(([sql])=>String(sql).includes("WITH prior_round AS"))).toBe(true);
+    expect(mockRender).toHaveBeenCalledTimes(2);
+    expect(calls.some(sql=>sql.includes("state='paused'")&&sql.includes("PARENT_REPORT_CONSENT_REQUIRED"))).toBe(true);
+    expect(calls.some(sql=>sql.includes("INSERT INTO reports")||sql.includes("UPDATE assessments SET status='published'"))).toBe(false);
+    expect(mockRemove).toHaveBeenCalledTimes(2);
   });
   it("fails an unbound legacy job without selecting historical answers or rendering",async()=>{
     configure(null);

@@ -77,6 +77,7 @@ export interface TriadView {
 export interface TriadReport {
   title: TextPair;
   sources: { role: RespondentRole; submittedAt: string }[];
+  comparisons?: TriadRoleComparison[];
   safety: TextPair[];
   domains: { key: string; label: TextPair; note: TextPair | null; views: TriadView[] }[];
   portrait: { heading: TextPair; body: TextPair }[];
@@ -154,5 +155,14 @@ export interface Comparison {
   previousDate?: string;
   reason?: "first_assessment" | "incompatible_version" | "incomplete" | "different_respondent";
   changes?: { key: string; label: TextPair; delta: number; higherMeans: "more_support" | "more_strength" }[];
+}
+export interface TriadRoleComparison {
+  role: RespondentRole;
+  currentDate: string;
+  previousDate?: string;
+  available: boolean;
+  reason?: Comparison["reason"];
+  changes?: { key: string; label: TextPair; previous: number; current: number; delta: number; higherMeans: "more_support" | "more_strength" }[];
+  omitted?: { key: string; label: TextPair }[];
 }
 export interface Actor { id: string; name: string; role: Role; region: Region }
