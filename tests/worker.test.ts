@@ -181,9 +181,11 @@ describe("processing one job",()=>{
   });
   it("renders both locales and stores them encrypted",async()=>{
     mockQuery.mockResolvedValueOnce([job])
-      .mockResolvedValueOnce([{snapshot}])
+      .mockResolvedValueOnce([{id:ASSESSMENT_ID,family_id:"family",snapshot}])
+      .mockResolvedValueOnce([{scopes:["parent_report","ai_processing"]}])
       .mockResolvedValueOnce([{id:"c1"}])
       .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{scopes:["parent_report","ai_processing"]}])
       .mockResolvedValue([]);
     await processOneJob();
     expect(mockRender).toHaveBeenCalledTimes(2);
@@ -194,9 +196,11 @@ describe("processing one job",()=>{
   });
   it("does not contact the model when AI consent has been withdrawn",async()=>{
     mockQuery.mockResolvedValueOnce([job])
-      .mockResolvedValueOnce([{snapshot:{...snapshot,aiConsented:true}}])
-      .mockResolvedValueOnce([]) // consent row gone
+      .mockResolvedValueOnce([{id:ASSESSMENT_ID,family_id:"family",snapshot:{...snapshot,aiConsented:true}}])
+      .mockResolvedValueOnce([{scopes:["parent_report"]}])
+      .mockResolvedValueOnce([]) // AI consent row gone
       .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{scopes:["parent_report"]}])
       .mockResolvedValue([]);
     await processOneJob();
     const { selectNarrative } = await import("../src/domain/narrative");
@@ -205,9 +209,11 @@ describe("processing one job",()=>{
   });
   it("requeues with a backoff while attempts remain",async()=>{
     mockQuery.mockResolvedValueOnce([{...job,attempts:1}])
-      .mockResolvedValueOnce([{snapshot}])
+      .mockResolvedValueOnce([{id:ASSESSMENT_ID,family_id:"family",snapshot}])
+      .mockResolvedValueOnce([{scopes:["parent_report"]}])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{scopes:["parent_report"]}])
       .mockResolvedValueOnce([{assessment_id:ASSESSMENT_ID}])
       .mockResolvedValue([]);
     mockRender.mockRejectedValueOnce(new Error("render failed"));
@@ -217,9 +223,11 @@ describe("processing one job",()=>{
   });
   it("marks the job and the assessment failed after the final attempt",async()=>{
     mockQuery.mockResolvedValueOnce([{...job,attempts:3}])
-      .mockResolvedValueOnce([{snapshot}])
+      .mockResolvedValueOnce([{id:ASSESSMENT_ID,family_id:"family",snapshot}])
+      .mockResolvedValueOnce([{scopes:["parent_report"]}])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{scopes:["parent_report"]}])
       .mockResolvedValueOnce([{assessment_id:ASSESSMENT_ID}])
       .mockResolvedValue([]);
     mockRender.mockRejectedValueOnce(new Error("render failed"));
@@ -232,9 +240,11 @@ describe("processing one job",()=>{
   });
   it("cleans up partially written files when rendering fails",async()=>{
     mockQuery.mockResolvedValueOnce([{...job,attempts:3}])
-      .mockResolvedValueOnce([{snapshot}])
+      .mockResolvedValueOnce([{id:ASSESSMENT_ID,family_id:"family",snapshot}])
+      .mockResolvedValueOnce([{scopes:["parent_report"]}])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{scopes:["parent_report"]}])
       .mockResolvedValue([]);
     mockRender.mockRejectedValueOnce(new Error("render failed"));
     await processOneJob();
@@ -383,6 +393,7 @@ describe("targeted queue execution",()=>{
     mockQuery.mockImplementation((async(sql:string)=>{
       if(sql.includes("WITH candidate AS"))return [{id:JOB_ID,assessment_id:ASSESSMENT_ID,attempts}];
       if(sql.includes("SELECT * FROM assessments WHERE id="))return [{id:ASSESSMENT_ID,family_id:"family",snapshot,submitted_at:snapshot.submittedAt}];
+      if(sql.includes("AS scopes FROM consents"))return [{scopes:["parent_report"]}];
       if(sql.includes("SELECT pdf_keys FROM reports"))return publishedKeys?[{pdf_keys:publishedKeys}]:[];
       return [];
     }) as never);
@@ -412,6 +423,7 @@ describe("targeted queue execution",()=>{
     mockQuery.mockImplementation((async(sql:string)=>{
       if(sql.includes("WITH candidate AS"))return [{id:JOB_ID,assessment_id:ASSESSMENT_ID,attempts:1}];
       if(sql.includes("SELECT * FROM assessments WHERE id="))return [{id:ASSESSMENT_ID,family_id:"family",snapshot,submitted_at:snapshot.submittedAt}];
+      if(sql.includes("AS scopes FROM consents"))return [{scopes:["parent_report"]}];
       if(sql.includes(failedLookup))throw new Error("Recovery database unavailable");
       return [];
     }) as never);
@@ -424,6 +436,7 @@ describe("targeted queue execution",()=>{
     mockQuery.mockImplementation((async(sql:string)=>{
       if(sql.includes("WITH candidate AS"))return [{id:JOB_ID,assessment_id:ASSESSMENT_ID,attempts:1}];
       if(sql.includes("SELECT * FROM assessments WHERE id="))return [{id:ASSESSMENT_ID,family_id:"family",snapshot,submitted_at:snapshot.submittedAt}];
+      if(sql.includes("AS scopes FROM consents"))return [{scopes:["parent_report"]}];
       return [];
     }) as never);
     mockTransaction.mockRejectedValueOnce(new Error("Report claim expired"));
@@ -435,7 +448,7 @@ describe("targeted queue execution",()=>{
     vi.stubEnv("NOVA_REPORT_STORAGE","database");
     mockQuery.mockResolvedValueOnce([{id:JOB_ID,assessment_id:ASSESSMENT_ID,attempts:1}])
       .mockResolvedValueOnce([{id:ASSESSMENT_ID,family_id:"family",snapshot,submitted_at:snapshot.submittedAt}])
-      .mockResolvedValueOnce([]).mockResolvedValueOnce([]).mockResolvedValue([]);
+      .mockResolvedValueOnce([{scopes:["parent_report"]}]).mockResolvedValueOnce([]).mockResolvedValueOnce([]).mockResolvedValueOnce([{scopes:["parent_report"]}]).mockResolvedValue([]);
     const events:string[]=[];
     const lockedClient={query:vi.fn(async(sql:string)=>{events.push(sql);if(sql.includes("AS scopes FROM consents WHERE family_id=$1"))return {rows:[{scopes:["parent_report"]}]};return {rows:[{id:"locked"}]};})};
     mockWrite.mockImplementation(async(_key,_pdf,client)=>{
@@ -451,6 +464,61 @@ describe("targeted queue execution",()=>{
     expect(events.findIndex(value=>value.includes("AS scopes FROM consents WHERE family_id=$1"))).toBeGreaterThan(events.findIndex(value=>value.includes("FROM families")&&value.includes("FOR UPDATE")));
     expect(events.findIndex(value=>value.includes("INSERT INTO reports"))).toBeGreaterThan(events.findIndex(value=>value.includes("AS scopes FROM consents WHERE family_id=$1")));
     mockWrite.mockImplementation(async()=>undefined);
+  });
+  it("does not select a narrative or render a PDF when a claimed job sees parent-report consent withdrawn",async()=>{
+    vi.mocked(selectNarrative).mockClear();
+    mockRender.mockClear();
+    mockWrite.mockClear();
+    const events:string[]=[];
+    mockQuery.mockImplementation((async(sql:string)=>{
+      const text=String(sql);
+      if(text.includes("WITH candidate AS"))return [{id:JOB_ID,assessment_id:ASSESSMENT_ID,attempts:1}];
+      if(text.includes("SELECT * FROM assessments WHERE id="))return [{id:ASSESSMENT_ID,family_id:"family",snapshot:{...snapshot,aiConsented:true},submitted_at:snapshot.submittedAt}];
+      if(text.includes("AS scopes FROM consents"))return [{scopes:["assessment","sensitive_data","ai_processing"]}];
+      if(text.includes("ai_processing"))return [{id:"ai-still-granted"}];
+      return [];
+    }) as never);
+    mockTransaction.mockImplementation((async(fn:(client:unknown)=>Promise<unknown>)=>fn({query:async(sql:string)=>{
+      events.push(String(sql));
+      if(String(sql).includes("AS scopes FROM consents"))return {rows:[{scopes:["assessment","sensitive_data","ai_processing"]}]};
+      return {rows:[{id:"locked"}]};
+    }})) as never);
+    await expect(processReportJob(JOB_ID)).resolves.toEqual({status:"paused"});
+    expect(selectNarrative).not.toHaveBeenCalled();
+    expect(mockRender).not.toHaveBeenCalled();
+    expect(mockWrite).not.toHaveBeenCalled();
+    const familyAt=events.findIndex(sql=>sql.includes("FROM families")&&sql.includes("FOR UPDATE"));
+    const pauseAt=events.findIndex(sql=>sql.includes("PARENT_REPORT_CONSENT_REQUIRED"));
+    expect(pauseAt).toBeGreaterThan(familyAt);
+    expect(events.some(sql=>sql.includes("INSERT INTO reports"))).toBe(false);
+  });
+  it("does not render a triad PDF when a claimed job sees parent-report consent withdrawn",async()=>{
+    const roleRows=([childScale,parentScale,teacherScale]).map((scale,index)=>{
+      const role=scale.roles[0],answers=previewAnswers(scale);
+      return {id:`source-${index}`,family_id:"family",triad_round_id:"round",respondent_id:`respondent-${role}`,respondent_role:role,answers,submitted_at:snapshot.submittedAt,
+        snapshot:{...snapshot,scale,score:scoreAssessment(scale,answers,{age:12,region:"CN",role})}};
+    });
+    const parent=roleRows[1],sourceIds=roleRows.map(row=>row.id);
+    vi.mocked(selectNarrative).mockClear();
+    mockRender.mockClear();
+    mockWrite.mockClear();
+    mockQuery.mockImplementation((async(sql:string)=>{
+      const text=String(sql);
+      if(text.includes("WITH candidate AS"))return [{id:JOB_ID,assessment_id:parent.id,attempts:1,source_assessment_ids:sourceIds}];
+      if(text.includes("SELECT * FROM assessments WHERE id="))return [parent];
+      if(text.includes("SELECT id,respondent_role,answers"))return roleRows;
+      if(text.includes("AS scopes FROM consents"))return [{scopes:["assessment","sensitive_data","ai_processing"]}];
+      return [];
+    }) as never);
+    mockTransaction.mockImplementation((async(fn:(client:unknown)=>Promise<unknown>)=>fn({query:async(sql:string)=>{
+      if(String(sql).includes("AS scopes FROM consents"))return {rows:[{scopes:["assessment","sensitive_data","ai_processing"]}]};
+      if(String(sql).includes("UPDATE report_jobs SET state=$1"))return {rows:[{assessment_id:parent.id}]};
+      return {rows:[{id:"locked"}]};
+    }})) as never);
+    await expect(processReportJob(JOB_ID)).resolves.toEqual({status:"paused"});
+    expect(selectNarrative).not.toHaveBeenCalled();
+    expect(mockRender).not.toHaveBeenCalled();
+    expect(mockWrite).not.toHaveBeenCalled();
   });
   it("pauses a claimed job inside the family lock when parent-report consent is gone and writes no report",async()=>{
     mockQuery.mockResolvedValueOnce([{id:JOB_ID,assessment_id:ASSESSMENT_ID,attempts:1}])

@@ -108,6 +108,23 @@ async function pauseDueReadyJobMissingParentReportConsent(jobId:string):Promise<
 // Discover due rows in this region, then pause one family per transaction. Holding
 // several family locks in one transaction could deadlock with a grant that locks
 // those families in another order.
+// A claim can succeed and then lose parent_report before narrative or PDF work.
+// Read the current scopes first. Only the withdrawn case takes the family lock,
+// re-reads consent, and pauses; a grant that lands in that window continues.
+async function stopClaimedJobWithoutParentReport(jobId:string,token:string,familyId:string):Promise<"paused"|"continue">{
+  const visible=await query<{scopes:unknown}>(ACTIVE_CONSENT_ROWS_SQL,[familyId]);
+  if(hasGranted(visible,[PARENT_REPORT_SCOPE]))return "continue";
+  return transaction(async client=>{
+    const familyLock=await client.query("SELECT id FROM families WHERE id=$1 AND region=$2 FOR UPDATE",[familyId,getConfig().region]);
+    if(!familyLock.rows[0])throw new Error("Family deleted");
+    const claim=await client.query("SELECT id FROM report_jobs WHERE id=$1 AND claim_token=$2 AND state='running' AND lease_until>now() FOR UPDATE",[jobId,token]);
+    if(!claim.rows[0])throw new Error("Report claim expired or family deleted");
+    const consent=await client.query<{scopes:unknown}>(ACTIVE_CONSENT_ROWS_SQL,[familyId]);
+    if(hasGranted(consent.rows,[PARENT_REPORT_SCOPE]))return "continue" as const;
+    await client.query("UPDATE report_jobs SET state='paused', lease_until=NULL, claim_token=NULL, last_error_code='PARENT_REPORT_CONSENT_REQUIRED', attempts=GREATEST(attempts-1,0) WHERE id=$1 AND claim_token=$2 AND state='running'",[jobId,token]);
+    return "paused" as const;
+  });
+}
 async function pauseIdleJobsMissingParentReportConsent():Promise<boolean>{
   const region=getConfig().region;
   const located=await query<{id:string;family_id:string}>(`SELECT j.id,a.family_id FROM report_jobs j JOIN assessments a ON a.id=j.assessment_id WHERE a.region=$1 AND ${dueJobMissingParentReportSql()} ORDER BY a.family_id,j.id LIMIT 25`,[region]);
@@ -201,6 +218,7 @@ async function runReportJob(jobId?:string):Promise<ReportJobResult>{
         triad,score:{...snapshot.score,risk:triad.safety.length>0,riskMessages:triad.safety}};
       publishIds=siblings.map(row=>row.id);
     }else{
+      if(await stopClaimedJobWithoutParentReport(job.id,token,assessment.family_id)==="paused")return {status:"paused"};
       // Consent may be withdrawn after submission. Never contact AI without current permission too.
       const consent=syntheticTest?[]:await query(`SELECT id FROM consents c WHERE c.family_id=$1 AND ${consentScopePredicate("c","ai_processing")} LIMIT 1`,[assessment.family_id]);
       const selection=syntheticTest
@@ -212,6 +230,7 @@ async function runReportJob(jobId?:string):Promise<ReportJobResult>{
     }
     if(syntheticTest)payload={...payload,syntheticTest:true,aiConsented:false,generationMode:"template",aiModel:null,score:{...payload.score,demo:true}};
     if(sources.some(item=>!normValidated(item?.scale?.norm)))payload={...payload,score:{...payload.score,demo:true}};
+    if(await stopClaimedJobWithoutParentReport(job.id,token,assessment.family_id)==="paused")return {status:"paused"};
     const htmlDocuments={"zh-CN":reportHtml(payload,"zh-CN"),"zh-HK":reportHtml(payload,"zh-HK")};
     for(const locale of ["zh-CN","zh-HK"] as const){
       const key=`${assessment.id}.${token}.${locale}.pdf.enc`;keys[locale]=key;
