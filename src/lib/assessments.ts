@@ -22,6 +22,16 @@ import { currentContent,getScale,lockContent } from "./content";
 import { query,transaction } from "./db";
 import { HttpError,requireRole,validateId } from "./http";
 import { isSyntheticTestActorForFamily } from "./synthetic-testing";
+function storedScale(value:unknown):ScaleDefinition|undefined{
+  if(typeof value==="string"){try{return JSON.parse(value) as ScaleDefinition;}catch{return undefined;}}
+  return value&&typeof value==="object"?value as ScaleDefinition:undefined;
+}
+// Handing back an older parent form would publish service-team writing that the requested version keeps for staff.
+function parentStaffWritingWouldLeak(requested:ScaleDefinition,pending:ScaleDefinition|undefined):boolean{
+  if(!pending||requested.id!=="growth-parent"||pending.id!=="growth-parent")return false;
+  const pendingReport=new Map(pending.items.map(item=>[item.id,item.report]));
+  return requested.items.some(item=>item.report==="staff"&&pendingReport.get(item.id)==="words");
+}
 const answerSchema=z.record(z.string(),z.union([z.number(),z.array(z.number()).max(20),z.string().max(2000),z.null()])).transform(record=>{
   const answers:Record<string,number|number[]|string>={};
   for(const [key,value] of Object.entries(record)){
@@ -108,8 +118,9 @@ export async function createAssessment(actor:Actor,input:unknown){
     if(scale.definition.demo)await refuseDemoBesideOfficial(family.id,d.respondentId,actor.region,role,age,client);
     const parentVersions=scale.definition.bundle===TRIAD_BUNDLE&&scale.definition.id==="growth-parent";
     const pending=parentVersions
-      ?await client.query("SELECT a.id,a.triad_round_id FROM assessments a JOIN scales s ON s.id=a.scale_version_id WHERE a.family_id=$1 AND a.respondent_id=$2 AND s.scale_id=$3 AND a.status='pending' ORDER BY a.created_at,a.id LIMIT 1",[family.id,d.respondentId,scale.definition.id])
+      ?await client.query("SELECT a.id,a.triad_round_id,s.definition FROM assessments a JOIN scales s ON s.id=a.scale_version_id WHERE a.family_id=$1 AND a.respondent_id=$2 AND s.scale_id=$3 AND a.status='pending' ORDER BY a.created_at,a.id LIMIT 1",[family.id,d.respondentId,scale.definition.id])
       :await client.query("SELECT id,triad_round_id FROM assessments WHERE family_id=$1 AND respondent_id=$2 AND scale_version_id=$3 AND status='pending'",[family.id,d.respondentId,d.scaleVersionId]);
+    if(pending.rows[0]&&parentStaffWritingWouldLeak(scale.definition,storedScale(pending.rows[0].definition)))throw new HttpError(409,"已有一份旧版家长问卷尚未提交。继续它会把服务团队的文字放进家长报告。请完成已开始的问卷；新版本不会改写它。","PARENT_VERSION_PENDING");
     if(pending.rows[0]){
       if(scale.definition.bundle===TRIAD_BUNDLE&&!pending.rows[0].triad_round_id){
         const roundId=await triadRoundFor(client,family.id,role);
