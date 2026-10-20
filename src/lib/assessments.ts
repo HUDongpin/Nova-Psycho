@@ -12,11 +12,11 @@ import { surveySupplements } from "../domain/survey-supplements";
 import { TRIAD_BUNDLE, triadRolesReady } from "../domain/triad-report";
 import { reportRetryBlocker } from "../domain/report-retry";
 import { lockRegistrationActor,queueTriadReport,requireRegistrationConsent,triadRoundFor } from "./triad";
-import { effectiveDemo, ensureAdviceReferences, normValidated } from "../domain/validation";
+import { effectiveDemo, ensureAdviceReferences, instrumentWriteBlockReason } from "../domain/validation";
 import { ageAt,canManageFamilyReports,consentFor,familyFor } from "./access";
 import { ACTIVE_CONSENT_ROWS_SQL, PARENT_REPORT_SCOPE, PARTICIPATION_SCOPES, grantedScopes, hasGranted } from "./consent";
 import { audit } from "./auth";
-import { getConfig, isDemoMode } from "./config";
+import { getConfig } from "./config";
 import { TRIAD_LIBRARY_KEY } from "./content-seed";
 import { currentContent,getScale,lockContent } from "./content";
 import { query,transaction } from "./db";
@@ -72,9 +72,9 @@ async function refuseDemoBesideOfficial(familyId:string,respondentId:string,regi
   if(official[0])throw new HttpError(409,"正式问卷已经可以使用，不能再分配演示题。","DEMO_NOT_ASSIGNABLE");
 }
 function refuseUnvalidatedInService(scale:{demo:boolean;norm?:{validated?:boolean}},action:"assign"|"draft"|"submit"):void{
-  if(isDemoMode())return;
-  if(!normValidated(scale.norm))throw new HttpError(409,"正式服务不能使用尚未验证常模的量表。","UNVALIDATED_INSTRUMENT");
-  if(!scale.demo)return;
+  const reason=instrumentWriteBlockReason(scale,getConfig().mode);
+  if(!reason)return;
+  if(reason==="UNVALIDATED_INSTRUMENT")throw new HttpError(409,"正式服务不能使用尚未验证常模的量表。","UNVALIDATED_INSTRUMENT");
   const message=action==="assign"?"正式服务环境不能分配演示量表。":action==="draft"?"正式服务环境不能收集演示量表答案。":"正式服务环境不能提交演示量表。";
   throw new HttpError(409,message,"DEMO_INSTRUMENT");
 }
@@ -132,7 +132,8 @@ export async function assessmentDetail(actor:Actor,id:string,locale:Locale){
   const safetyGuidance=a.status!=="pending"&&safetyGuidanceFor(a.snapshot);
   const emphasis=titleEmphasis(s,a.respondent_role,locale);
   const supplements=surveySupplements(s,locale);
-  return {id,status:a.status,childName:a.child_name,scaleTitle:text(s.title,locale),demo:effectiveDemo(s),description:text(s.description,locale),surveyJson:surveyDefinition(s,a.respondent_role,locale,{age:ageAt(String(a.birth_date).slice(0,10))}),...(s.bundle===TRIAD_BUNDLE?{completionRules:completionRules(s)}:{}),...(emphasis.length?{titleEmphasis:emphasis}:{}),...(supplements.length?{supplements}:{}),draftAnswers:a.status==="pending"?a.draft_answers:{},draftRevision:a.draft_revision,consentRequired:!await consentFor(a.family_id),phase,safetyGuidance};
+  const responseBlockedReason=a.status==="pending"?instrumentWriteBlockReason(s,getConfig().mode):null;
+  return {id,status:a.status,...(responseBlockedReason?{responseBlockedReason}:{}),childName:a.child_name,scaleTitle:text(s.title,locale),demo:effectiveDemo(s),description:text(s.description,locale),surveyJson:surveyDefinition(s,a.respondent_role,locale,{age:ageAt(String(a.birth_date).slice(0,10))}),...(s.bundle===TRIAD_BUNDLE?{completionRules:completionRules(s)}:{}),...(emphasis.length?{titleEmphasis:emphasis}:{}),...(supplements.length?{supplements}:{}),draftAnswers:a.status==="pending"?a.draft_answers:{},draftRevision:a.draft_revision,consentRequired:!await consentFor(a.family_id),phase,safetyGuidance};
 }
 export async function saveDraft(actor:Actor,id:string,input:unknown){
   const {answers,revision}=z.object({answers:answerSchema,acknowledged:z.literal(true),revision:z.number().int().nonnegative()}).strict().parse(input),a=await ownAssessment(actor,id);

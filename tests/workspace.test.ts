@@ -51,6 +51,41 @@ afterEach(()=>vi.unstubAllEnvs());
 
 const sqls=()=>mockQuery.mock.calls.map(call=>String(call[0]));
 
+describe("pending instrument availability",()=>{
+  it("withholds the start action for an unvalidated service instrument",async()=>{
+    vi.stubEnv("NOVA_MODE","service");vi.stubEnv("NOVA_PUBLIC_URL","https://nova.example.invalid");
+    const workspace=await workspaceFor(actor("student"),"zh-CN");
+    expect(workspace.assessments[0]).toMatchObject({canRespond:false,responseBlockedReason:"UNVALIDATED_INSTRUMENT"});
+  });
+  it("keeps a validated official service questionnaire writable",async()=>{
+    vi.stubEnv("NOVA_MODE","service");vi.stubEnv("NOVA_PUBLIC_URL","https://nova.example.invalid");
+    const read=mockQuery.getMockImplementation()!;
+    mockQuery.mockImplementation((async(sql:string,values:unknown[])=>{
+      if(sql.includes("FROM assessments a JOIN families f"))return [{...assessmentRow,definition:{...demoScale,demo:false,norm:{...demoScale.norm,validated:true}}}];
+      return read(sql,values);
+    }) as never);
+    const workspace=await workspaceFor(actor("student"),"zh-CN");
+    expect(workspace.assessments[0]).toMatchObject({canRespond:true});
+    expect(workspace.assessments[0].responseBlockedReason).toBeUndefined();
+  });
+  it("keeps submitted service records on the existing phase path",async()=>{
+    vi.stubEnv("NOVA_MODE","service");vi.stubEnv("NOVA_PUBLIC_URL","https://nova.example.invalid");
+    const read=mockQuery.getMockImplementation()!;
+    mockQuery.mockImplementation((async(sql:string,values:unknown[])=>{
+      if(sql.includes("FROM assessments a JOIN families f"))return [{...assessmentRow,status:"queued",definition:teacherScale,has_consent:true}];
+      return read(sql,values);
+    }) as never);
+    const workspace=await workspaceFor(actor("student"),"zh-CN");
+    expect(workspace.assessments[0]).toMatchObject({canRespond:false,phase:"waiting"});
+    expect(workspace.assessments[0].responseBlockedReason).toBeUndefined();
+  });
+  it("keeps synthetic demo questionnaires writable locally",async()=>{
+    const workspace=await workspaceFor(actor("student"),"zh-CN");
+    expect(workspace.assessments[0]).toMatchObject({canRespond:true});
+    expect(workspace.assessments[0].responseBlockedReason).toBeUndefined();
+  });
+});
+
 describe("scale labels",()=>{
   it("shows an unvalidated non-demo instrument as demo and leaves a validated official scale unmarked",async()=>{
     const official=structuredClone(demoScale);

@@ -2,7 +2,7 @@ import type { Actor,Locale,ScaleDefinition,StoredAnswer } from "../domain/types"
 import { text } from "../domain/types";
 import { TRIAD_BUNDLE,staffOnlyText } from "../domain/triad-report";
 import { currentTriadScaleIds } from "../domain/triad-scales";
-import { effectiveDemo } from "../domain/validation";
+import { effectiveDemo, instrumentWriteBlockReason } from "../domain/validation";
 import { reportRetryBlocker } from "../domain/report-retry";
 import { formatJoinCode } from "./triad";
 import { ageAt,canInviteFamilyMembers,canManageFamilyReports,familyScope,iso,type FamilyRow } from "./access";
@@ -61,11 +61,12 @@ export async function workspaceFor(actor:Actor,locale:Locale){
     const parentReport=a.has_consent===true;
     const ownReport=care&&parentReport&&a.report_id?String(a.report_id):null;
     const status=a.status;
+    const responseBlockedReason=status==="pending"?instrumentWriteBlockReason(a.definition as ScaleDefinition,getConfig().mode):null;
     const family=familyById.get(a.family_id);
     const canRetryReport=!!family&&canManageFamilyReports(actor,family)&&status==="failed"&&reportRetryBlocker({status,jobState:a.job_state??null,hasSnapshot:a.has_snapshot===true,hasAnswers:a.has_answers===true,hasSubmission:a.has_submission===true,isTriad:a.is_triad===true,hasRoundSources:a.has_round_sources===true,hasConsent:a.has_consent===true})===null;
     const reviewFlags=team&&Array.isArray(a.review_flags)?a.review_flags.filter((flag:unknown):flag is "age_mismatch"=>flag==="age_mismatch"):[];
     const statedAge=reviewFlags.includes("age_mismatch")&&typeof a.stated_age==="number"&&Number.isInteger(a.stated_age)?a.stated_age:undefined;
-    return {id:a.id,familyId:a.family_id,childName:a.child_name,respondentId:a.respondent_id,respondentName:a.respondent_name,respondentRole:a.respondent_role,scaleVersionId:a.scale_version_id,scaleTitle:text((a.definition as ScaleDefinition).title,locale),status,phase:reportPhase(a,status),createdAt:iso(a.created_at),submittedAt:iso(a.submitted_at),reportId:ownReport,canRespond:a.respondent_id===actor.id&&a.status==="pending",canRetryReport,reviewFlags,statedAge};
+    return {id:a.id,familyId:a.family_id,childName:a.child_name,respondentId:a.respondent_id,respondentName:a.respondent_name,respondentRole:a.respondent_role,scaleVersionId:a.scale_version_id,scaleTitle:text((a.definition as ScaleDefinition).title,locale),status,phase:reportPhase(a,status),createdAt:iso(a.created_at),submittedAt:iso(a.submitted_at),reportId:ownReport,canRespond:a.respondent_id===actor.id&&a.status==="pending"&&!responseBlockedReason,...(responseBlockedReason?{responseBlockedReason}:{}),canRetryReport,reviewFlags,statedAge};
   });
   const scopedReports=reports.map(r=>reportSummary(r,locale));
   return {user:actor,region:actor.region,mode:getConfig().mode,families:scopedFamilies,assessments:scopedAssessments,reports:scopedReports,

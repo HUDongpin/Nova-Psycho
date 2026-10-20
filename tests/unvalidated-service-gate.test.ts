@@ -129,6 +129,12 @@ describe("service mode refuses every unvalidated triad path", () => {
     expect(transaction).not.toHaveBeenCalled();
   });
 
+  it("discloses the write blocker before rendering a pending legacy questionnaire", async () => {
+    const record = await assessmentDetail(studentActor, TASK, "zh-CN");
+    expect(record).toMatchObject({status: "pending", responseBlockedReason: "UNVALIDATED_INSTRUMENT"});
+    expect(writes()).toEqual([]);
+  });
+
   it("refuses a draft on a pending growth-child@1.0.0 task without changing it", async () => {
     await expect(saveDraft(studentActor, TASK, { answers: previewAnswers(oldChild, "calm"), acknowledged: true, revision: 0 })).rejects.toMatchObject(refused);
     expect(writes()).toEqual([]);

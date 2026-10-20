@@ -88,6 +88,12 @@ export const adviceSchema=z.object({title:localized,blocks:z.array(z.object({id:
 });
 export const templateSchema=z.object({title:localized,introduction:localized,limitation:localized,nextStep:localized}).strict();
 export function normValidated(norm:{validated?:boolean}|null|undefined):boolean{return norm?.validated===true;}
+export type InstrumentWriteBlockReason = "UNVALIDATED_INSTRUMENT" | "DEMO_INSTRUMENT";
+export function instrumentWriteBlockReason(scale:{demo?:boolean;norm?:{validated?:boolean}|null},mode:"demo"|"service"):InstrumentWriteBlockReason|null{
+  if(mode==="demo")return null;
+  if(!normValidated(scale.norm))return "UNVALIDATED_INSTRUMENT";
+  return scale.demo ? "DEMO_INSTRUMENT" : null;
+}
 export function effectiveDemo(scale:{demo?:boolean;norm?:{validated?:boolean}|null}|null|undefined):boolean{
   return scale?.demo===true||!normValidated(scale?.norm);
 }

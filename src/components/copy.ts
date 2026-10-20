@@ -1,6 +1,9 @@
 import type { Locale, Role, AssessmentStatus } from "./api";
 // Exported so tests can assert that every entry carries both locales.
 export const dictionary = {
+  instrumentUnavailable: ["此问卷暂不能填写", "此問卷暫不能填寫"],
+  instrumentUnvalidated: ["此问卷尚未具备正式服务所需的已验证常模，暂不能保存答案或提交。请联系服务人员确认可用问卷；已有记录会保留。", "此問卷尚未具備正式服務所需的已驗證常模，暫不能儲存答案或提交。請聯絡服務人員確認可用問卷；已有紀錄會保留。"],
+  instrumentDemoOnly: ["此问卷是演示量表，正式服务暂不能保存其答案或提交。请联系服务人员确认可用问卷；已有记录会保留。", "此問卷是示範量表，正式服務暫不能儲存其答案或提交。請聯絡服務人員確認可用問卷；已有紀錄會保留。"],
   loggingOut: ["正在保存并退出…", "正在儲存並登出…"],
   logoutDraftFailed: ["草稿尚未保存，已保留登录状态。请处理保存问题后再次退出。", "草稿尚未儲存，已保留登入狀態。請處理儲存問題後再次登出。"],
   sessionDraftRetained: ["登录已失效。本页未保存的回答仍保留在此页面，请使用原账号重新登录后继续。关闭或重新载入页面会丢失这些回答。", "登入已失效。本頁未儲存的回答仍保留在此頁面，請使用原帳號重新登入後繼續。關閉或重新載入頁面會遺失這些回答。"],

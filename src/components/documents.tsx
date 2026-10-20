@@ -65,7 +65,8 @@ export function AssessmentView({ owner, id, refreshKey, locale, region, role, dr
   }, [draftSessions, owner]);
   const record = loaded?.record;
   const draft = draftRef.current;
-  const blocked = unavailable || record?.consentRequired;
+  const instrumentBlocked = record?.status === "pending" ? record.responseBlockedReason : undefined;
+  const blocked = unavailable || record?.consentRequired || instrumentBlocked;
   const discardBlocked = () => {
     if (!window.confirm(t("discardDraftConfirm"))) return;
     if (draft) draftSessions.discard(owner, draft.id);
@@ -73,7 +74,7 @@ export function AssessmentView({ owner, id, refreshKey, locale, region, role, dr
   };
   return <>
     <button className="text-link back-link" onClick={onBack}><ArrowLeft />{t("assessments")}</button>
-    {blocked ? <section className="panel draft-access-blocked" role="alert"><p>{t(record?.consentRequired ? "consentDraftPaused" : "draftUnavailable")}</p><div className="button-group"><button className="button secondary" onClick={() => setAttempt(value => value + 1)}>{t("retry")}</button>{draft?.getSnapshot().hasUnsavedChanges && <button className="button ghost" onClick={discardBlocked}>{t("discardThisDraft")}</button>}</div></section> : error ? <ErrorNotice locale={locale} message={error} onRetry={() => setAttempt(value => value + 1)} /> : !record || !loaded || !draft ? <Loading locale={locale} /> : <>
+    {blocked ? <section className="panel draft-access-blocked" role="alert">{instrumentBlocked && <h2>{t("instrumentUnavailable")}</h2>}<p>{t(instrumentBlocked ? instrumentBlocked === "UNVALIDATED_INSTRUMENT" ? "instrumentUnvalidated" : "instrumentDemoOnly" : record?.consentRequired ? "consentDraftPaused" : "draftUnavailable")}</p><div className="button-group"><button className="button secondary" onClick={() => setAttempt(value => value + 1)}>{t("retry")}</button>{draft?.getSnapshot().hasUnsavedChanges && <button className="button ghost" onClick={discardBlocked}>{t("discardThisDraft")}</button>}</div></section> : error ? <ErrorNotice locale={locale} message={error} onRetry={() => setAttempt(value => value + 1)} /> : !record || !loaded || !draft ? <Loading locale={locale} /> : <>
       <div className="page-title"><div><span className="eyebrow">{t("questionnaire")} / {record.childName}</span><h1>{record.scaleTitle}</h1>{!record.demo && record.description ? <p>{record.description}</p> : null}</div>{record.demo && <Badge tone="peach">{t("demoScale")}</Badge>}</div>
       {submitted || (record.status !== "pending" && !draft.getSnapshot().conflict) ? <SubmissionPanel locale={locale} region={region} role={role} phase={outcome?.phase ?? record.phase ?? null} safetyGuidance={outcome?.safetyGuidance ?? record.safetyGuidance === true} reportId={reportId} reportHeld={record.status === "published"} onViewReport={onViewReport} onBack={onBack} /> : <>
         <SurveyRunner key={`${id}:${loaded.locale}:${loaded.token}`} record={record} draft={draft} locale={loaded.locale} onReloadLatest={reloadLatest} openPrivacy={openPrivacy} privacyOpen={privacyOpen} onSubmitted={async result => { if (!draftSessions.isCurrent(owner, loaded.epoch)) return; setOutcome(result); setSubmitted(true); await onRefresh(); }} />
