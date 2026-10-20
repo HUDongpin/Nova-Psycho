@@ -199,6 +199,37 @@ In Clerk mode, `NOVA_TEST_ACCOUNT_USERNAMES` enables a separate username/passwor
 
 Test login verifies the existing password and uses a separate regional cookie and token namespace. Every request checks the allowlist, account status, region, and session expiry. Removing an account from the list immediately prevents its existing test session from authorizing requests. An expired test session cannot silently switch to a coexisting email identity. Opening the email sign-in or registration page clears the test session before showing the email form.
 
+### Synthetic questionnaire and report testing in production
+
+`NOVA_SYNTHETIC_TEST_FAMILY_IDS` optionally lists exact family UUIDs designated for
+synthetic testing. Keep this configuration private and unset by default. It grants
+no access by itself: the caller must use a designated test-account session, and the
+family must contain exactly one active parent, student and teacher, all in the
+configured region and all on `NOVA_TEST_ACCOUNT_USERNAMES`. Ordinary Clerk sessions,
+other families and ordinary members retain the formal-instrument restrictions.
+
+Draft, submission and assignment paths recheck this scope inside the family
+transaction. Report workers check the canonical pinned source identities and
+recheck membership before publication. Consent, ownership, age/role eligibility,
+retake intervals, immutable submissions, stale-draft rejection and report access
+rules still apply. Public registration and family joining gain no exception.
+
+Synthetic snapshots and reports are explicitly marked. They always use rule
+templates, never call AI, and never change `scale.norm.validated`. An existing
+submitted synthetic source can participate only when its actual family, round,
+respondent and role match the current scoped family; it is not rewritten.
+Both questionnaire and report explain that this is synthetic testing, not a
+formal assessment or diagnosis.
+
+Before enabling a family, verify its members and synthetic-data provenance and
+preserve a recovery record. Ensure the keyed `growth-triad` advice/template library
+exists; the bounded helper in
+`scripts/migrations/20261020-synthetic-triad-content.ts` adds missing canonical
+rows in a caller-owned transaction and refuses conflicting existing content.
+Do not run full setup or mark an instrument validated to enable testing. Deploy
+after changing the environment allowlist, including when disabling this channel.
+Disabled or changed database members invalidate the scope on the next check.
+
 ## Consent and workspace schema upgrade
 
 Existing databases created before the consent-scope changes need

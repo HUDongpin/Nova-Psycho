@@ -28,6 +28,7 @@ const familyRow = { id: FAMILY, region: "CN", family_name: "Synthetic family", c
 
 const statements: string[] = [];
 let savedAnswers: unknown = null;
+let syntheticMembers: Record<string, unknown>[] = [];
 
 function scaleRow(id: string): { id: string; definition: ScaleDefinition; status: "active" } | null {
   if (id === CURRENT) return { id, definition: childScale, status: "active" };
@@ -37,6 +38,7 @@ function scaleRow(id: string): { id: string; definition: ScaleDefinition; status
 
 function rowsFor(sql: string, values: unknown[] = []): Record<string, unknown>[] {
   statements.push(sql);
+  if(sql.includes("f.region AS family_region"))return syntheticMembers;
   if (sql.includes("FROM content_versions")) return [{ id: values[0], version: "1.0.0", content: values[0] === "advice" ? demoAdvice : demoTemplate }];
   if (sql.includes("definition->>'demo'") || sql.includes("triad_round_id IS NULL")) return [];
   if (sql.startsWith("SELECT id,definition,status FROM scales")) {
@@ -84,6 +86,7 @@ beforeEach(() => {
   vi.setSystemTime(new Date("2026-10-11T00:00:00Z"));
   statements.length = 0;
   savedAnswers = null;
+  syntheticMembers = [];
   vi.clearAllMocks();
   vi.mocked(query).mockImplementation(async (sql, values) => rowsFor(String(sql), values ?? []));
   vi.mocked(transaction).mockImplementation(async fn => fn({ query: async (sql: string, values?: unknown[]) => ({ rows: rowsFor(String(sql), values ?? []) }) } as never));
@@ -179,5 +182,60 @@ describe("demo mode still lets the same unvalidated paths finish", () => {
     const submitted = await submitAssessment(studentActor, TASK, { answers, acknowledged: true, revision: 0 });
     expect(submitted).toMatchObject({ status: "queued" });
     expect(savedAnswers).toMatchObject({ scale: { version: "1.0.0", demo: false }, score: { status: "valid", demo: false } });
+  });
+});
+
+
+describe("designated synthetic production assessment admission", () => {
+  const designated = { ...studentActor, sessionMethod: "test" as const };
+  beforeEach(() => {
+    stub("service");
+    vi.stubEnv("NOVA_AUTH_PROVIDER", "clerk");
+    vi.stubEnv("NOVA_TEST_ACCOUNT_USERNAMES", "synthetic.parent,synthetic.student,synthetic.teacher");
+    vi.stubEnv("NOVA_SYNTHETIC_TEST_FAMILY_IDS", FAMILY);
+    syntheticMembers = [
+      { id: PARENT, role: "parent" }, { id: STUDENT, role: "student" }, { id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", role: "teacher" },
+    ].map(member => ({ ...member, user_role: member.role, username: `synthetic.${member.role}`, region: "CN", family_region: "CN", disabled: false, demo: false, has_password: true }));
+  });
+  it("discloses the synthetic scope and permits draft without changing the legacy norm", async () => {
+    const record = await assessmentDetail(designated, TASK, "zh-CN");
+    expect(record).toMatchObject({ syntheticTest: true, status: "pending", demo: true });
+    expect(record).not.toHaveProperty("responseBlockedReason");
+    await expect(saveDraft(designated, TASK, { answers: previewAnswers(oldChild, "calm"), acknowledged: true, revision: 0 })).resolves.toEqual({ ok: true, revision: 1 });
+    expect(oldChild.norm.validated).toBe(false);
+    expect(statements.some(sql => sql.includes("FOR SHARE OF f,m,u"))).toBe(true);
+  });
+  it("pins synthetic provenance and forces AI off in the submitted snapshot", async () => {
+    await expect(submitAssessment(designated, TASK, { answers: previewAnswers(oldChild, "calm"), acknowledged: true, revision: 0 })).resolves.toMatchObject({ status: "queued" });
+    expect(savedAnswers).toMatchObject({ syntheticTest: true, aiConsented: false, score: { demo: true, status: "valid" }, scale: { norm: { validated: false }, demo: false } });
+  });
+  it("keeps ordinary Clerk actors denied even when their family is configured", async () => {
+    await expect(saveDraft(studentActor, TASK, { answers: {}, acknowledged: true, revision: 0 })).rejects.toMatchObject({ code: "UNVALIDATED_INSTRUMENT" });
+    await expect(submitAssessment(studentActor, TASK, { answers: {}, acknowledged: true, revision: 0 })).rejects.toMatchObject({ code: "UNVALIDATED_INSTRUMENT" });
+    expect(writes()).toEqual([]);
+  });
+  it.each(["draft", "submit", "assign"] as const)("rechecks the family allowlist under the family lock before %s", async action => {
+    vi.mocked(transaction).mockImplementation(async fn => {
+      vi.stubEnv("NOVA_SYNTHETIC_TEST_FAMILY_IDS", "");
+      return fn({ query: async (sql: string, values?: unknown[]) => ({ rows: rowsFor(String(sql), values ?? []) }) } as never);
+    });
+    const operation = action === "draft" ? saveDraft(designated, TASK, { answers: {}, acknowledged: true, revision: 0 })
+      : action === "submit" ? submitAssessment(designated, TASK, { answers: previewAnswers(oldChild, "calm"), acknowledged: true, revision: 0 })
+      : createAssessment({ ...parentActor, sessionMethod: "test" }, { familyId: FAMILY, respondentId: STUDENT, scaleVersionId: LEGACY, locale: "zh-CN" });
+    await expect(operation).rejects.toMatchObject({ code: "UNVALIDATED_INSTRUMENT" });
+    expect(writes()).toEqual([]);
+  });
+
+  it("still requires guardian participation consent for synthetic draft and submit", async () => {
+    vi.mocked(query).mockImplementation(async (sql, values) => String(sql).includes("FROM consents") ? [] : rowsFor(String(sql), values ?? []));
+    vi.mocked(transaction).mockImplementation(async fn => fn({ query: async (sql: string, values?: unknown[]) => ({ rows: sql.includes("FROM consents") ? [] : rowsFor(sql, values ?? []) }) } as never));
+    await expect(saveDraft(designated, TASK, { answers: {}, acknowledged: true, revision: 0 })).rejects.toMatchObject({ code: "GUARDIAN_CONSENT_REQUIRED" });
+    await expect(submitAssessment(designated, TASK, { answers: previewAnswers(oldChild, "calm"), acknowledged: true, revision: 0 })).rejects.toMatchObject({ code: "GUARDIAN_CONSENT_REQUIRED" });
+    expect(writes()).toEqual([]);
+  });
+  it("will not accept a client-authored synthetic marker", async () => {
+    await expect(saveDraft(designated, TASK, { answers: {}, acknowledged: true, revision: 0, syntheticTest: true })).rejects.toThrow();
+    await expect(submitAssessment(designated, TASK, { answers: {}, acknowledged: true, revision: 0, syntheticTest: true })).rejects.toThrow();
+    expect(writes()).toEqual([]);
   });
 });

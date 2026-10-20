@@ -52,6 +52,25 @@ afterEach(()=>vi.unstubAllEnvs());
 const sqls=()=>mockQuery.mock.calls.map(call=>String(call[0]));
 
 describe("pending instrument availability",()=>{
+  it("opens only the scoped test-session member's pending synthetic questionnaire",async()=>{
+    vi.stubEnv("NOVA_MODE","service");vi.stubEnv("NOVA_PUBLIC_URL","https://nova.example.invalid");
+    vi.stubEnv("NOVA_AUTH_PROVIDER","clerk");vi.stubEnv("NOVA_TEST_ACCOUNT_USERNAMES","synthetic.parent,synthetic.student,synthetic.teacher");
+    vi.stubEnv("NOVA_SYNTHETIC_TEST_FAMILY_IDS",FAMILY_ID);
+    const read=mockQuery.getMockImplementation()!;
+    mockQuery.mockImplementation((async(sql:string,values:unknown[])=>{
+      if(sql.includes("f.region AS family_region"))return ["student","parent","teacher"].map((role,index)=>({id:index===0?SELF:`member-${role}`,role,user_role:role,username:`synthetic.${role}`,region:"CN",family_region:"CN",disabled:false,demo:false,has_password:true}));
+      return read(sql,values);
+    }) as never);
+    const designated=await workspaceFor(actor("student",{sessionMethod:"test"}),"zh-CN");
+    expect(designated.assessments[0]).toMatchObject({canRespond:true,syntheticTest:true});
+    expect(designated.assessments[0]).not.toHaveProperty("responseBlockedReason");
+    const ordinary=await workspaceFor(actor("student"),"zh-CN");
+    expect(ordinary.assessments[0]).toMatchObject({canRespond:false,responseBlockedReason:"UNVALIDATED_INSTRUMENT"});
+    expect(ordinary.assessments[0]).not.toHaveProperty("syntheticTest");
+    vi.stubEnv("NOVA_SYNTHETIC_TEST_FAMILY_IDS","");
+    expect((await workspaceFor(actor("student",{sessionMethod:"test"}),"zh-CN")).assessments[0]).toMatchObject({canRespond:false,responseBlockedReason:"UNVALIDATED_INSTRUMENT"});
+  });
+
   it("withholds the start action for an unvalidated service instrument",async()=>{
     vi.stubEnv("NOVA_MODE","service");vi.stubEnv("NOVA_PUBLIC_URL","https://nova.example.invalid");
     const workspace=await workspaceFor(actor("student"),"zh-CN");

@@ -21,6 +21,7 @@ import { TRIAD_LIBRARY_KEY } from "./content-seed";
 import { currentContent,getScale,lockContent } from "./content";
 import { query,transaction } from "./db";
 import { HttpError,requireRole,validateId } from "./http";
+import { isSyntheticTestActorForFamily } from "./synthetic-testing";
 const answerSchema=z.record(z.string(),z.union([z.number(),z.array(z.number()).max(20),z.string().max(2000),z.null()])).transform(record=>{
   const answers:Record<string,number|number[]|string>={};
   for(const [key,value] of Object.entries(record)){
@@ -71,9 +72,11 @@ async function refuseDemoBesideOfficial(familyId:string,respondentId:string,regi
   const official=await read("SELECT id FROM scales WHERE status='active' AND COALESCE(definition->>'demo','false')<>'true' AND COALESCE(definition->'norm'->>'validated','false')='true' AND (definition->'regions') ? $1 AND (definition->'roles') ? $2 AND (definition->>'minAge')::int<=$3 AND (definition->>'maxAge')::int>=$3 LIMIT 1",[region,role,age]);
   if(official[0])throw new HttpError(409,"正式问卷已经可以使用，不能再分配演示题。","DEMO_NOT_ASSIGNABLE");
 }
-function refuseUnvalidatedInService(scale:{demo:boolean;norm?:{validated?:boolean}},action:"assign"|"draft"|"submit"):void{
+async function admitInstrument(actor:Actor,familyId:string,scale:{demo:boolean;norm?:{validated?:boolean}},action:"assign"|"draft"|"submit",client?:PoolClient):Promise<boolean>{
+  const syntheticTest=await isSyntheticTestActorForFamily(actor,familyId,client);
+  if(syntheticTest)return true;
   const reason=instrumentWriteBlockReason(scale,getConfig().mode);
-  if(!reason)return;
+  if(!reason)return false;
   if(reason==="UNVALIDATED_INSTRUMENT")throw new HttpError(409,"正式服务不能使用尚未验证常模的量表。","UNVALIDATED_INSTRUMENT");
   const message=action==="assign"?"正式服务环境不能分配演示量表。":action==="draft"?"正式服务环境不能收集演示量表答案。":"正式服务环境不能提交演示量表。";
   throw new HttpError(409,message,"DEMO_INSTRUMENT");
@@ -83,7 +86,7 @@ export async function createAssessment(actor:Actor,input:unknown){
   const d=z.object({familyId:z.string().uuid(),respondentId:z.string().uuid(),scaleVersionId:z.string().max(100),locale:z.enum(["zh-CN","zh-HK"])}).strict().parse(input);
   const family=await familyFor(actor,d.familyId),scale=await getScale(d.scaleVersionId);
   if(scale.status!=="active")throw new HttpError(409,"该量表版本已停用。","SCALE_RETIRED");
-  refuseUnvalidatedInService(scale.definition,"assign");
+  await admitInstrument(actor,family.id,scale.definition,"assign");
   const members=await query("SELECT m.role FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.family_id=$1 AND m.user_id=$2 AND NOT u.disabled AND u.region=$3",[d.familyId,d.respondentId,actor.region]);
   if(!members[0])throw new HttpError(422,"填答者未与此家庭建立授权关系。","INVALID_RESPONDENT");
   const role=members[0].role as RespondentRole;
@@ -96,6 +99,7 @@ export async function createAssessment(actor:Actor,input:unknown){
     if(!lock.rows[0])throw new HttpError(404,"该家庭已删除。","NOT_FOUND");
     await lockRegistrationActor(client,actor,"SHARE");
     await familyFor(actor,family.id,client);
+    await admitInstrument(actor,family.id,scale.definition,"assign",client);
     const currentMember=await client.query("SELECT m.role FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.family_id=$1 AND m.user_id=$2 AND NOT u.disabled AND u.region=$3 AND u.role=m.role FOR SHARE OF u,m",[family.id,d.respondentId,actor.region]);
     if(currentMember.rows[0]?.role!==role)throw new HttpError(422,"填答者未与此家庭建立授权关系。","INVALID_RESPONDENT");
     await lockContent(client);
@@ -132,12 +136,13 @@ export async function assessmentDetail(actor:Actor,id:string,locale:Locale){
   const safetyGuidance=a.status!=="pending"&&safetyGuidanceFor(a.snapshot);
   const emphasis=titleEmphasis(s,a.respondent_role,locale);
   const supplements=surveySupplements(s,locale);
-  const responseBlockedReason=a.status==="pending"?instrumentWriteBlockReason(s,getConfig().mode):null;
-  return {id,status:a.status,...(responseBlockedReason?{responseBlockedReason}:{}),childName:a.child_name,scaleTitle:text(s.title,locale),demo:effectiveDemo(s),description:text(s.description,locale),surveyJson:surveyDefinition(s,a.respondent_role,locale,{age:ageAt(String(a.birth_date).slice(0,10))}),...(s.bundle===TRIAD_BUNDLE?{completionRules:completionRules(s)}:{}),...(emphasis.length?{titleEmphasis:emphasis}:{}),...(supplements.length?{supplements}:{}),draftAnswers:a.status==="pending"?a.draft_answers:{},draftRevision:a.draft_revision,consentRequired:!await consentFor(a.family_id),phase,safetyGuidance};
+  const syntheticTest=a.status==="pending"?await isSyntheticTestActorForFamily(actor,String(a.family_id)):a.snapshot?.syntheticTest===true;
+  const responseBlockedReason=a.status==="pending"&&!syntheticTest?instrumentWriteBlockReason(s,getConfig().mode):null;
+  return {id,status:a.status,...(responseBlockedReason?{responseBlockedReason}:{}),...(syntheticTest?{syntheticTest:true}:{}),childName:a.child_name,scaleTitle:text(s.title,locale),demo:effectiveDemo(s),description:text(s.description,locale),surveyJson:surveyDefinition(s,a.respondent_role,locale,{age:ageAt(String(a.birth_date).slice(0,10))}),...(s.bundle===TRIAD_BUNDLE?{completionRules:completionRules(s)}:{}),...(emphasis.length?{titleEmphasis:emphasis}:{}),...(supplements.length?{supplements}:{}),draftAnswers:a.status==="pending"?a.draft_answers:{},draftRevision:a.draft_revision,consentRequired:!await consentFor(a.family_id),phase,safetyGuidance};
 }
 export async function saveDraft(actor:Actor,id:string,input:unknown){
   const {answers,revision}=z.object({answers:answerSchema,acknowledged:z.literal(true),revision:z.number().int().nonnegative()}).strict().parse(input),a=await ownAssessment(actor,id);
-  refuseUnvalidatedInService(a.definition,"draft");
+  await admitInstrument(actor,String(a.family_id),a.definition,"draft");
   if(!await consentFor(a.family_id))throw new HttpError(409,"请先完成监护人授权。","GUARDIAN_CONSENT_REQUIRED");
   try{validateAnswers(a.definition,answers);}catch{throw new HttpError(422,"答案格式不符合量表要求。","INVALID_ANSWERS");}
   return transaction(async client=>{
@@ -145,6 +150,7 @@ export async function saveDraft(actor:Actor,id:string,input:unknown){
     if(!lock.rows[0])throw new HttpError(404,"该家庭已删除。","NOT_FOUND");
     await lockRegistrationActor(client,actor,"SHARE");
     await requireRegistrationConsent(client,a.family_id);
+    await admitInstrument(actor,String(a.family_id),a.definition,"draft",client);
     const r=await client.query("UPDATE assessments SET draft_answers=$1,draft_revision=draft_revision+1,acknowledged_at=COALESCE(acknowledged_at,now()) WHERE id=$2 AND respondent_id=$3 AND status='pending' AND draft_revision=$4 RETURNING id,draft_revision",[JSON.stringify(answers),id,actor.id,revision]);
     if(!r.rows[0])throw new HttpError(409,"草稿已在另一个页面更新或测评已提交，请重新载入并核对答案。","DRAFT_CONFLICT");return {ok:true,revision:r.rows[0].draft_revision};
   });
@@ -152,12 +158,13 @@ export async function saveDraft(actor:Actor,id:string,input:unknown){
 export async function submitAssessment(actor:Actor,id:string,input:unknown){
   const d=z.object({answers:answerSchema,acknowledged:z.literal(true),revision:z.number().int().nonnegative()}).strict().parse(input);const own=await ownAssessment(actor,id);
   const scale=own.definition as ScaleDefinition;
-  refuseUnvalidatedInService(scale,"submit");
+  await admitInstrument(actor,String(own.family_id),scale,"submit");
   const family=await familyFor(actor,own.family_id);
   const result=await transaction(async client=>{
     const lockedFamily=await client.query("SELECT id FROM families WHERE id=$1 FOR UPDATE",[family.id]);
     if(!lockedFamily.rows[0])throw new HttpError(404,"该家庭已删除。","NOT_FOUND");
     await lockRegistrationActor(client,actor,"SHARE");
+    const syntheticTest=await admitInstrument(actor,family.id,scale,"submit",client);
     const locked=await client.query("SELECT a.*,r.id AS report_id FROM assessments a LEFT JOIN reports r ON r.assessment_id=a.id WHERE a.id=$1 AND a.respondent_id=$2 FOR UPDATE OF a",[id,actor.id]);
     const a=locked.rows[0];if(!a)throw new HttpError(404,"测评不存在。","NOT_FOUND");
     if(a.status!=="pending")return {id,status:a.status,reportId:a.report_id??null,phase:await submissionPhase(clientPhaseReader(client),id,a.family_id,a.triad_round_id??null,a.status,scale),safetyGuidance:safetyGuidanceFor(a.snapshot)};
@@ -167,6 +174,7 @@ export async function submitAssessment(actor:Actor,id:string,input:unknown){
     const scopes=grantedScopes(consent.rows);
     const age=ageAt(String(family.birth_date).slice(0,10));
     let score;try{score=scoreAssessment(scale,d.answers,{age,region:actor.region,role:a.respondent_role});}catch(e){if(e instanceof ScoringError)throw new HttpError(422,"答案格式不符合量表要求。","INVALID_ANSWERS");throw e;}
+    if(syntheticTest)score={...score,demo:true};
     if(score.status==="ineligible")throw new HttpError(422,"当前量表不适用于此孩子。","INELIGIBLE");
     if(statedAgeMismatch(scale,d.answers,age))score={...score,reviewFlags:["age_mismatch" as const]};
     if(scale.items.some(item=>item.gate!==undefined&&d.answers[item.id]!==item.gate))throw new HttpError(422,"需要先同意参加这次了解，才能提交。","ENTRY_GATE");
@@ -179,7 +187,7 @@ export async function submitAssessment(actor:Actor,id:string,input:unknown){
     try{ensureAdviceReferences(scale,advice.content);}catch{throw new HttpError(409,"量表的报告建议配置需要更新。","ADVICE_MISMATCH");}
     const roundId=scale.bundle===TRIAD_BUNDLE?(a.triad_round_id??await triadRoundFor(client,a.family_id,a.respondent_role)):null;
     const submittedAt=new Date().toISOString();
-    const snapshot:AssessmentSnapshot={scale,advice,template,score,childName:family.child_name,grade:family.grade,submittedAt,aiConsented:scopes.has("ai_processing")};
+    const snapshot:AssessmentSnapshot={scale,advice,template,score,childName:family.child_name,grade:family.grade,submittedAt,aiConsented:!syntheticTest&&scopes.has("ai_processing"),...(syntheticTest?{syntheticTest:true}:{})};
     await client.query("UPDATE assessments SET answers=$1,draft_answers='{}',snapshot=$2,status='queued',submitted_at=$3,acknowledged_at=COALESCE(acknowledged_at,$3),triad_round_id=$5 WHERE id=$4",[JSON.stringify(d.answers),JSON.stringify(snapshot),submittedAt,id,roundId]);
     if(scale.bundle===TRIAD_BUNDLE){
       if(score.risk){

@@ -10,17 +10,19 @@ import { consentScopeGrantedSql, effectiveScopesSelect, grantedScopes } from "./
 import { getConfig } from "./config";
 import { query } from "./db";
 import { reportSummary } from "./reports";
+import { isSyntheticTestActorForFamily } from "./synthetic-testing";
 
 export async function workspaceFor(actor:Actor,locale:Locale){
   const scope=familyScope(actor),care=["admin","staff","parent"].includes(actor.role),team=["admin","staff"].includes(actor.role);
   const families=await query<FamilyRow&{assigned_name:string|null}>(`SELECT f.*,(SELECT u.name FROM users u WHERE u.id=f.assigned_to AND u.region=f.region) AS assigned_name FROM families f WHERE ${scope.sql} ORDER BY f.created_at DESC`,scope.values);
   const ids=families.map(f=>f.id);
   const familyById=new Map(families.map(f=>[f.id,f]));
+  const syntheticFamilies=new Set((await Promise.all(ids.map(async id=>await isSyntheticTestActorForFamily(actor,id)?id:null))).filter((id):id is string=>id!==null));
   const [members,consents,assessments,reports,goals,observations,scales,staff,content,alerts,triadAnswers]=await Promise.all([
     query("SELECT m.family_id,u.id,u.name,m.role FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.family_id=ANY($1::uuid[]) AND NOT u.disabled",[ids]),
     query<{family_id:string;scopes:unknown}>(`SELECT c.family_id, ${effectiveScopesSelect("c")} AS scopes FROM consents c WHERE c.family_id=ANY($1::uuid[]) AND c.revoked_at IS NULL`,[ids]),
     query(`SELECT a.id,a.family_id,a.respondent_id,a.respondent_role,a.scale_version_id,a.status,a.created_at,a.submitted_at,a.triad_round_id,j.id AS triad_job_id,f.child_name,u.name AS respondent_name,s.definition,r.id AS report_id,COALESCE(a.snapshot->'score'->'reviewFlags','[]'::jsonb) AS review_flags,CASE WHEN a.snapshot->'score'->'reviewFlags' ? 'age_mismatch' AND jsonb_typeof(a.answers->'c_age')='number' THEN a.answers->'c_age' ELSE NULL END AS stated_age,
-      j.state AS job_state,COALESCE(a.snapshot<>'null'::jsonb,false) AS has_snapshot,COALESCE(a.answers<>'null'::jsonb,false) AS has_answers,a.submitted_at IS NOT NULL AS has_submission,
+      COALESCE(a.snapshot->>'syntheticTest'='true',false) AS synthetic_test,j.state AS job_state,COALESCE(a.snapshot<>'null'::jsonb,false) AS has_snapshot,COALESCE(a.answers<>'null'::jsonb,false) AS has_answers,a.submitted_at IS NOT NULL AS has_submission,
       COALESCE(a.snapshot->'scale'->>'bundle'=$5,false) AS is_triad,(a.triad_round_id IS NOT NULL AND j.source_assessment_ids IS NOT NULL) AS has_round_sources,
       COALESCE((SELECT COUNT(DISTINCT s2.respondent_role)=3 FROM assessments s2 WHERE s2.triad_round_id=a.triad_round_id AND s2.submitted_at IS NOT NULL),false) AS round_ready,
       ${consentScopeGrantedSql("a.family_id","parent_report")} AS has_consent
@@ -61,12 +63,13 @@ export async function workspaceFor(actor:Actor,locale:Locale){
     const parentReport=a.has_consent===true;
     const ownReport=care&&parentReport&&a.report_id?String(a.report_id):null;
     const status=a.status;
-    const responseBlockedReason=status==="pending"?instrumentWriteBlockReason(a.definition as ScaleDefinition,getConfig().mode):null;
+    const syntheticTest=status==="pending"?syntheticFamilies.has(a.family_id):a.synthetic_test===true;
+    const responseBlockedReason=status==="pending"&&!syntheticTest?instrumentWriteBlockReason(a.definition as ScaleDefinition,getConfig().mode):null;
     const family=familyById.get(a.family_id);
     const canRetryReport=!!family&&canManageFamilyReports(actor,family)&&status==="failed"&&reportRetryBlocker({status,jobState:a.job_state??null,hasSnapshot:a.has_snapshot===true,hasAnswers:a.has_answers===true,hasSubmission:a.has_submission===true,isTriad:a.is_triad===true,hasRoundSources:a.has_round_sources===true,hasConsent:a.has_consent===true})===null;
     const reviewFlags=team&&Array.isArray(a.review_flags)?a.review_flags.filter((flag:unknown):flag is "age_mismatch"=>flag==="age_mismatch"):[];
     const statedAge=reviewFlags.includes("age_mismatch")&&typeof a.stated_age==="number"&&Number.isInteger(a.stated_age)?a.stated_age:undefined;
-    return {id:a.id,familyId:a.family_id,childName:a.child_name,respondentId:a.respondent_id,respondentName:a.respondent_name,respondentRole:a.respondent_role,scaleVersionId:a.scale_version_id,scaleTitle:text((a.definition as ScaleDefinition).title,locale),status,phase:reportPhase(a,status),createdAt:iso(a.created_at),submittedAt:iso(a.submitted_at),reportId:ownReport,canRespond:a.respondent_id===actor.id&&a.status==="pending"&&!responseBlockedReason,...(responseBlockedReason?{responseBlockedReason}:{}),canRetryReport,reviewFlags,statedAge};
+    return {id:a.id,familyId:a.family_id,childName:a.child_name,respondentId:a.respondent_id,respondentName:a.respondent_name,respondentRole:a.respondent_role,scaleVersionId:a.scale_version_id,scaleTitle:text((a.definition as ScaleDefinition).title,locale),status,phase:reportPhase(a,status),createdAt:iso(a.created_at),submittedAt:iso(a.submitted_at),reportId:ownReport,canRespond:a.respondent_id===actor.id&&a.status==="pending"&&!responseBlockedReason,...(responseBlockedReason?{responseBlockedReason}:{}),...(syntheticTest?{syntheticTest:true}:{}),canRetryReport,reviewFlags,statedAge};
   });
   const scopedReports=reports.map(r=>reportSummary(r,locale));
   return {user:actor,region:actor.region,mode:getConfig().mode,families:scopedFamilies,assessments:scopedAssessments,reports:scopedReports,

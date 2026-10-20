@@ -44,6 +44,12 @@ for (const locale of ["zh-CN", "zh-HK"] as const) describe(`instrument availabil
     expect(host.querySelector("[data-survey-runner]")).not.toBeNull();
     expect(host.textContent).not.toContain(copy(locale)("instrumentUnavailable"));
   });
+  it("labels the server-authorized synthetic test before the normal answer form", async () => {
+    const { host } = await renderRecord({ ...base, syntheticTest: true }, locale);
+    expect(host.textContent).toContain(copy(locale)("syntheticTest"));
+    expect(host.textContent).toContain(copy(locale)("syntheticTestNotice"));
+    expect(host.querySelector("[data-survey-runner]")).not.toBeNull();
+  });
   it("keeps historical submitted records on the waiting path", async () => {
     const { host } = await renderRecord({ ...base, status: "queued", phase: "waiting", responseBlockedReason: "UNVALIDATED_INSTRUMENT" }, locale);
     expect(host.textContent).toContain(copy(locale)("triadWaiting"));

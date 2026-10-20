@@ -141,6 +141,7 @@ export interface AssessmentSnapshot {
   grade: string;
   submittedAt: string;
   aiConsented: boolean;
+  syntheticTest?: boolean;
 }
 export interface ReportPayload extends AssessmentSnapshot {
   selectedAdviceIds: string[];
@@ -165,4 +166,4 @@ export interface TriadRoleComparison {
   changes?: { key: string; label: TextPair; previous: number; current: number; delta: number; higherMeans: "more_support" | "more_strength" }[];
   omitted?: { key: string; label: TextPair }[];
 }
-export interface Actor { id: string; name: string; role: Role; region: Region }
+export interface Actor { id: string; name: string; role: Role; region: Region; sessionMethod?: "test" }

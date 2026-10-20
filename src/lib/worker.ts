@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
 import type { AssessmentSnapshot,Locale,ReportPayload,StoredAnswer } from "../domain/types";
-import { selectNarrative } from "../domain/narrative";
+import { eligibleAdviceIds, selectNarrative } from "../domain/narrative";
 import { composeTriad,TRIAD_BUNDLE,triadRolesReady } from "../domain/triad-report";
 import { compareTriad, type TriadComparisonSource } from "../domain/triad-comparison";
 import { compareResults } from "../domain/scoring";
@@ -13,6 +13,12 @@ import { query,transaction } from "./db";
 import { renderPdf } from "./pdf";
 import { cleanAbandonedPrivatePdfTemps,listPrivatePdfKeys,removePrivatePdf,writePrivatePdf } from "./storage";
 import { validateId } from "./http";
+import { getSyntheticTestFamilyMembers, type SyntheticTestMember } from "./synthetic-testing";
+type SyntheticSourceIdentity={id:string;respondent_id:string;respondent_role:string};
+function syntheticSourcesMatch(sources:SyntheticSourceIdentity[],members:SyntheticTestMember[]):boolean{
+  return sources.length>0&&new Set(sources.map(source=>source.id)).size===sources.length&&
+    sources.every(source=>members.some(member=>member.id===source.respondent_id&&member.role===source.respondent_role));
+}
 export type ReportJobResult=
   |{status:"published"}
   |{status:"already_done"}
@@ -131,8 +137,14 @@ async function runReportJob(jobId?:string):Promise<ReportJobResult>{
   const pdfs:Partial<Record<Locale,Buffer>>={};
   let unboundTriad=false;
   let blockCode:string|null=null;
+  let syntheticTest=false;
+  const rejectSyntheticScope=()=>{
+    blockCode="SYNTHETIC_TEST_SCOPE_REQUIRED";
+    throw new Error("Synthetic report source authorization changed");
+  };
   const rejectSnapshot=(item:AssessmentSnapshot|null|undefined)=>{
-    if(isDemoMode())return;
+    if(item?.syntheticTest&&!syntheticTest)rejectSyntheticScope();
+    if(isDemoMode()||syntheticTest)return;
     const code=!normValidated(item?.scale?.norm)?"UNVALIDATED_INSTRUMENT":item?.scale?.demo?"DEMO_INSTRUMENT":null;
     if(!code)return;
     blockCode=code;
@@ -143,10 +155,13 @@ async function runReportJob(jobId?:string):Promise<ReportJobResult>{
     const rows=await query("SELECT * FROM assessments WHERE id=$1 AND region=$2",[job.assessment_id,getConfig().region]);
     const assessment=rows[0];if(!assessment?.snapshot)throw new Error("Missing assessment snapshot");
     const snapshot=assessment.snapshot as AssessmentSnapshot;
+    const syntheticMembers=isDemoMode()?null:await getSyntheticTestFamilyMembers(String(assessment.family_id),getConfig().region);
+    syntheticTest=syntheticMembers!==null&&syntheticSourcesMatch([assessment as SyntheticSourceIdentity],syntheticMembers);
     rejectSnapshot(snapshot);
     let payload:ReportPayload;
     let publishIds=[assessment.id as string];
     const sources:AssessmentSnapshot[]=[snapshot];
+    let sourceIdentities:SyntheticSourceIdentity[]=[assessment as SyntheticSourceIdentity];
     if(snapshot.scale.bundle===TRIAD_BUNDLE){
       unboundTriad=!assessment.triad_round_id||!job.source_assessment_ids;
       if(unboundTriad)throw new Error("Triad sources require review");
@@ -154,8 +169,10 @@ async function runReportJob(jobId?:string):Promise<ReportJobResult>{
       if(sourceIds.length!==3||new Set(sourceIds).size!==3||!sourceIds.includes(assessment.id))throw new Error("Invalid triad sources");
       const siblings=await query("SELECT id,respondent_role,answers,snapshot,submitted_at,respondent_id FROM assessments WHERE id=ANY($1::uuid[]) AND family_id=$2 AND region=$3 AND triad_round_id=$4 AND submitted_at IS NOT NULL",[sourceIds,assessment.family_id,getConfig().region,assessment.triad_round_id]);
       if(siblings.length!==3||!triadRolesReady(siblings.map(row=>row.respondent_role))||siblings.some(row=>row.snapshot?.scale?.bundle!==TRIAD_BUNDLE))throw new Error("Triad incomplete");
+      if(syntheticTest&&!syntheticSourcesMatch(siblings as SyntheticSourceIdentity[],syntheticMembers!))rejectSyntheticScope();
       for(const row of siblings)rejectSnapshot(row.snapshot as AssessmentSnapshot);
       sources.splice(0,sources.length,...siblings.map(row=>row.snapshot as AssessmentSnapshot));
+      sourceIdentities=siblings as SyntheticSourceIdentity[];
       // Select one completed round before this round, even when its report failed
       // or this job is retried after newer rounds. Frozen snapshots are the source.
       const firstSubmission=new Date(Math.min(...siblings.map(row=>new Date(row.submitted_at).getTime()))).toISOString();
@@ -185,12 +202,15 @@ async function runReportJob(jobId?:string):Promise<ReportJobResult>{
       publishIds=siblings.map(row=>row.id);
     }else{
       // Consent may be withdrawn after submission. Never contact AI without current permission too.
-      const consent=await query(`SELECT id FROM consents c WHERE c.family_id=$1 AND ${consentScopePredicate("c","ai_processing")} LIMIT 1`,[assessment.family_id]);
-      const selection=await selectNarrative({...snapshot,aiConsented:snapshot.aiConsented&&consent.length>0},getConfig().ai);
+      const consent=syntheticTest?[]:await query(`SELECT id FROM consents c WHERE c.family_id=$1 AND ${consentScopePredicate("c","ai_processing")} LIMIT 1`,[assessment.family_id]);
+      const selection=syntheticTest
+        ?{selectedAdviceIds:eligibleAdviceIds(snapshot),generationMode:"template" as const,fallbackReason:"synthetic_test",aiModel:null}
+        :await selectNarrative({...snapshot,aiConsented:snapshot.aiConsented&&consent.length>0},getConfig().ai);
       const previous=await query("SELECT snapshot,submitted_at FROM assessments WHERE family_id=$1 AND respondent_id=$2 AND scale_version_id=$3 AND submitted_at<$4 AND snapshot IS NOT NULL ORDER BY submitted_at DESC LIMIT 1",[assessment.family_id,assessment.respondent_id,assessment.scale_version_id,assessment.submitted_at]);
       const prior=previous[0];
       payload={...snapshot,...selection,comparison:compareResults(snapshot.score,prior?(prior.snapshot as AssessmentSnapshot).score:null,prior?new Date(prior.submitted_at).toISOString():undefined)};
     }
+    if(syntheticTest)payload={...payload,syntheticTest:true,aiConsented:false,generationMode:"template",aiModel:null,score:{...payload.score,demo:true}};
     if(sources.some(item=>!normValidated(item?.scale?.norm)))payload={...payload,score:{...payload.score,demo:true}};
     const htmlDocuments={"zh-CN":reportHtml(payload,"zh-CN"),"zh-HK":reportHtml(payload,"zh-HK")};
     for(const locale of ["zh-CN","zh-HK"] as const){
@@ -204,6 +224,12 @@ async function runReportJob(jobId?:string):Promise<ReportJobResult>{
       if(!familyLock.rows[0])throw new Error("Family deleted");
       const claim=await client.query("SELECT id FROM report_jobs WHERE id=$1 AND claim_token=$2 AND state='running' AND lease_until>now() FOR UPDATE",[job.id,token]);
       if(!claim.rows[0])throw new Error("Report claim expired or family deleted");
+      if(syntheticTest){
+        const members=await getSyntheticTestFamilyMembers(String(assessment.family_id),getConfig().region,client);
+        const current=await client.query<SyntheticSourceIdentity>("SELECT id,respondent_id,respondent_role FROM assessments WHERE id=ANY($1::uuid[]) AND family_id=$2 AND region=$3 AND triad_round_id IS NOT DISTINCT FROM $4::uuid AND submitted_at IS NOT NULL FOR SHARE",[publishIds,assessment.family_id,getConfig().region,assessment.triad_round_id??null]);
+        if(!members||current.rows.length!==sourceIdentities.length||!syntheticSourcesMatch(current.rows,members)||
+          current.rows.some(row=>!sourceIdentities.some(source=>source.id===row.id&&source.respondent_id===row.respondent_id&&source.respondent_role===row.respondent_role)))rejectSyntheticScope();
+      }
       const consent=await client.query<{scopes:unknown}>(ACTIVE_CONSENT_ROWS_SQL,[assessment.family_id]);
       if(!hasGranted(consent.rows,[PARENT_REPORT_SCOPE])){
         await client.query("UPDATE report_jobs SET state='paused', lease_until=NULL, claim_token=NULL, last_error_code='PARENT_REPORT_CONSENT_REQUIRED', attempts=GREATEST(attempts-1,0) WHERE id=$1 AND claim_token=$2 AND state='running'",[job.id,token]);

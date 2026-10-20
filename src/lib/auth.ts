@@ -127,7 +127,7 @@ export async function testSessionActorOf(request:Request):Promise<Actor|null>{
   if(!token)return null;
   const config=getConfig();
   const rows=await query<Actor>("SELECT u.id,u.name,u.role,u.region FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 AND s.region=$2 AND u.region=$2 AND s.expires_at>now() AND NOT u.disabled AND ($3::boolean OR NOT u.demo) AND u.username=ANY($4::text[]) AND u.password_hash IS NOT NULL",[testTokenHash(token),config.region,config.mode==="demo",getTestAccountUsernames()]);
-  return rows[0]??null;
+  return rows[0]?{...rows[0],sessionMethod:"test"}:null;
 }
 export async function setTestPasswordSession(response:NextResponse,username:string,password:string):Promise<void>{
   if(!hasTestAccountLogin())throw new HttpError(404,"未找到该入口。","NOT_FOUND");

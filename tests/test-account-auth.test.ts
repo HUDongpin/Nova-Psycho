@@ -98,10 +98,19 @@ describe("test password sessions alongside Clerk", () => {
 });
 
 describe("test sessions remain separately revocable", () => {
+  it("does not derive test privilege from a request header or ordinary Clerk identity", async () => {
+    clerk.actor.mockResolvedValue(actor);
+    const forged = new Request("https://synthetic.example/api/session", { headers: { "X-Session-Method": "test", "X-Synthetic-Test": "true" } });
+    const resolved = await actorOf(forged);
+    expect(resolved).toEqual(actor);
+    expect(resolved).not.toHaveProperty("sessionMethod");
+    expect(query).not.toHaveBeenCalled();
+  });
+
   it("resolves only a scoped digest and revalidates the allowlist and account on every request", async () => {
     vi.mocked(query).mockResolvedValue([actor]);
-    await expect(actorOf(request())).resolves.toEqual(actor);
-    await expect(authStateOf(request())).resolves.toEqual({ user: actor, authProvider: "clerk", identityState: "ready", sessionMethod: "test" });
+    await expect(actorOf(request())).resolves.toEqual({ ...actor, sessionMethod: "test" });
+    await expect(authStateOf(request())).resolves.toEqual({ user: { ...actor, sessionMethod: "test" }, authProvider: "clerk", identityState: "ready", sessionMethod: "test" });
     const [sql, values] = vi.mocked(query).mock.calls[0];
     expect(values).toEqual([hashToken(`test:${token}`), "HK", false, ["synthetic.teacher"]]);
     for (const condition of ["s.region=$2", "u.region=$2", "s.expires_at>now()", "NOT u.disabled", "OR NOT u.demo", "u.username=ANY($4::text[])", "u.password_hash IS NOT NULL"]) expect(sql).toContain(condition);
