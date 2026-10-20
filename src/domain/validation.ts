@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { AdviceLibrary, ReportTemplate, ScaleDefinition } from "./types";
+import { TRIAD_DOMAIN_KEYS } from "./types";
 const key=z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/).refine(v=>!["constructor","prototype"].includes(v));
 const localized=z.object({"zh-CN":z.string().trim().min(1).max(4000),"zh-HK":z.string().trim().min(1).max(4000)}).strict();
 const roles=z.enum(["student","parent","teacher"]);
@@ -83,7 +84,14 @@ export const scaleSchema=z.object({
   }
   for(const rule of s.riskRules){const i=items.get(rule.itemId);if(!i||rule.values.some(v=>!i.choices.some(c=>c.value===v)))fail("Risk rule refers to an unknown item or response");}
 });
-export const adviceSchema=z.object({title:localized,blocks:z.array(z.object({id:key,title:localized,body:localized,source:z.string().trim().min(1).max(1000),dimensionKeys:z.array(key).max(40)}).strict()).min(1).max(100)}).strict().superRefine((s,ctx)=>{
+const triadApplicability=z.object({
+  domainKeys:z.array(z.enum(TRIAD_DOMAIN_KEYS)).min(1).max(TRIAD_DOMAIN_KEYS.length),
+  roles:z.array(roles).min(1).max(3)
+}).strict().superRefine((value,ctx)=>{
+  if(new Set(value.domainKeys).size!==value.domainKeys.length)ctx.addIssue({code:"custom",message:"Triad domains must be unique"});
+  if(new Set(value.roles).size!==value.roles.length)ctx.addIssue({code:"custom",message:"Triad roles must be unique"});
+});
+export const adviceSchema=z.object({title:localized,blocks:z.array(z.object({id:key,title:localized,body:localized,source:z.string().trim().min(1).max(1000),dimensionKeys:z.array(key).max(40),triadApplicability:triadApplicability.optional()}).strict()).min(1).max(100)}).strict().superRefine((s,ctx)=>{
   if(new Set(s.blocks.map(b=>b.id)).size!==s.blocks.length)ctx.addIssue({code:"custom",message:"Advice IDs must be unique"});
 });
 export const templateSchema=z.object({title:localized,introduction:localized,limitation:localized,nextStep:localized}).strict();
