@@ -6,6 +6,26 @@ export function reportShowsDemo(p:Pick<ReportPayload,"score"|"scale">):boolean{
 }
 export function escapeHtml(value:unknown):string{return String(value??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]!);}
 export const respondentLabel=(role:RespondentRole,locale:Locale)=>({student:locale==="zh-HK"?"學生自評":"学生自评",parent:locale==="zh-HK"?"家長觀察":"家长观察",teacher:locale==="zh-HK"?"教師觀察":"教师观察"})[role];
+function triadComparisonHtml(report:TriadReport,locale:Locale):string{
+  const hk=locale==="zh-HK",t=(cn:string,tw:string)=>hk?tw:cn,e=escapeHtml;
+  const fmt=(iso:string)=>new Intl.DateTimeFormat(locale,{timeZone:"Asia/Hong_Kong",year:"numeric",month:"long",day:"numeric"}).format(new Date(iso));
+  const reasons={
+    first_assessment:t("目前没有更早的完整三方记录，可在下一轮填写后查看适用的比较。","目前沒有更早的完整三方紀錄，可在下一輪填寫後查看適用的比較。"),
+    incompatible_version:t("两次问卷版本或计分依据不同，本方暂不作分数比较。","兩次問卷版本或計分依據不同，本方暫不作分數比較。"),
+    different_respondent:t("两次填写人不同，本方的观察分别保留，不作分数比较。","兩次填寫人不同，本方的觀察分別保留，不作分數比較。"),
+    incomplete:t("两次记录中有不完整或不适用的资料，本方暂不作分数比较。","兩次紀錄中有不完整或不適用的資料，本方暫不作分數比較。")
+  };
+  const roles=report.comparisons?.map(result=>{
+    const rows=result.available?(result.changes??[]).map(change=>{
+      const direction=change.delta>0?t("原始分升高","原始分升高"):change.delta<0?t("原始分降低","原始分降低"):t("原始分没有变化","原始分沒有變化");
+      const meaning=change.higherMeans==="more_support"?t("分数越高表示需要更多支持。","分數越高表示需要更多支持。"):t("分数越高表示该方面的优势更明显。","分數越高表示該方面的優勢更明顯。");
+      return `<tr><th scope="row">${e(text(change.label,locale))}<span class="meta">${e(meaning)}</span></th><td>${e(change.previous)}</td><td>${e(change.current)}</td><td>${change.delta>0?"+":""}${e(change.delta)}<span class="meta">${e(direction)}</span></td></tr>`;
+    }).join(""):"";
+    const omitted=result.omitted?.length?`<p class="meta">${e(t("以下维度在其中一次填写时不适用或有效回答不足，未计算变化：","以下維度在其中一次填寫時不適用或有效回答不足，未計算變化："))}${e(result.omitted.map(item=>text(item.label,locale)).join("、"))}。</p>`:"";
+    return `<section class="comparison-role"><h3>${e(respondentLabel(result.role,locale))}</h3><p class="meta">${result.previousDate?`${e(t("上次填写","上次填寫"))} ${e(fmt(result.previousDate))} · `:""}${e(t("本次填写","本次填寫"))} ${e(fmt(result.currentDate))}</p>${result.available?`<table class="comparison-table"><thead><tr><th scope="col">${e(t("维度","維度"))}</th><th scope="col">${e(t("上次","上次"))}</th><th scope="col">${e(t("本次","本次"))}</th><th scope="col">${e(t("变化","變化"))}</th></tr></thead><tbody>${rows}</tbody></table>`:`<p>${e(reasons[result.reason??"incomplete"])}</p>`}${omitted}</section>`;
+  }).join("");
+  return `<section class="triad-comparison"><h2>${e(t("和上一轮相比","和上一輪相比"))}</h2>${roles?`<p>${e(t("以本次之前最近一轮完整三方填写为参照，分别比较同一填写人、相同问卷版本及计分依据的结果。不合成三方总分。","以本次之前最近一輪完整三方填寫為參照，分別比較同一填寫人、相同問卷版本及計分依據的結果。不合成三方總分。"))}</p>${roles}<p class="meta">${e(t("表中为原始分。家长处理方式的描述、情境题和文字回答不计算分数变化。变化本身不证明辅导疗效，也不能用来诊断。","表中為原始分。家長處理方式的描述、情境題和文字回答不計算分數變化。變化本身不證明輔導療效，也不能用來診斷。"))}</p>`:`<p>${e(t("这份历史报告未记录前后比较结果。后续新报告会在条件满足时提供比较。","這份歷史報告未記錄前後比較結果。後續新報告會在條件滿足時提供比較。"))}</p>`}</section>`;
+}
 function triadReportHtml(p:ReportPayload,locale:Locale):string{
   const report=p.triad as TriadReport;
   const hk=locale==="zh-HK",t=(cn:string,tw=cn)=>hk?tw:cn,e=escapeHtml;
@@ -20,11 +40,13 @@ function triadReportHtml(p:ReportPayload,locale:Locale):string{
   const words=report.words.length?`<section class="words"><h2>${e(t("他们写下的话","他們寫下的話"))}</h2>${report.words.map(item=>`<p><strong>${e(roleName(item.role))} · ${e(text(item.prompt,locale))}</strong></p><p>${e(item.value)}</p>`).join("")}</section>`:"";
   return `<!DOCTYPE html><html lang="${locale}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${e(text(report.title,locale))} · TopE 心理助手</title><style>
   *{box-sizing:border-box}body{margin:0;background:#f4f7f4;color:#243833;font:16px/1.75 "PingFang SC","PingFang HK","Hiragino Sans GB","Noto Sans SC","Noto Sans CJK SC","Microsoft YaHei",sans-serif;text-autospace:normal}article{max-width:760px;margin:32px auto;padding:56px 64px;background:#ffffff;border:1px solid #dde6e0}header{border-bottom:1px solid #dde6e0;padding-bottom:28px}.brand{font-family:"Songti SC","Songti TC","Noto Serif SC","PMingLiU",serif;font-size:22px;letter-spacing:-0.03em;color:#2c6058;font-weight:560}h1{font-family:"Songti SC","Songti TC","Noto Serif SC","PMingLiU",serif;font-size:34px;line-height:1.35;margin:18px 0 14px;font-weight:560;color:#243833}h2{font-family:"Songti SC","Songti TC","Noto Serif SC","PMingLiU",serif;font-size:22px;margin:32px 0 12px;font-weight:560;color:#243833}h3{font-size:16px;margin:0 0 8px}.meta{font-size:12px;color:#526860}.demo{padding:14px 16px;background:#f8efe4;color:#6a4a28;border:1px solid #eadcc8;border-radius:10px;margin:24px 0;font-size:14px}.risk{padding:18px 20px;background:#fff0ed;border:1px solid #e9b8ae;border-radius:6px}.risk h2{margin:0 0 8px;color:#9b4039}.dimension,.portrait,.situations,.priorities,.words{border:0;border-top:1px solid #dde6e0;border-radius:0;padding:20px 0;margin:0}p{margin:8px 0}.band{color:#526860}.limitation{font-size:12px;color:#526860}footer{margin-top:30px;padding-top:18px;border-top:1px solid #dde6e0;font-size:11px;color:#526860}
+  .triad-comparison{border-top:1px solid #dde6e0}.comparison-role{margin:24px 0}.comparison-role h3{break-after:avoid}.comparison-table{width:100%;border-collapse:collapse;table-layout:fixed;font-size:13px}.comparison-table th,.comparison-table td{padding:10px 8px;border-bottom:1px solid #dde6e0;text-align:right;vertical-align:top;overflow-wrap:anywhere}.comparison-table th:first-child{width:46%;text-align:left}.comparison-table tbody th{font-weight:500}.comparison-table .meta{display:block;font-weight:400;font-size:11px}.comparison-table tr{break-inside:avoid}.comparison-table thead{display:table-header-group}
+  @media(max-width:600px){article{margin:0;padding:26px 22px}h1{font-size:25px}.comparison-table th,.comparison-table td{padding:8px 4px}.comparison-table th:first-child{width:40%}}
   @page{size:A4;margin:14mm 14mm 18mm}@media print{body{background:#fff}article{margin:0;padding:0}}
   </style></head><body><article><header><div class="brand">TopE 心理助手</div><h1>${e(text(report.title,locale))}</h1><p>${e(p.childName)} · ${e(p.grade)}</p><p class="meta">${sources}</p><p>${e(t("这份报告把孩子、家长和老师各自的回答放在一起读。它不合成一个总分，也不做诊断。三方看到的不一样时，先把它当成不同情境里的观察。","這份報告把孩子、家長和老師各自的回答放在一起讀。它不合成一個總分，也不做診斷。三方看到的不一樣時，先把它當成不同情境裏的觀察。"))}</p></header>
   ${reportShowsDemo(p)?`<div class="demo"><strong>${e(t("演示报告 · 使用虚构题目与合成数据","示範報告 · 使用虛構題目與合成資料"))}</strong><br>${e(t("本示例没有临床常模，不代表任何真实孩子的心理健康评估结果。","本示例沒有臨床常模，不代表任何真實孩子的心理健康評估結果。"))}</div>`:""}
   ${safety}<h2>${e(t("三方看到的情况","三方看到的情況"))}</h2>${domains||`<p>${e(t("这几个方面的有效回答还不够，这里先不概括。","這幾個方面的有效回答還不夠，這裏先不概括。"))}</p>`}${portrait}${situations}${priorities}${words}
-  <p class="limitation">${e(text(p.template.content.limitation,locale))}</p><footer>TopE 心理助手 · ${e(t("三份都交齐后自动生成。家庭私密报告，请妥善保管。","三份都交齊後自動產生。家庭私密報告，請妥善保管。"))}</footer></article></body></html>`;
+  ${triadComparisonHtml(report,locale)}<p class="limitation">${e(text(p.template.content.limitation,locale))}</p><footer>TopE 心理助手 · ${e(t("三份都交齐后自动生成。家庭私密报告，请妥善保管。","三份都交齊後自動產生。家庭私密報告，請妥善保管。"))}</footer></article></body></html>`;
 }
 export function reportHtml(p:ReportPayload,locale:Locale):string{
   if(p.triad)return triadReportHtml(p,locale);
