@@ -556,7 +556,7 @@ input:-webkit-autofill {
   .topbar-avatar { display: none; }
   .main-content { padding: 28px 16px 0; }
   .page-title { align-items: flex-start; flex-direction: column; gap: 16px; margin-bottom: 24px; }
-  .dashboard-greeting { align-items: flex-start; }
+  .dashboard-greeting { width: 100%; flex-direction: column; align-items: flex-start; }
   .dashboard-figure { width: min(100%, 280px); height: auto; aspect-ratio: 4 / 3; }
   .page-title h1, .dashboard-title h1, .family-title h1, .login-story h1 { font-size: 30px; }
   .page-title > .button, .page-title .button-group { margin-top: 0; }
@@ -594,6 +594,10 @@ input:-webkit-autofill {
 @media (max-width: 390px) {
   .demo-account-grid, .report-list { grid-template-columns: minmax(0, 1fr); }
   .page-title h1, .dashboard-title h1 { font-size: 28px; }
+}
+@media (max-width: 359px) {
+  .dashboard-screen .stats-grid { grid-template-columns: minmax(0, 1fr); }
+  .family-entry > .section-heading { flex-direction: column; align-items: flex-start; }
 }
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
