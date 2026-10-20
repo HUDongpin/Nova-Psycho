@@ -26,6 +26,12 @@ beforeEach(() => { captured.localization = undefined; });
 
 describe("Clerk Chinese authentication translations", () => {
   it.each([
+    ["zh-CN", "请输入密码"],
+    ["zh-HK", "輸入您的密碼"],
+  ] as const)("provides the sign-in password placeholder for %s", (locale, expected) => {
+    expect(resource(locale).formFieldInputPlaceholder__password).toBe(expected);
+  });
+  it.each([
     ["zh-CN", "设置密码"],
     ["zh-HK", "設定密碼"],
   ] as const)("provides the dedicated sign-up password placeholder for %s", (locale, expected) => {
@@ -35,7 +41,7 @@ describe("Clerk Chinese authentication translations", () => {
     expect(resource("zh-CN").formFieldInput__emailAddress_format).toBe("示例格式：name@example.com");
   });
   it.each([
-    ["zh-CN", zhCN, ["formFieldInputPlaceholder__signUpPassword", "formFieldInput__emailAddress_format"]],
+    ["zh-CN", zhCN, ["formFieldInputPlaceholder__password", "formFieldInputPlaceholder__signUpPassword", "formFieldInput__emailAddress_format"]],
     ["zh-HK", zhTW, ["formFieldInputPlaceholder__signUpPassword"]],
   ] as const)("preserves every other installed translation for %s", (locale, base, overridden) => {
     const actual = resource(locale);

@@ -9,6 +9,7 @@ import { LocaleContext } from "./ui";
 const clerkLocalizations: Record<Locale, typeof zhCN> = {
   "zh-CN": {
     ...zhCN,
+    formFieldInputPlaceholder__password: "请输入密码",
     formFieldInputPlaceholder__signUpPassword: "设置密码",
     formFieldInput__emailAddress_format: "示例格式：name@example.com",
   },

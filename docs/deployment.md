@@ -198,3 +198,26 @@ For rollback, keep the additive schema. A previous local-auth deployment cannot 
 In Clerk mode, `NOVA_TEST_ACCOUNT_USERNAMES` enables a separate username/password entry for a comma-separated list of existing synthetic test accounts. Keep this variable in the production secret configuration; do not put usernames or passwords in the repository. The service database and account classification stay unchanged. Leave the variable unset to disable this entry. Ordinary local login, public demo login, and local registration remain disabled in Clerk mode.
 
 Test login verifies the existing password and uses a separate regional cookie and token namespace. Every request checks the allowlist, account status, region, and session expiry. Removing an account from the list immediately prevents its existing test session from authorizing requests. An expired test session cannot silently switch to a coexisting email identity. Opening the email sign-in or registration page clears the test session before showing the email form.
+
+## Consent and workspace schema upgrade
+
+Existing databases created before the consent-scope changes need
+[`20261020-consent-workspace-schema.sql`](../scripts/migrations/20261020-consent-workspace-schema.sql).
+Back up the entire database, including `report_files`, verify the archive, and preserve
+the report encryption key separately before applying this migration. Compare the live
+schema with `src/lib/schema.sql` and rehearse against a schema-only copy with synthetic
+fixtures. Do not run the full setup script against production.
+
+The bounded migration adds consent-scope revocations, purpose-specific grant indexes,
+content-library metadata, alert resolution fields, and the report job `paused` state.
+Existing grants remain unchanged. Invalid or duplicate grants abort the transaction
+instead of being silently revoked. It uses an advisory lock and short lock and statement
+timeouts and can be applied again without rewriting existing rows.
+
+Use an authenticated PostgreSQL client with errors configured to stop execution.
+Afterward, compare original-column fingerprints and verify the resulting columns,
+constraints, indexes, and immutable-data triggers. Verify actual parent, student, and
+teacher login and workspace loading on the deployed domain. A ready deployment or a
+successful login alone does not prove that `/api/workspace` can read the production
+schema. Keep the additive schema during a code rollback; do not drop consent history
+or restore a database over subsequent user activity as a routine rollback.
