@@ -1,9 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PoolClient } from "pg";
+import { Model } from "survey-core";
 import type { Actor, ScaleDefinition } from "../src/domain/types";
 import { statedAgeMismatch } from "../src/domain/age-review";
+import { completionIssues } from "../src/domain/completion";
 import { scoreAssessment } from "../src/domain/scoring";
 import { surveyDefinition } from "../src/domain/survey";
+import { surveyCompletionIssues } from "../src/components/survey-completion";
 import { composeTriad, previewAnswers, type TriadSource } from "../src/domain/triad-report";
 import { childScaleBirthAge as childScale, childScaleSafety as legacyChild, childScaleStaffNotes, parentScale } from "../src/domain/triad-scales";
 import { demoAdvice, demoTemplate } from "../src/domain/demo";
@@ -189,6 +192,47 @@ describe("staff review of a stated age that disagrees with the birth date", () =
     parentAnswers.p_age = 8;
     await submitAssessment(parent, TASK, { answers: parentAnswers, acknowledged: true, revision: 0 });
     expect(client.query.mock.calls.some(([sql]) => String(sql).includes("triad.age_mismatch"))).toBe(false);
+  });
+
+  it.each([
+    ["growth-child@1.2.0", childScale],
+    ["growth-child@1.3.0", childScaleStaffNotes],
+  ] as const)("lets an under-12 child finish %s without the hidden youth block", async (_label, scale) => {
+    setup(scale, "2015-10-12");
+    const detail = await assessmentDetail(student, TASK, "zh-CN");
+    const answers = withoutYouth(previewAnswers(scale));
+    const age = 10;
+    expect(scoreAssessment(scale, answers, { ...context, age }).status).toBe("valid");
+    expect(JSON.stringify(detail.surveyJson)).not.toContain('"name":"c18_1"');
+    const youth = detail.completionRules?.items.filter(item => item.id.startsWith("c18_")) ?? [];
+    expect(youth).toHaveLength(6);
+    expect(youth.every(item => item.required === false)).toBe(true);
+    expect(completionIssues(detail.completionRules!, answers)).toEqual([]);
+    const model = new Model(detail.surveyJson);
+    model.data = answers;
+    expect(surveyCompletionIssues(model, detail.completionRules)).toEqual([]);
+    expect(model.validate(true, false, undefined, false)).toBe(true);
+    model.dispose();
+
+    delete answers.c7_1;
+    await expect(submitAssessment(student, TASK, { answers, acknowledged: true, revision: 0 })).rejects.toMatchObject({
+      code: "INCOMPLETE_TRIAD",
+      completionIssues: expect.not.arrayContaining([expect.objectContaining({ itemId: "c18_1" })]),
+    });
+    await expect(submitAssessment(student, TASK, { answers, acknowledged: true, revision: 0 })).rejects.toMatchObject({
+      completionIssues: expect.arrayContaining([expect.objectContaining({ kind: "required_missing", itemId: "c7_1" })]),
+    });
+  });
+
+  it("still requires the youth block once the birth-date age reaches 12", async () => {
+    setup(childScaleStaffNotes, "2014-10-11");
+    const detail = await assessmentDetail(student, TASK, "zh-HK");
+    const answers = withoutYouth(previewAnswers(childScaleStaffNotes));
+    expect(JSON.stringify(detail.surveyJson)).toContain('"name":"c18_1"');
+    expect(detail.completionRules?.items.find(item => item.id === "c18_1")?.required).toBe(true);
+    expect(completionIssues(detail.completionRules!, answers)).toEqual(expect.arrayContaining(
+      ["c18_1", "c18_2", "c18_3", "c18_4", "c18_5", "c18_6"].map(itemId => ({ kind: "required_missing", itemId })),
+    ));
   });
 
   it("rejects a 12-year-old submission that skips the youth block even when c_age says 10", async () => {
