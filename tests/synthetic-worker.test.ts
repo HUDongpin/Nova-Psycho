@@ -102,13 +102,15 @@ describe("designated synthetic family worker", () => {
     expect(selectNarrative).not.toHaveBeenCalled();
     for (const locale of ["zh-CN", "zh-HK"] as const) expect(reportHtml(published!, locale)).toContain(locale === "zh-CN" ? "线上合成测试报告" : "線上合成測試報告");
   });
-  it.each(["config", "ordinary_member", "disabled_member", "wrong_region"] as const)("keeps unvalidated snapshots blocked when %s invalidates the family", async reason => {
+  it.each(["config", "ordinary_member", "disabled_member", "wrong_region"] as const)("keeps marked synthetic snapshots blocked when %s invalidates the family", async reason => {
+    sources[1].snapshot.syntheticTest = true;
     if (reason === "config") vi.stubEnv("NOVA_SYNTHETIC_TEST_FAMILY_IDS", "");
     if (reason === "ordinary_member") members[2].username = "ordinary.teacher";
     if (reason === "disabled_member") members[2].disabled = true;
     if (reason === "wrong_region") members[2].region = "CN";
     await expect(processReportJob(jobId)).resolves.toEqual({ status: "terminal" });
     expect(published).toBeUndefined(); expect(renderPdf).not.toHaveBeenCalled(); expect(selectNarrative).not.toHaveBeenCalled();
+    expect(failureCode).toBe("SYNTHETIC_TEST_SCOPE_REQUIRED");
   });
   it.each(["respondent", "role"] as const)("refuses pinned sources with a mismatched %s", async change => {
     if (change === "respondent") sources[2].respondent_id = "ordinary";
@@ -147,6 +149,7 @@ describe("designated synthetic family worker", () => {
   });
   it("does not accept a source from an unconfigured family", async () => {
     sources[1].family_id = "99999999-9999-4999-8999-999999999999";
+    sources[1].snapshot.syntheticTest = true;
     await expect(processReportJob(jobId)).resolves.toEqual({ status: "terminal" });
     expect(published).toBeUndefined(); expect(renderPdf).not.toHaveBeenCalled();
   });

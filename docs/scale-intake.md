@@ -1,6 +1,6 @@
 # Professional instrument intake
 
-The 9-item `nova-family-demo@1.0.0` example and the bundled parent / child / teacher `growth-triad` instruments are demonstration content, not validated professional instruments. A service environment refuses to assign, collect or publish demo or unvalidated instruments, including legacy snapshots, and refuses to connect to a database classified as demo.
+The 9-item `nova-family-demo@1.0.0` example is fictional demonstration content. The bundled parent / child / teacher `growth-triad` questionnaires have no validated clinical norms; their exact known IDs and versions are available in service mode for non-clinical growth support and communication. This permission also covers known historical versions without changing their stored definitions. Other demo or unvalidated instruments remain blocked from service-mode assignment, collection and publication unless covered by the separately scoped synthetic-testing channel. A service environment still refuses to connect to a database classified as demo.
 
 ## Materials required
 
@@ -54,7 +54,7 @@ Subsequent literature and mainland China / Hong Kong applicability checks use th
 
 Background notes live under `work/scale-intake-20260916/` (no copyrighted item text, licences or credentials). The operator obtains questionnaires independently; Nova does not require questionnaire-vendor product partnerships.
 
-**Import policy:** `parseScale` rejects a non-demo instrument unless `norm.validated` is true. An unvalidated definition must be labelled demo. Service mode separately rejects both demo and unvalidated content at assignment, draft, submission and report generation; changing an old row's demo flag is not an upgrade path. Publish a new immutable version and retain old tasks on their original definitions.
+**Import policy:** `parseScale` rejects a non-demo instrument unless `norm.validated` is true. An unvalidated imported definition must be labelled demo. Service mode separately rejects demo and unvalidated content at assignment, draft, submission and report generation, with the exact known `growth-triad` versions and scoped synthetic-testing channel as exceptions. A `growth-triad` bundle label alone does not admit an unknown ID or version, and permission to use a known questionnaire is not evidence of clinical validation. Changing an old row's demo flag is not an upgrade path. Publish a new immutable version and retain old tasks on their original definitions.
 
 `rights.digital`, `rights.commercial` and `rights.reference` remain required operator-managed metadata; the importer does not independently verify permissions or make the two booleans import blockers. A norm flag likewise records an attestation and does not establish psychometric validity by itself. Structural scoring rules, bilingual text and age/region gates continue to apply.
 

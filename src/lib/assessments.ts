@@ -12,7 +12,7 @@ import { surveySupplements } from "../domain/survey-supplements";
 import { TRIAD_BUNDLE, triadRolesReady } from "../domain/triad-report";
 import { reportRetryBlocker } from "../domain/report-retry";
 import { lockRegistrationActor,queueTriadReport,requireRegistrationConsent,triadRoundFor } from "./triad";
-import { effectiveDemo, ensureAdviceReferences, instrumentWriteBlockReason } from "../domain/validation";
+import { effectiveDemo, ensureAdviceReferences, instrumentWriteBlockReason, isKnownTriadInstrument } from "../domain/validation";
 import { ageAt,canManageFamilyReports,consentFor,familyFor } from "./access";
 import { ACTIVE_CONSENT_ROWS_SQL, PARENT_REPORT_SCOPE, PARTICIPATION_SCOPES, grantedScopes, hasGranted } from "./consent";
 import { audit } from "./auth";
@@ -82,7 +82,7 @@ async function refuseDemoBesideOfficial(familyId:string,respondentId:string,regi
   const official=await read("SELECT id FROM scales WHERE status='active' AND COALESCE(definition->>'demo','false')<>'true' AND COALESCE(definition->'norm'->>'validated','false')='true' AND (definition->'regions') ? $1 AND (definition->'roles') ? $2 AND (definition->>'minAge')::int<=$3 AND (definition->>'maxAge')::int>=$3 LIMIT 1",[region,role,age]);
   if(official[0])throw new HttpError(409,"正式问卷已经可以使用，不能再分配演示题。","DEMO_NOT_ASSIGNABLE");
 }
-async function admitInstrument(actor:Actor,familyId:string,scale:{demo:boolean;norm?:{validated?:boolean}},action:"assign"|"draft"|"submit",client?:PoolClient):Promise<boolean>{
+async function admitInstrument(actor:Actor,familyId:string,scale:ScaleDefinition,action:"assign"|"draft"|"submit",client?:PoolClient):Promise<boolean>{
   const syntheticTest=await isSyntheticTestActorForFamily(actor,familyId,client);
   if(syntheticTest)return true;
   const reason=instrumentWriteBlockReason(scale,getConfig().mode);
@@ -102,7 +102,7 @@ export async function createAssessment(actor:Actor,input:unknown){
   const role=members[0].role as RespondentRole;
   const age=ageAt(family.birth_date);
   if(scoreAssessment(scale.definition,{}, {age,region:actor.region,role}).status==="ineligible")throw new HttpError(422,"该量表不适用于孩子年龄、地区或填答者角色。","INELIGIBLE");
-  if(scale.definition.demo)await refuseDemoBesideOfficial(family.id,d.respondentId,actor.region,role,age);
+  if(scale.definition.demo&&!isKnownTriadInstrument(scale.definition))await refuseDemoBesideOfficial(family.id,d.respondentId,actor.region,role,age);
   return transaction(async client=>{
     // Serialize new tasks per family to enforce retake/pending rules under concurrent requests.
     const lock=await client.query("SELECT id FROM families WHERE id=$1 FOR UPDATE",[family.id]);
@@ -115,7 +115,7 @@ export async function createAssessment(actor:Actor,input:unknown){
     await lockContent(client);
     const currentScale=await client.query("SELECT status FROM scales WHERE id=$1",[d.scaleVersionId]);
     if(currentScale.rows[0]?.status!=="active")throw new HttpError(409,"该量表版本已停用。","SCALE_RETIRED");
-    if(scale.definition.demo)await refuseDemoBesideOfficial(family.id,d.respondentId,actor.region,role,age,client);
+    if(scale.definition.demo&&!isKnownTriadInstrument(scale.definition))await refuseDemoBesideOfficial(family.id,d.respondentId,actor.region,role,age,client);
     const parentVersions=scale.definition.bundle===TRIAD_BUNDLE&&scale.definition.id==="growth-parent";
     const pending=parentVersions
       ?await client.query("SELECT a.id,a.triad_round_id,s.definition FROM assessments a JOIN scales s ON s.id=a.scale_version_id WHERE a.family_id=$1 AND a.respondent_id=$2 AND s.scale_id=$3 AND a.status='pending' ORDER BY a.created_at,a.id LIMIT 1",[family.id,d.respondentId,scale.definition.id])

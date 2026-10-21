@@ -1,5 +1,6 @@
 import {describe,it,expect} from "vitest";
 import {demoScale,demoAdvice,demoTemplate} from "../src/domain/demo";
+import {triadScales} from "../src/domain/triad-scales";
 import {instrumentWriteBlockReason,ensureAdviceReferences,parseAdvice,parseScale,parseTemplate} from "../src/domain/validation";
 describe("versioned instrument ingestion",()=>{
   it("accepts the explicitly synthetic instrument and content",()=>{expect(parseScale(demoScale).demo).toBe(true);parseAdvice(demoAdvice);parseTemplate(demoTemplate);ensureAdviceReferences(demoScale,demoAdvice);});
@@ -45,6 +46,22 @@ describe("versioned instrument ingestion",()=>{
 
 
 describe("instrument write admission",()=>{
+  it.each(triadScales)("allows the known non-clinical triad $id@$version in service mode without changing its labels",scale=>{
+    const original=structuredClone(scale);
+    expect(instrumentWriteBlockReason(scale,"service")).toBeNull();
+    expect(instrumentWriteBlockReason({...scale,demo:true},"service")).toBeNull();
+    expect(scale).toEqual(original);
+    expect(scale.norm.validated).toBe(false);
+  });
+  it.each([
+    {...triadScales[0],bundle:undefined},
+    {...triadScales[0],bundle:"unknown-bundle"},
+    {...triadScales[0],id:"unknown-child"},
+    {...triadScales[0],version:"99.0.0"},
+    {...demoScale,bundle:"growth-triad"},
+  ])("does not approve an unrelated or unknown triad identity %#",scale=>{
+    expect(instrumentWriteBlockReason(scale,"service")).toBe("UNVALIDATED_INSTRUMENT");
+  });
   it.each([
     ["service",false,false,"UNVALIDATED_INSTRUMENT"],
     ["service",true,false,"UNVALIDATED_INSTRUMENT"],

@@ -36,7 +36,9 @@ Student entry requires a family invitation or a triad join code. The local indep
 
 ## Growth-triad registration and joining
 
-The bundled triad instruments are demo and unvalidated. The public triad routes call the service-mode instrument guard before making business-data changes. Service mode currently returns 409 `UNVALIDATED_INSTRUMENT` for them; the routes are not an approval to use these instruments with real children.
+The bundled growth-triad questionnaires are available in service mode for non-clinical family understanding. The same admission policy applies to family registration/joining, assignment, draft saving, submission, workspace availability and report generation. It recognizes only the `growth-triad` bundle with an exact `id@version` from the application's `triadScales` registry, including its historical versions. An arbitrary bundle label, unknown instrument ID or unknown version does not grant this access.
+
+This operational permission does not change the stored `demo` or `norm.validated` flags, establish clinical norms, or make the questionnaires diagnostic. Existing demo/non-clinical labels remain visible, and the three-party report uses deterministic templates. Unrelated demo or unvalidated instruments retain their service-mode restrictions. Synthetic-test identity and snapshot checks remain separate; ordinary participation does not acquire synthetic provenance.
 
 Parent family input is:
 

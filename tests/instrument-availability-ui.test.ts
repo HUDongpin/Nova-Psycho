@@ -39,10 +39,17 @@ for (const locale of ["zh-CN", "zh-HK"] as const) describe(`instrument availabil
     expect(fetch.mock.calls[0]?.length).toBeGreaterThan(0);
     expect(draft.getSnapshot().answers).toEqual(base.draftAnswers);
   });
-  it("leaves writable demo/official records on the normal answer path", async () => {
-    const { host } = await renderRecord(base, locale);
+  it.each([false, true])("leaves writable records on the normal answer path with demo=%s", async demo => {
+    const { host } = await renderRecord({ ...base, demo }, locale);
     expect(host.querySelector("[data-survey-runner]")).not.toBeNull();
     expect(host.textContent).not.toContain(copy(locale)("instrumentUnavailable"));
+    if (demo) {
+      expect(host.textContent).toContain(copy(locale)("nonclinicalTrial"));
+      expect(host.textContent).toContain(copy(locale)("trialNotice"));
+    } else {
+      expect(host.textContent).not.toContain(copy(locale)("nonclinicalTrial"));
+      expect(host.textContent).not.toContain(copy(locale)("trialNotice"));
+    }
   });
   it("labels the server-authorized synthetic test before the normal answer form", async () => {
     const { host } = await renderRecord({ ...base, syntheticTest: true }, locale);

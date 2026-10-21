@@ -40,6 +40,29 @@ function payload(sources: TriadSource[]): ReportPayload {
   };
 }
 
+describe("triad report limitations and data provenance", () => {
+  it.each(locales)("describes ordinary responses without claiming fictional or synthetic data in %s", locale => {
+    const p = payload([source(childScaleStaffNotes), source(parentScaleStaffNotes), source(teacherScaleStaffNotes)]);
+    const before = JSON.stringify(p);
+    const html = reportHtml(p, locale);
+    expect(html).toContain(locale === "zh-CN" ? "非临床试用报告 · 尚无经过验证的临床常模" : "非臨床試用報告 · 尚無經過驗證的臨床常模");
+    expect(html).toContain(locale === "zh-CN" ? "仅供成长支持与沟通参考" : "僅供成長支持與溝通參考");
+    expect(html).toContain(locale === "zh-CN" ? "不能用于临床诊断" : "不能用於臨床診斷");
+    expect(html).not.toContain(locale === "zh-CN" ? "使用虚构题目与合成数据" : "使用虛構題目與合成資料");
+    expect(html).not.toContain(locale === "zh-CN" ? "不代表任何真实孩子" : "不代表任何真實孩子");
+    expect(html).not.toContain(locale === "zh-CN" ? "线上合成测试报告" : "線上合成測試報告");
+    expect(JSON.stringify(p)).toBe(before);
+  });
+
+  it.each(locales)("retains the explicit synthetic-test notice when provenance is marked in %s", locale => {
+    const p = { ...payload([source(childScaleStaffNotes), source(parentScaleStaffNotes), source(teacherScaleStaffNotes)]), syntheticTest: true };
+    const html = reportHtml(p, locale);
+    expect(html).toContain(locale === "zh-CN" ? "线上合成测试报告" : "線上合成測試報告");
+    expect(html).toContain(locale === "zh-CN" ? "使用合成数据及规则模板" : "使用合成資料及規則模板");
+    expect(html).toContain(locale === "zh-CN" ? "尚无经过验证的临床常模" : "尚無經過驗證的臨床常模");
+  });
+});
+
 describe("triad domain comparisons", () => {
   it("does not mistake a spread across subdimensions for disagreement between respondents", () => {
     const sources = [source(childScale, { c7: 1, c8: 5 }), source(parentScale, { q14: 5, q15: 1 }), source(teacherScale, { t8: 1 })];
@@ -198,7 +221,7 @@ describe("portrait, safety and privacy boundaries", () => {
     for (const locale of locales) {
       const html = reportHtml(payload(sources), locale);
       expect(html.indexOf(locale === "zh-CN" ? "请先关注安全" : "請先關注安全")).toBeLessThan(html.indexOf(locale === "zh-CN" ? "三方看到的情况" : "三方看到的情況"));
-      expect(html).toContain(locale === "zh-CN" ? "演示报告" : "示範報告");
+      expect(html).toContain(locale === "zh-CN" ? "尚无经过验证的临床常模" : "尚無經過驗證的臨床常模");
       expect(html).not.toContain("student-words-SYNTHETIC_PRIVATE");
       expect(html).not.toContain("staff-SYNTHETIC_PRIVATE");
       expect(html).toContain("parent-words-SYNTHETIC_PRIVATE");

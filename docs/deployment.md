@@ -212,7 +212,9 @@ Draft, submission and assignment paths recheck this scope inside the family
 transaction. Report workers check the canonical pinned source identities and
 recheck membership before publication. Consent, ownership, age/role eligibility,
 retake intervals, immutable submissions, stale-draft rejection and report access
-rules still apply. Public registration and family joining gain no exception.
+rules still apply. This synthetic configuration does not change public registration
+or family joining; the application's registered `growth-triad` versions are available
+in service mode independently, with their unvalidated and non-diagnostic status retained.
 
 Synthetic snapshots and reports are explicitly marked. They always use rule
 templates, never call AI, and never change `scale.norm.validated`. An existing
@@ -270,3 +272,12 @@ assignment and its `RETAKE_INTERVAL` check are unchanged, as are Clerk email
 registration and verification. Disabling the existing test-account/family scope
 also disables this entry. Retake eligibility does not grant permission to change
 questionnaire definitions or mark norms validated.
+
+
+## Non-clinical triad trial release
+
+The default questionnaires are `growth-parent@1.3.0`, `growth-child@1.3.0`, and `growth-teacher@1.2.0`. Before deploying the trial admission change, run `npx tsx scripts/migrations/20261021-triad-trial.ts` against the approved production connection as a dry run. After reviewing its three target versions, run the same command with `--apply`. The migration requires an initialized HK/service database, compatible growth-triad advice and template content, and unvalidated canonical definitions. It inserts only missing target versions and rejects conflicting or retired targets. It preserves every original scale row and does not modify families, tasks, answers, reports, or prior versions. Repeating the migration inserts no duplicate versions. Do not run `db:setup` on the live service for this release.
+
+The web and worker use the same trial admission policy. Questionnaire entry and reports explicitly say “非临床试用 / 非臨床試用”; `norm.validated` remains false. Existing consent requirements, regional authorization, private report access, and the separate synthetic-account channel still apply. A code rollback can leave the additive questionnaire versions stored; do not delete versions already referenced by tasks.
+
+The service-mode browser regression is `NOVA_SERVICE_ONBOARDING_BASE_URL=https://localhost:<port> npx tsx tests/service-onboarding.browser.ts`. Run it only against an owned local service database with local authentication, HTTPS, the continuous report worker, and AI disabled. It creates ordinary synthetic parent/student/teacher accounts, fills each questionnaire through the browser, reloads saved drafts, submits, checks optional report consent, and downloads both report languages. It does not test real email verification delivery.
