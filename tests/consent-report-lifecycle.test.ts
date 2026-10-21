@@ -120,7 +120,7 @@ describe("parent-report consent and exactly one report", () => {
       if (sql.includes("INSERT INTO reports")) return { rows: [{ id: ASSESSMENT }] };
       return { rows: [{ id: "locked" }] };
     }) };
-    vi.mocked(transaction).mockImplementationOnce((async (fn: (client: PoolClient) => Promise<unknown>) => fn(publishing as unknown as PoolClient)) as never);
+    vi.mocked(transaction).mockImplementation((async (fn: (client: PoolClient) => Promise<unknown>) => fn(publishing as unknown as PoolClient)) as never);
     await expect(processReportJob(JOB)).resolves.toEqual({ status: "published" });
     expect(published.filter(sql => sql.includes("INSERT INTO reports"))).toHaveLength(1);
   });

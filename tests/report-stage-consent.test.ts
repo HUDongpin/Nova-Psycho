@@ -25,7 +25,7 @@ const snapshot: AssessmentSnapshot = {
 };
 
 function database(withdrawOnFirstScopeRead = false) {
-  const state = { parentReport: true, aiProcessing: true, familyLocked: false, withdrawalWaiting: false, scopeReads: 0, published: false, paused: false };
+  const state = { parentReport: true, aiProcessing: true, familyLocked: false, withdrawalWaiting: false, scopeReads: 0, published: false, paused: false, transactions: 0, failCommitAt: 0 };
   const withdraw = () => { if (state.familyLocked) state.withdrawalWaiting = true; else state.parentReport = false; };
   const scopes = () => [...(state.parentReport ? ["parent_report"] : []), ...(state.aiProcessing ? ["ai_processing"] : [])];
   const read = async (sql: string, locked: boolean): Promise<Record<string, unknown>[]> => {
@@ -47,14 +47,25 @@ function database(withdrawOnFirstScopeRead = false) {
   };
   vi.mocked(query).mockImplementation((async (sql: string) => read(sql, false)) as typeof query);
   vi.mocked(transaction).mockImplementation(async fn => {
+    const count = ++state.transactions;
     const client = { query: async (sql: string) => ({ rows: await read(sql, true) }) } as unknown as PoolClient;
-    try { return await fn(client); }
+    try {
+      const result = await fn(client);
+      if (count === state.failCommitAt) throw new Error("Synthetic admission COMMIT response lost");
+      return result;
+    }
     finally {
       state.familyLocked = false;
       if (state.withdrawalWaiting) { state.parentReport = false; state.withdrawalWaiting = false; }
     }
   });
   return { state, withdraw };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void, reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
 }
 
 beforeEach(() => {
@@ -66,7 +77,7 @@ beforeEach(() => {
   vi.mocked(selectNarrative).mockResolvedValue({ selectedAdviceIds: ["listen"], generationMode: "template", fallbackReason: "ai_disabled", aiModel: null });
   vi.mocked(removePrivatePdf).mockResolvedValue("done");
 });
-afterEach(() => vi.unstubAllEnvs());
+afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
 
 describe("report stage consent admission", () => {
   it("does not start narrative after withdrawal commits between consent read and invocation", async () => {
@@ -104,5 +115,77 @@ describe("report stage consent admission", () => {
     await expect(processReportJob(JOB)).resolves.toEqual({ status: "published" });
     expect(selectNarrative).toHaveBeenCalledWith(expect.objectContaining({ aiConsented: false }), expect.anything());
     expect(renderPdf).toHaveBeenCalledTimes(2);
+  });
+
+  it("starts narrative under the family lock and releases it before awaiting in-flight work", async () => {
+    const { state, withdraw } = database();
+    const entered = deferred<void>(), finished = deferred<Awaited<ReturnType<typeof selectNarrative>>>();
+    let lockedAtStart = false;
+    vi.mocked(selectNarrative).mockImplementation(() => {
+      lockedAtStart = state.familyLocked;
+      entered.resolve();
+      return finished.promise;
+    });
+    const job = processReportJob(JOB);
+    await entered.promise;
+    expect(lockedAtStart).toBe(true);
+    await expect.poll(() => state.familyLocked).toBe(false);
+    withdraw();
+    expect(state.parentReport).toBe(false);
+    finished.resolve({ selectedAdviceIds: ["listen"], generationMode: "template", fallbackReason: "ai_disabled", aiModel: null });
+    await expect(job).resolves.toEqual({ status: "paused" });
+    expect(renderPdf).not.toHaveBeenCalled();
+  });
+
+  it("issues the real narrative selector's request under the current consent lock", async () => {
+    const { state, withdraw } = database();
+    const actual = await vi.importActual<typeof import("../src/domain/narrative")>("../src/domain/narrative");
+    vi.mocked(selectNarrative).mockImplementation(actual.selectNarrative);
+    vi.stubEnv("NOVA_AI_ENABLED", "true"); vi.stubEnv("NOVA_AI_BASE_URL", "https://api.deepseek.com");
+    vi.stubEnv("NOVA_AI_MODEL", "deepseek-flash"); vi.stubEnv("NOVA_AI_DEPLOYMENT_SCOPE", "CN"); vi.stubEnv("NOVA_AI_API_KEY", "synthetic-unused-key");
+    const requestPermissions: boolean[] = [];
+    const fetcher = vi.fn(async () => {
+      requestPermissions.push(state.familyLocked && state.parentReport && state.aiProcessing);
+      withdraw();
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ adviceIds: actual.eligibleAdviceIds(snapshot) }) } }] }));
+    });
+    vi.stubGlobal("fetch", fetcher);
+    await expect(processReportJob(JOB)).resolves.toEqual({ status: "paused" });
+    expect(requestPermissions).toEqual([true]);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(renderPdf).not.toHaveBeenCalled();
+  });
+
+  it("starts each PDF under the family lock and refuses publication after final-render withdrawal", async () => {
+    const { state, withdraw } = database();
+    const locks: boolean[] = [];
+    vi.mocked(renderPdf).mockImplementation(async () => {
+      locks.push(state.familyLocked);
+      if (locks.length === 2) withdraw();
+      return Buffer.from("%PDF-1.4 synthetic");
+    });
+    await expect(processReportJob(JOB)).resolves.toEqual({ status: "paused" });
+    expect(locks).toEqual([true, true]);
+    expect(state.published).toBe(false);
+    expect(removePrivatePdf).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["resolve", "reject"] as const)("drains an in-flight PDF that will %s after the admission COMMIT fails", async result => {
+    const { state } = database();
+    state.failCommitAt = 2;
+    const entered = deferred<void>(), render = deferred<Buffer>();
+    vi.mocked(renderPdf).mockImplementation(() => { entered.resolve(); return render.promise; });
+    let settled = false;
+    const job = processReportJob(JOB).then(value => { settled = true; return value; });
+    await entered.promise;
+    await expect.poll(() => state.familyLocked).toBe(false);
+    expect(settled).toBe(false);
+    expect(writePrivatePdf).not.toHaveBeenCalled();
+    if (result === "resolve") render.resolve(Buffer.from("%PDF-1.4 synthetic"));
+    else render.reject(new Error("Synthetic late renderer failure"));
+    await expect(job).resolves.toMatchObject({ status: "retry_at" });
+    expect(renderPdf).toHaveBeenCalledTimes(1);
+    expect(writePrivatePdf).not.toHaveBeenCalled();
+    expect(state.published).toBe(false);
   });
 });

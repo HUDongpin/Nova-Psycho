@@ -7,7 +7,7 @@ import { compareTriad, type TriadComparisonSource } from "../domain/triad-compar
 import { compareResults } from "../domain/scoring";
 import { reportHtml } from "../domain/report-html";
 import { normValidated } from "../domain/validation";
-import { ACTIVE_CONSENT_ROWS_SQL, PARENT_REPORT_SCOPE, consentScopePredicate, consentScopeGrantedSql, hasGranted } from "./consent";
+import { ACTIVE_CONSENT_ROWS_SQL, PARENT_REPORT_SCOPE, consentScopeGrantedSql, hasGranted } from "./consent";
 import { getConfig, isDemoMode } from "./config";
 import { query,transaction } from "./db";
 import { renderPdf } from "./pdf";
@@ -104,27 +104,39 @@ async function pauseDueReadyJobMissingParentReportConsent(jobId:string):Promise<
     return pauseLockedJobMissingParentReportConsent(client,jobId,row.family_id,region);
   });
 }
-// The continuous worker claims without a job id, so the per-message pause never runs.
-// Discover due rows in this region, then pause one family per transaction. Holding
-// several family locks in one transaction could deadlock with a grant that locks
-// those families in another order.
-// A claim can succeed and then lose parent_report before narrative or PDF work.
-// Read the current scopes first. Only the withdrawn case takes the family lock,
-// re-reads consent, and pauses; a grant that lands in that window continues.
-async function stopClaimedJobWithoutParentReport(jobId:string,token:string,familyId:string):Promise<"paused"|"continue">{
-  const visible=await query<{scopes:unknown}>(ACTIVE_CONSENT_ROWS_SQL,[familyId]);
-  if(hasGranted(visible,[PARENT_REPORT_SCOPE]))return "continue";
-  return transaction(async client=>{
-    const familyLock=await client.query("SELECT id FROM families WHERE id=$1 AND region=$2 FOR UPDATE",[familyId,getConfig().region]);
-    if(!familyLock.rows[0])throw new Error("Family deleted");
-    const claim=await client.query("SELECT id FROM report_jobs WHERE id=$1 AND claim_token=$2 AND state='running' AND lease_until>now() FOR UPDATE",[jobId,token]);
-    if(!claim.rows[0])throw new Error("Report claim expired or family deleted");
-    const consent=await client.query<{scopes:unknown}>(ACTIVE_CONSENT_ROWS_SQL,[familyId]);
-    if(hasGranted(consent.rows,[PARENT_REPORT_SCOPE]))return "continue" as const;
-    await client.query("UPDATE report_jobs SET state='paused', lease_until=NULL, claim_token=NULL, last_error_code='PARENT_REPORT_CONSENT_REQUIRED', attempts=GREATEST(attempts-1,0) WHERE id=$1 AND claim_token=$2 AND state='running'",[jobId,token]);
-    return "paused" as const;
-  });
+type StageValue<T>={ok:true;value:T}|{ok:false;error:unknown};
+// Withdrawal takes the family UPDATE lock. Start one stage while its grant is
+// locked, then release before waiting for external work. In-flight work cannot
+// be unsent; the next stage and publication each need a fresh grant.
+async function reportStage<T>(jobId:string,token:string,familyId:string,start:(aiConsented:boolean)=>Promise<T>):Promise<{status:"paused"}|{status:"completed";value:T}>{
+  let pending:Promise<StageValue<T>>|undefined;
+  try{
+    const admitted=await transaction(async client=>{
+      const familyLock=await client.query("SELECT id FROM families WHERE id=$1 AND region=$2 FOR SHARE",[familyId,getConfig().region]);
+      if(!familyLock.rows[0])throw new Error("Family deleted");
+      const claim=await client.query("SELECT id FROM report_jobs WHERE id=$1 AND claim_token=$2 AND state='running' AND lease_until>now() FOR UPDATE",[jobId,token]);
+      if(!claim.rows[0])throw new Error("Report claim expired or family deleted");
+      const consent=await client.query<{scopes:unknown}>(ACTIVE_CONSENT_ROWS_SQL,[familyId]);
+      if(!hasGranted(consent.rows,[PARENT_REPORT_SCOPE])){
+        await client.query("UPDATE report_jobs SET state='paused', lease_until=NULL, claim_token=NULL, last_error_code='PARENT_REPORT_CONSENT_REQUIRED', attempts=GREATEST(attempts-1,0) WHERE id=$1 AND claim_token=$2 AND state='running'",[jobId,token]);
+        return false;
+      }
+      pending=start(hasGranted(consent.rows,["ai_processing"])).then(value=>({ok:true,value} as const),error=>({ok:false,error} as const));
+      return true;
+    });
+    if(!admitted)return {status:"paused"};
+  }catch(error){
+    // A lost COMMIT response can leave work running. Drain its captured result
+    // before recovery; stages return values and never write report files.
+    await pending;
+    throw error;
+  }
+  const result=await pending!;
+  if(!result.ok)throw result.error;
+  return {status:"completed",value:result.value};
 }
+// The continuous worker claims without a job id. Pause one family per transaction
+// so this scan never acquires several family locks in a different order to grants.
 async function pauseIdleJobsMissingParentReportConsent():Promise<boolean>{
   const region=getConfig().region;
   const located=await query<{id:string;family_id:string}>(`SELECT j.id,a.family_id FROM report_jobs j JOIN assessments a ON a.id=j.assessment_id WHERE a.region=$1 AND ${dueJobMissingParentReportSql()} ORDER BY a.family_id,j.id LIMIT 25`,[region]);
@@ -210,33 +222,38 @@ async function runReportJob(jobId?:string):Promise<ReportJobResult>{
         const stored=row.snapshot as AssessmentSnapshot;
         return {role:row.respondent_role,respondentId:row.respondent_id,scale:stored.scale,score:stored.score,submittedAt:new Date(row.submitted_at).toISOString()};
       };
-      const comparisons=compareTriad(siblings.map(comparisonSource),previous.length?previous.map(comparisonSource):null);
-      const triad=composeTriad(siblings.map(row=>{const stored=row.snapshot as AssessmentSnapshot;return {role:row.respondent_role,scale:stored.scale,answers:row.answers as Record<string,StoredAnswer>,score:stored.score,submittedAt:new Date(row.submitted_at).toISOString()};}));
-      triad.comparisons=comparisons;
-      payload={...snapshot,selectedAdviceIds:[],generationMode:"template",fallbackReason:"triad_combined",aiModel:null,
-        comparison:comparisons.some(comparison=>comparison.available)?{available:true}:{available:false,reason:previous.length?"incomplete":"first_assessment"},
-        triad,score:{...snapshot.score,risk:triad.safety.length>0,riskMessages:triad.safety}};
+      const composed=await reportStage(job.id,token,assessment.family_id,async()=>{
+        const comparisons=compareTriad(siblings.map(comparisonSource),previous.length?previous.map(comparisonSource):null);
+        const triad=composeTriad(siblings.map(row=>{const stored=row.snapshot as AssessmentSnapshot;return {role:row.respondent_role,scale:stored.scale,answers:row.answers as Record<string,StoredAnswer>,score:stored.score,submittedAt:new Date(row.submitted_at).toISOString()};}));
+        triad.comparisons=comparisons;
+        return {...snapshot,selectedAdviceIds:[],generationMode:"template",fallbackReason:"triad_combined",aiModel:null,
+          comparison:comparisons.some(comparison=>comparison.available)?{available:true}:{available:false,reason:previous.length?"incomplete":"first_assessment"},
+          triad,score:{...snapshot.score,risk:triad.safety.length>0,riskMessages:triad.safety}} satisfies ReportPayload;
+      });
+      if(composed.status==="paused")return {status:"paused"};
+      payload=composed.value;
       publishIds=siblings.map(row=>row.id);
     }else{
-      if(await stopClaimedJobWithoutParentReport(job.id,token,assessment.family_id)==="paused")return {status:"paused"};
-      // Consent may be withdrawn after submission. Never contact AI without current permission too.
-      const consent=syntheticTest?[]:await query(`SELECT id FROM consents c WHERE c.family_id=$1 AND ${consentScopePredicate("c","ai_processing")} LIMIT 1`,[assessment.family_id]);
-      const selection=syntheticTest
+      const selection=await reportStage(job.id,token,assessment.family_id,async aiConsented=>syntheticTest
         ?{selectedAdviceIds:eligibleAdviceIds(snapshot),generationMode:"template" as const,fallbackReason:"synthetic_test",aiModel:null}
-        :await selectNarrative({...snapshot,aiConsented:snapshot.aiConsented&&consent.length>0},getConfig().ai);
+        :selectNarrative({...snapshot,aiConsented:snapshot.aiConsented&&aiConsented},getConfig().ai));
+      if(selection.status==="paused")return {status:"paused"};
       const previous=await query("SELECT snapshot,submitted_at FROM assessments WHERE family_id=$1 AND respondent_id=$2 AND scale_version_id=$3 AND submitted_at<$4 AND snapshot IS NOT NULL ORDER BY submitted_at DESC LIMIT 1",[assessment.family_id,assessment.respondent_id,assessment.scale_version_id,assessment.submitted_at]);
       const prior=previous[0];
-      payload={...snapshot,...selection,comparison:compareResults(snapshot.score,prior?(prior.snapshot as AssessmentSnapshot).score:null,prior?new Date(prior.submitted_at).toISOString():undefined)};
+      payload={...snapshot,...selection.value,comparison:compareResults(snapshot.score,prior?(prior.snapshot as AssessmentSnapshot).score:null,prior?new Date(prior.submitted_at).toISOString():undefined)};
     }
     if(syntheticTest)payload={...payload,syntheticTest:true,aiConsented:false,generationMode:"template",aiModel:null,score:{...payload.score,demo:true}};
     if(sources.some(item=>!normValidated(item?.scale?.norm)))payload={...payload,score:{...payload.score,demo:true}};
-    if(await stopClaimedJobWithoutParentReport(job.id,token,assessment.family_id)==="paused")return {status:"paused"};
     const htmlDocuments={"zh-CN":reportHtml(payload,"zh-CN"),"zh-HK":reportHtml(payload,"zh-HK")};
     for(const locale of ["zh-CN","zh-HK"] as const){
+      const rendered=await reportStage(job.id,token,assessment.family_id,()=>renderPdf(htmlDocuments[locale]));
+      if(rendered.status==="paused"){
+        if(getConfig().reportStorage==="filesystem")for(const key of Object.values(keys))await removePrivatePdf(key).catch(()=>{});
+        return {status:"paused"};
+      }
       const key=`${assessment.id}.${token}.${locale}.pdf.enc`;keys[locale]=key;
-      const pdf=await renderPdf(htmlDocuments[locale]);
-      if(getConfig().reportStorage==="database")pdfs[locale]=pdf;
-      else await writePrivatePdf(key,pdf);
+      if(getConfig().reportStorage==="database")pdfs[locale]=rendered.value;
+      else await writePrivatePdf(key,rendered.value);
     }
     const outcome=await transaction(async client=>{
       const familyLock=await client.query("SELECT id FROM families WHERE id=$1 AND region=$2 FOR UPDATE",[assessment.family_id,getConfig().region]);
