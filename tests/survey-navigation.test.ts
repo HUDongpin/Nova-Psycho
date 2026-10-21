@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Model } from "survey-core";
-import { bindChoiceAutoAdvance, bindCompletionNavigation, CHOICE_AUTO_ADVANCE_MS, configureQuestionProgress, focusFirstUnanswered, questionProgressLabel } from "../src/components/survey-navigation";
+import { answerableQuestions, bindChoiceAutoAdvance, bindCompletionNavigation, CHOICE_AUTO_ADVANCE_MS, configureQuestionProgress, focusFirstUnanswered, questionProgressLabel } from "../src/components/survey-navigation";
 import { teacherScale } from "../src/domain/triad-scales";
 import { surveyDefinition } from "../src/domain/survey";
 
@@ -25,6 +25,28 @@ function choiceSurvey() {
 }
 
 describe("one question at a time", () => {
+  it("excludes questions inside hidden pages and nested panels from the shared answerable list", () => {
+    const survey = new Model({ pages: [
+      { name: "visible", elements: [
+        { type: "comment", name: "shown" },
+        { type: "html", name: "explanation", html: "说明" },
+        { type: "panel", name: "outer", elements: [
+          { type: "panel", name: "inner", elements: [{ type: "comment", name: "nested" }] },
+        ] },
+      ] },
+      { name: "other", elements: [{ type: "comment", name: "pageQuestion" }] },
+    ] });
+    survey.questionsOnPageMode = "inputPerPage";
+    expect(answerableQuestions(survey).map(question => question.name)).toEqual(["shown", "nested", "pageQuestion"]);
+    survey.getPanelByName("outer").visible = false;
+    survey.getPageByName("other").visible = false;
+    expect(answerableQuestions(survey).map(question => question.name)).toEqual(["shown"]);
+    expect(questionProgressLabel(survey, false)).toBe("第 1/1 题");
+    survey.getPanelByName("outer").visible = true;
+    survey.getPageByName("other").visible = true;
+    expect(answerableQuestions(survey).map(question => question.name)).toEqual(["shown", "nested", "pageQuestion"]);
+  });
+
   it("resumes a draft at the first empty question, even when an earlier question is optional", () => {
     const survey = choiceSurvey();
     survey.data = { q1: "a" };
@@ -286,7 +308,8 @@ describe("completion issue navigation", () => {
     const element = { isConnected: true, scrollIntoView: vi.fn() } as unknown as HTMLElement;
     survey.onAfterRenderQuestion.fire(survey, { question: target, htmlElement: element });
     expect(focus).toHaveBeenCalledTimes(1);
-    expect(element.scrollIntoView).toHaveBeenCalledWith({ block: "start" });
+    // Keep an already-visible question and its surrounding context in place.
+    expect(element.scrollIntoView).toHaveBeenCalledWith({ block: "nearest" });
     navigation.jump("q3");
     expect(focus).toHaveBeenCalledTimes(2);
     expect(cancel).toHaveBeenCalledTimes(2);

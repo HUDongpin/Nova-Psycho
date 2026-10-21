@@ -26,7 +26,7 @@ function isCurrentSingleChoice(model: Model, question: Question | undefined): bo
 }
 
 export function answerableQuestions(model: Model): Question[] {
-  return model.getAllQuestions().filter(question => question.isVisible && question.hasInput);
+  return model.getAllQuestions().filter(question => question.isVisibleInSurvey && question.hasInput);
 }
 
 /** Open a saved draft on the first question that still needs an answer. */
@@ -112,7 +112,7 @@ export function bindCompletionNavigation(model: Model, cancelAdvance: () => void
     if (pending !== question.name || !canNavigate() || !question.isVisible || model.currentSingleQuestion?.name !== question.name || !element.isConnected) return;
     pending = null;
     question.focus();
-    element.scrollIntoView({ block: "start" });
+    element.scrollIntoView({ block: "nearest" });
   };
   const afterRender = (_sender: Model, options: { question: Question; htmlElement: HTMLElement }) => {
     rendered.set(options.question.name, options.htmlElement);
@@ -133,7 +133,7 @@ export function bindCompletionNavigation(model: Model, cancelAdvance: () => void
       if (model.currentSingleQuestion?.name === itemId) {
         pending = null;
         question.focus();
-        rendered.get(itemId)?.scrollIntoView({ block: "start" });
+        rendered.get(itemId)?.scrollIntoView({ block: "nearest" });
         return true;
       }
       pending = itemId;
