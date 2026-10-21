@@ -75,6 +75,8 @@ export interface TriadView {
   raw: number | null;
 }
 export interface TriadReport {
+  parentAudienceVersion?: number;
+  legacyWritingOmitted?: boolean;
   title: TextPair;
   sources: { role: RespondentRole; submittedAt: string }[];
   comparisons?: TriadRoleComparison[];

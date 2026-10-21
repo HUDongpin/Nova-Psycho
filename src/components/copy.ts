@@ -1,6 +1,8 @@
+import { reportPrivacyNotice } from "../domain/report-privacy";
 import type { Locale, Role, AssessmentStatus } from "./api";
 // Exported so tests can assert that every entry carries both locales.
 export const dictionary = {
+  reportPrivacyRefresh: [reportPrivacyNotice["zh-CN"], reportPrivacyNotice["zh-HK"]],
   syntheticRetake: ["开始下一轮合成测试", "開始下一輪合成測試"],
   syntheticRetakeNote: ["仅限指定测试家庭。使用上一轮相同问卷版本创建三方新任务；已有回答和报告保持不变。", "僅限指定測試家庭。使用上一輪相同問卷版本建立三方新任務；已有回答和報告保持不變。"],
   syntheticRetakeCreating: ["正在创建测试任务…", "正在建立測試任務…"],

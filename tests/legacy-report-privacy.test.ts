@@ -1,9 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 
 vi.mock("../src/lib/db", () => ({ query: vi.fn(), transaction: vi.fn() }));
 vi.mock("../src/lib/auth", async original => ({ ...await original<typeof import("../src/lib/auth")>(), requireActor: vi.fn(), audit: vi.fn() }));
 vi.mock("../src/lib/storage", () => ({ readPrivatePdf: vi.fn() }));
 
+import { ReportCards } from "../src/components/workspace-views";
+import type { Report } from "../src/components/api";
 import { GET } from "../src/app/api/[...path]/route";
 import { demoAdvice, demoScale, demoTemplate } from "../src/domain/demo";
 import { reportHtml } from "../src/domain/report-html";
@@ -77,6 +81,17 @@ describe("legacy service-team writing", () => {
     }
   });
 
+  it("labels a historical repair that omits all previously stored writing", () => {
+    const repaired = payload();
+    Object.assign(repaired.triad!, { words: [], legacyWritingOmitted: true });
+    for (const locale of ["zh-CN", "zh-HK"] as Locale[]) {
+      const html = reportHtml(repaired, locale);
+      expect(html.includes(locale === "zh-CN" ? "文字回答已隐藏" : "文字回答已隱藏")).toBe(true);
+      expect(html.includes(SENTINEL)).toBe(false);
+      expect(html.includes(KEPT)).toBe(false);
+    }
+  });
+
   it.each(["", "/document", "/pdf"])("blocks historical stored content at the %s report endpoint", async suffix => {
     for (const locale of ["zh-CN", "zh-HK"] as Locale[]) {
       const response = await GET(new Request(`http://127.0.0.1:3100/api/reports/${REPORT_ID}${suffix}?locale=${locale}`), { params: Promise.resolve({ path: ["reports", REPORT_ID, ...suffix.split("/").filter(Boolean)] }) });
@@ -99,6 +114,14 @@ describe("legacy service-team writing", () => {
     const summary = reportSummary(row, "zh-CN");
     expect(summary).toHaveProperty("privacyRefreshRequired", true);
     expect(JSON.stringify(summary)).not.toContain(SENTINEL);
+  });
+
+  it.each(["zh-CN", "zh-HK"] as Locale[])("shows a privacy notice instead of a ready report link in %s", locale => {
+    const summary = { ...reportSummary(row, locale), privacyRefreshRequired: true } as Report;
+    const html = renderToStaticMarkup(createElement(ReportCards, { reports: [summary], locale, navigate: () => undefined }));
+    expect(html.includes(locale === "zh-CN" ? "隐私" : "私隱")).toBe(true);
+    expect(html.includes(locale === "zh-CN" ? "查看报告" : "查看報告")).toBe(false);
+    expect(html.includes(SENTINEL)).toBe(false);
   });
 
   it("serves newly generated audience-safe reports", async () => {

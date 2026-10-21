@@ -128,7 +128,7 @@ async function dispatch(request:Request,context:Context):Promise<Response>{retur
     }
   }
   if(method==="GET"&&path[0]==="reports"&&path[1]&&path.length<=3){
-    const report=await reportFor(actor,path[1]);
+    const report=await reportFor(actor,path[1],locale);
     if(path.length===2){await audit(actor,"report.viewed",report.id);return json(reportDetail(report,locale));}
     if(path[2]==="document")return new Response(report.html_documents[locale],{headers:{"Content-Type":"text/html; charset=utf-8","Cache-Control":"no-store","Content-Security-Policy":"default-src 'none'; style-src 'unsafe-inline'; img-src data:; frame-ancestors 'self'"}});
     if(path[2]==="pdf"){
