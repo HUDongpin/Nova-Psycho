@@ -103,4 +103,16 @@ describe("garden report navigation and offline presentation", () => {
     expect(doc.body.textContent).toContain("这几个方面的有效回答还不够，这里先不概括。");
     expect(doc.querySelector(".risk")).toBeNull();
   });
+
+  it("keeps the directory valid when legacy writing is withheld for privacy", () => {
+    const report = triad();
+    report.legacyWritingOmitted = true;
+    for (const locale of ["zh-CN", "zh-HK"] as const) {
+      const doc = documentFor(payload(report), locale);
+      expect(doc.querySelector('.report-directory a[href="#report-words"]')).not.toBeNull();
+      expect(doc.getElementById("report-words")).not.toBeNull();
+      expect(doc.querySelector(".words")?.textContent).toContain(locale === "zh-CN" ? "文字回答已隐藏" : "文字回答已隱藏");
+      expect(doc.querySelector(".words")?.textContent).not.toContain(report.words[0].value);
+    }
+  });
 });

@@ -34,8 +34,7 @@ export async function workspaceFor(actor:Actor,locale:Locale){
     query("SELECT * FROM scales ORDER BY created_at DESC"),
     team?query("SELECT id,name FROM users WHERE region=$1 AND role='staff' AND NOT disabled ORDER BY name",[actor.region]):Promise.resolve([]),
     actor.role==="admin"?query("SELECT id,kind,version,library_key,created_at FROM content_versions ORDER BY created_at DESC"):Promise.resolve([]),
-    // Every regional admin and staff member sees each unresolved alert. The row is only an id, a child name and timestamps — not the family record or contact details.
-    team?query("SELECT a.id,a.family_id,f.child_name,a.created_at,a.viewed_at FROM staff_alerts a JOIN families f ON f.id=a.family_id WHERE a.region=$1 AND a.resolved_at IS NULL ORDER BY a.created_at DESC",[actor.region]):Promise.resolve([]),
+    team?query(`SELECT a.id,a.family_id,f.child_name,a.created_at,a.viewed_at FROM staff_alerts a JOIN families f ON f.id=a.family_id WHERE a.region=$1 AND (${scope.sql}) AND a.resolved_at IS NULL ORDER BY a.created_at DESC`,scope.values):Promise.resolve([]),
     team?query("SELECT a.id,a.family_id,a.answers,s.definition FROM assessments a JOIN scales s ON s.id=a.scale_version_id WHERE a.family_id=ANY($1::uuid[]) AND a.region=$2 AND a.answers IS NOT NULL AND s.definition->>'bundle'=$3",[ids,actor.region,TRIAD_BUNDLE]):Promise.resolve([])
   ]);
   const scopesByFamily=new Map<string,{scopes:unknown}[]>();
@@ -62,9 +61,12 @@ export async function workspaceFor(actor:Actor,locale:Locale){
     if(!triad||status!=="queued")return null;
     return row.triad_round_id&&row.triad_job_id?"reporting":"waiting";
   };
+  const scopedReports=reports.map(r=>reportSummary(r,locale));
+  const privacyHeldReports=new Set(scopedReports.filter(report=>report.privacyRefreshRequired).map(report=>String(report.id)));
   const scopedAssessments=assessments.map(a=>{
     const parentReport=a.has_consent===true;
-    const ownReport=care&&parentReport&&a.report_id?String(a.report_id):null;
+    const privacyRefreshRequired=care&&parentReport&&typeof a.report_id==="string"&&privacyHeldReports.has(a.report_id);
+    const ownReport=care&&parentReport&&a.report_id&&!privacyRefreshRequired?String(a.report_id):null;
     const status=a.status;
     const syntheticTest=status==="pending"?syntheticFamilies.has(a.family_id):a.synthetic_test===true;
     const responseBlockedReason=status==="pending"&&!syntheticTest?instrumentWriteBlockReason(a.definition as ScaleDefinition,getConfig().mode):null;
@@ -72,9 +74,8 @@ export async function workspaceFor(actor:Actor,locale:Locale){
     const canRetryReport=!!family&&canManageFamilyReports(actor,family)&&status==="failed"&&reportRetryBlocker({status,jobState:a.job_state??null,hasSnapshot:a.has_snapshot===true,hasAnswers:a.has_answers===true,hasSubmission:a.has_submission===true,isTriad:a.is_triad===true,hasRoundSources:a.has_round_sources===true,hasConsent:a.has_consent===true})===null;
     const reviewFlags=team&&Array.isArray(a.review_flags)?a.review_flags.filter((flag:unknown):flag is "age_mismatch"=>flag==="age_mismatch"):[];
     const statedAge=reviewFlags.includes("age_mismatch")&&typeof a.stated_age==="number"&&Number.isInteger(a.stated_age)?a.stated_age:undefined;
-    return {id:a.id,familyId:a.family_id,childName:a.child_name,respondentId:a.respondent_id,respondentName:a.respondent_name,respondentRole:a.respondent_role,scaleVersionId:a.scale_version_id,scaleTitle:text((a.definition as ScaleDefinition).title,locale),status,phase:reportPhase(a,status),createdAt:iso(a.created_at),submittedAt:iso(a.submitted_at),reportId:ownReport,canRespond:a.respondent_id===actor.id&&a.status==="pending"&&!responseBlockedReason,...(responseBlockedReason?{responseBlockedReason}:{}),...(syntheticTest?{syntheticTest:true}:{}),canRetryReport,reviewFlags,statedAge};
+    return {id:a.id,familyId:a.family_id,childName:a.child_name,respondentId:a.respondent_id,respondentName:a.respondent_name,respondentRole:a.respondent_role,scaleVersionId:a.scale_version_id,scaleTitle:text((a.definition as ScaleDefinition).title,locale),status,phase:reportPhase(a,status),createdAt:iso(a.created_at),submittedAt:iso(a.submitted_at),reportId:ownReport,...(privacyRefreshRequired?{privacyRefreshRequired:true}:{}),canRespond:a.respondent_id===actor.id&&a.status==="pending"&&!responseBlockedReason,...(responseBlockedReason?{responseBlockedReason}:{}),...(syntheticTest?{syntheticTest:true}:{}),canRetryReport,reviewFlags,statedAge};
   });
-  const scopedReports=reports.map(r=>reportSummary(r,locale));
   return {user:actor,region:actor.region,mode:getConfig().mode,families:scopedFamilies,assessments:scopedAssessments,reports:scopedReports,
     scales:scales.filter(s=>(s.definition as ScaleDefinition).regions.includes(actor.region)).map(s=>{const d=s.definition as ScaleDefinition;return {id:s.id,scaleId:s.scale_id,version:s.version,title:text(d.title,locale),description:text(d.description,locale),demo:effectiveDemo(d),minAge:d.minAge,maxAge:d.maxAge,roles:d.roles,retakeDays:d.retakeDays,source:d.source,rights:d.rights,status:s.status,...(Object.values(currentTriadScaleIds).includes(s.id)?{isDefaultVersion:true}:{})};}),
     goals:goals.map(g=>({id:g.id,familyId:g.family_id,title:g.title,detail:g.detail,status:g.status,createdAt:iso(g.created_at)})),

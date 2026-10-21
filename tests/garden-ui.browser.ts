@@ -17,7 +17,7 @@ const contexts: BrowserContext[] = [];
 const assessmentId = "22222222-2222-4222-8222-222222222222";
 const familyId = "33333333-3333-4333-8333-333333333333";
 const reportId = "44444444-4444-4444-8444-444444444444";
-type DisplayState = "pending" | "waiting" | "reporting" | "consent" | "failed" | "ready";
+type DisplayState = "pending" | "waiting" | "reporting" | "consent" | "failed" | "privacy" | "ready";
 
 async function check(name: string, action: () => Promise<void>) {
   try { await action(); checks.push({ name, passed: true }); console.log(`PASS ${name}`); }
@@ -36,7 +36,7 @@ async function fixture(locale: Locale, mobile: boolean, initial: DisplayState = 
   let state = initial, revision = 2, failSave = false, retries = 0;
   let answers: SurveyRecord["draftAnswers"] = { first: 0 };
   const phase = (): SubmissionPhase => state === "waiting" || state === "reporting" || state === "consent" ? state : null;
-  const status = (): AssessmentStatus => state === "pending" ? "pending" : state === "failed" ? "failed" : state === "ready" ? "published" : "queued";
+  const status = (): AssessmentStatus => state === "pending" ? "pending" : state === "failed" ? "failed" : state === "ready" || state === "privacy" ? "published" : "queued";
   const report: Report = { id: reportId, familyId, childName: "合成孩子", title: hk ? "合成成長記錄" : "合成成长记录", respondentRole: "parent", scaleTitle: "合成界面问卷", createdAt: "2026-10-21T00:00:00Z", generationMode: "template", risk: false, demo: true, dimensions: [], assessmentId, comparison: { available: false } };
   const record = (): SurveyRecord => ({
     id: assessmentId, status: status(), phase: phase(), childName: "合成孩子", scaleTitle: hk ? "合成家庭了解問卷" : "合成家庭了解问卷", description: "", demo: true,
@@ -56,7 +56,7 @@ async function fixture(locale: Locale, mobile: boolean, initial: DisplayState = 
   const workspace = (): Workspace => ({
     user, region: user.region, mode: "demo", families: [], goals: [], observations: [], scales: [], staff: [], contentVersions: [], alerts: [], staffNotes: [],
     reports: state === "ready" && role === "parent" ? [report] : [],
-    assessments: [{ id: assessmentId, familyId, childName: "合成孩子", respondentId: user.id, respondentName: user.name, respondentRole: role, scaleVersionId: "synthetic-ui@1.0.0", scaleTitle: record().scaleTitle, status: status(), phase: phase(), createdAt: "2026-10-21T00:00:00Z", reportId: state === "ready" && role === "parent" ? reportId : null, canRespond: state === "pending", canRetryReport: state === "failed" && role === "parent" }],
+    assessments: [{ id: assessmentId, familyId, childName: "合成孩子", respondentId: user.id, respondentName: user.name, respondentRole: role, scaleVersionId: "synthetic-ui@1.0.0", scaleTitle: record().scaleTitle, status: status(), phase: phase(), createdAt: "2026-10-21T00:00:00Z", reportId: state === "ready" && role === "parent" ? reportId : null, canRespond: state === "pending", canRetryReport: state === "failed" && role === "parent", privacyRefreshRequired: state === "privacy" }],
     summary: { families: 0, pendingAssessments: state === "pending" ? 1 : 0, publishedReports: state === "ready" ? 1 : 0, activeGoals: 0, riskReports: 0 },
   });
   await context.route("**/api/**", async route => {
@@ -166,7 +166,7 @@ try {
     const updating = await fixture(locale, true, "waiting");
     await check(`${locale}: workspace updates advance the open submission panel`, async () => {
       await updating.page.locator('[data-testid="submission-state"][data-state="waiting"]').waitFor();
-      for (const next of ["consent", "reporting", "failed", "ready"] as const) {
+      for (const next of ["consent", "reporting", "failed", "privacy", "ready"] as const) {
         updating.setState(next);
         // Foreground refresh deliberately deduplicates focus events within one second.
         await new Promise(resolve => setTimeout(resolve, 1100));
@@ -175,13 +175,18 @@ try {
       }
     });
     await updating.context.close();
-    for (const state of ["consent", "reporting", "failed", "ready"] as const) {
+    for (const state of ["consent", "reporting", "failed", "privacy", "ready"] as const) {
       const f = await fixture(locale, true, state);
       await check(`${locale}: parent ${state} state`, async () => {
         await f.page.locator(`[data-testid="submission-state"][data-state="${state}"]`).waitFor();
         await noOverflow(f.page);
         assert.doesNotMatch(await f.page.getByTestId("submission-state").innerText(), /\d+\s*%/);
         await capture(f.page, `${locale}-${state}.png`);
+        if (state === "privacy") {
+          assert.equal(await f.page.getByRole("button", { name: f.t("viewReport"), exact: true }).count(), 0);
+          assert.equal(await f.page.getByRole("button", { name: f.t("retryReport"), exact: true }).count(), 0);
+          assert.ok(!(await f.page.getByTestId("submission-state").innerText()).includes(f.t("reportNeedsParentConsent")));
+        }
         if (state === "failed") {
           await f.page.getByRole("button", { name: f.t("retryReport"), exact: true }).click();
           await f.page.locator('[data-testid="submission-state"][data-state="reporting"]').waitFor();

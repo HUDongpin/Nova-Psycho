@@ -1,8 +1,8 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import type { Assessment, Workspace } from "../src/components/api";
-import { AssessmentList } from "../src/components/workspace-views";
+import type { Assessment, Report, Workspace } from "../src/components/api";
+import { AssessmentList, ReportCards } from "../src/components/workspace-views";
 import { copy } from "../src/components/copy";
 
 function row(over: Partial<Assessment>): Assessment {
@@ -89,6 +89,31 @@ describe("assessment rows after a triad report exists", () => {
     }
   });
 
+  it("replaces stale report links with a privacy hold in both languages", () => {
+    const held = trio.map(item => ({ ...item, privacyRefreshRequired: true, phase: null }));
+    for (const locale of ["zh-CN", "zh-HK"] as const) {
+      const markup = renderToStaticMarkup(createElement(AssessmentList, { assessments: held, locale, navigate: () => undefined, adult: true }));
+      expect(markup.includes(locale === "zh-CN" ? "隐私保护" : "私隱保護")).toBe(true);
+      expect(markup.includes(locale === "zh-CN" ? "查看报告" : "查看報告")).toBe(false);
+      expect(markup.includes(locale === "zh-CN" ? "等待家长报告同意" : "等待家長報告同意")).toBe(false);
+    }
+  });
+
+  it("keeps a privacy-held report neutral for its child and teacher respondents", () => {
+    for (const locale of ["zh-CN", "zh-HK"] as const) for (const respondentRole of ["student", "teacher"] as const) {
+      const t = copy(locale);
+      const markup = renderToStaticMarkup(createElement(AssessmentList, {
+        assessments: [row({ respondentRole, privacyRefreshRequired: true, reportId: "stale-report" })], locale,
+        navigate: () => undefined, adult: false,
+      }));
+      expect(markup).toContain(t("submittedNote"));
+      expect(markup).toContain("badge-sage");
+      expect(markup).not.toContain(t("reportPrivacyHeld"));
+      expect(markup).not.toContain(t("reportPrivacyRefresh"));
+      expect(markup).not.toContain(t("viewReport"));
+    }
+  });
+
   it("shows a staff age-mismatch note without printing a birth date", () => {
     const markup = html([row({ respondentRole: "student", respondentName: "孩子", reviewFlags: ["age_mismatch"], statedAge: 15 })]);
     expect(markup).toContain("填写的年龄是 15 岁，和出生日期不一致，请工作人员核对。");
@@ -143,6 +168,35 @@ describe("report retry capability", () => {
       }));
       expect(markup).toContain("已完成提交");
       expect(markup).not.toContain("重新排队生成报告");
+    }
+  });
+  it("keeps a privacy hold ahead of an otherwise granted report retry", () => {
+    const markup = renderToStaticMarkup(createElement(AssessmentList, {
+      assessments: [row({ status: "failed", canRetryReport: true, privacyRefreshRequired: true })], locale: "zh-CN",
+      navigate: () => undefined, adult: true, onRefresh: async () => undefined,
+    }));
+    expect(markup).toContain(copy("zh-CN")("reportPrivacyRefresh"));
+    expect(markup).not.toContain("重新排队生成报告");
+  });
+});
+
+describe("garden report cards under a legacy privacy hold", () => {
+  const report: Report = {
+    id: "r", familyId: "f", childName: "合成孩子", title: "合成报告", respondentRole: "parent",
+    scaleTitle: "合成问卷", createdAt: "2026-03-02T00:00:00Z", generationMode: "template",
+    risk: false, demo: true, dimensions: [], assessmentId: "a", comparison: { available: false },
+  };
+  it.each([false, true])("preserves the garden layout while withholding stale entry (compact=%s)", compact => {
+    for (const locale of ["zh-CN", "zh-HK"] as const) {
+      const t = copy(locale);
+      const render = (privacyRefreshRequired: boolean) => renderToStaticMarkup(createElement(ReportCards, {
+        reports: [{ ...report, privacyRefreshRequired }], locale, navigate: () => undefined, compact,
+      }));
+      const held = render(true);
+      expect(held).toContain("garden-report-card");
+      expect(held).toContain(t("reportPrivacyRefresh"));
+      expect(held).not.toContain(t("viewReport"));
+      expect(render(false)).toContain(t("viewReport"));
     }
   });
 });

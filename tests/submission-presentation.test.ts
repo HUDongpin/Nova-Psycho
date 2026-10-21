@@ -17,6 +17,7 @@ describe("truthful submission presentation", () => {
     [{ phase: "reporting", status: "failed" }, "failed"],
     [{ phase: null, status: "published", reportHeld: true }, "consent"],
     [{ phase: null, status: "published", reportId: "available", reportHeld: true }, "ready"],
+    [{ phase: null, status: "published", reportId: "old-report", privacyRefreshRequired: true }, "privacy"],
     [{ phase: null, status: "pending" }, "submitted"],
   ] as const)("maps actual parent state %j to %s", (input, state) => {
     expect(submissionDisplayState({ ...base, ...input })).toBe(state);

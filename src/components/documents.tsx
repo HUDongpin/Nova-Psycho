@@ -11,7 +11,8 @@ import { GardenIcon, GardenIllustration } from "./garden";
 import { submissionDisplayState, type SubmissionDisplayState } from "./submission-presentation";
 import type { GardenIconKey, GardenScene } from "../domain/garden-visuals";
 const SurveyRunner = dynamic(() => import("./survey-runner"), { ssr: false, loading: () => <div className="loading-state"><CircleNotch className="spin" aria-label="Loading" /></div> });
-const submissionPresentation: Record<SubmissionDisplayState, { icon: GardenIconKey; scene: GardenScene; title: "submitted" | "triadWaiting" | "reportNeedsParentConsent" | "gardenReportGenerating" | "gardenReportFailed" | "gardenReportReady"; note: "submittedNote" | "triadWaitingNote" | "reportNeedsParentConsentNote" | "reportQueued" | "reportFailed" | "gardenReportReadyNote" }> = {
+const submissionPresentation: Record<SubmissionDisplayState, { icon: GardenIconKey; scene: GardenScene; title: "submitted" | "triadWaiting" | "reportNeedsParentConsent" | "gardenReportGenerating" | "gardenReportFailed" | "gardenReportReady" | "reportPrivacyHeld"; note: "submittedNote" | "triadWaitingNote" | "reportNeedsParentConsentNote" | "reportQueued" | "reportFailed" | "gardenReportReadyNote" | "reportPrivacyRefresh" }> = {
+  privacy: { icon: "shield", scene: "waiting", title: "reportPrivacyHeld", note: "reportPrivacyRefresh" },
   submitted: { icon: "check", scene: "ready", title: "submitted", note: "submittedNote" },
   waiting: { icon: "clock", scene: "waiting", title: "triadWaiting", note: "triadWaitingNote" },
   consent: { icon: "shield", scene: "waiting", title: "reportNeedsParentConsent", note: "reportNeedsParentConsentNote" },
@@ -20,9 +21,9 @@ const submissionPresentation: Record<SubmissionDisplayState, { icon: GardenIconK
   ready: { icon: "book", scene: "report", title: "gardenReportReady", note: "gardenReportReadyNote" },
 };
 
-export function SubmissionPanel({ locale, region, role, phase, status, safetyGuidance = false, reportId, reportHeld = false, retryBusy = false, onRetry, onViewReport, onBack }: { locale: Locale; region: Region; role: Role; phase: SubmissionPhase; status?: AssessmentStatus; safetyGuidance?: boolean; reportId: string | null; reportHeld?: boolean; retryBusy?: boolean; onRetry?: () => void; onViewReport: (id: string) => void; onBack: () => void }) {
+export function SubmissionPanel({ locale, region, role, phase, status, safetyGuidance = false, reportId, reportHeld = false, privacyRefreshRequired = false, retryBusy = false, onRetry, onViewReport, onBack }: { locale: Locale; region: Region; role: Role; phase: SubmissionPhase; status?: AssessmentStatus; safetyGuidance?: boolean; reportId: string | null; reportHeld?: boolean; privacyRefreshRequired?: boolean; retryBusy?: boolean; onRetry?: () => void; onViewReport: (id: string) => void; onBack: () => void }) {
   const t = copy(locale);
-  const state = submissionDisplayState({ role, phase, status, reportId, reportHeld });
+  const state = submissionDisplayState({ role, phase, status, reportId, reportHeld, privacyRefreshRequired });
   const presentation = submissionPresentation[state];
   return <section className="panel submitted-panel garden-submission" data-testid="submission-state" data-state={state}>
     {safetyGuidance && <div className="safety-guidance" role="status"><strong>{t("safetyGuidanceTitle")}</strong><p>{safetyGuidanceText(region, locale)}</p></div>}
@@ -42,7 +43,7 @@ export function SubmissionPanel({ locale, region, role, phase, status, safetyGui
     </div>
   </section>;
 }
-export function AssessmentView({ owner, id, refreshKey, locale, region, role, draftSessions, reportId, progress, canRetryReport = false, onViewReport, onBack, onRefresh, openPrivacy, privacyOpen = false }: { owner: DraftOwner; id: string; refreshKey: number; locale: Locale; region: Region; role: Role; draftSessions: AccountDraftStore; reportId: string | null; progress?: Pick<Assessment, "id" | "status" | "phase">; canRetryReport?: boolean; onViewReport: (id: string) => void; onBack: () => void; onRefresh: () => Promise<void>; openPrivacy: () => void; privacyOpen?: boolean }) {
+export function AssessmentView({ owner, id, refreshKey, locale, region, role, draftSessions, reportId, privacyRefreshRequired = false, progress, canRetryReport = false, onViewReport, onBack, onRefresh, openPrivacy, privacyOpen = false }: { owner: DraftOwner; id: string; refreshKey: number; locale: Locale; region: Region; role: Role; draftSessions: AccountDraftStore; reportId: string | null; privacyRefreshRequired?: boolean; progress?: Pick<Assessment, "id" | "status" | "phase">; canRetryReport?: boolean; onViewReport: (id: string) => void; onBack: () => void; onRefresh: () => Promise<void>; openPrivacy: () => void; privacyOpen?: boolean }) {
   const t = copy(locale);
   const [loaded, setLoaded] = useState<{ record: SurveyRecord; locale: Locale; token: number; epoch: number } | null>(null);
   const [error, setError] = useState("");
@@ -109,7 +110,7 @@ export function AssessmentView({ owner, id, refreshKey, locale, region, role, dr
       {record.demo && <p className="warning-note" role="note">{t("trialNotice")}</p>}
       {record.syntheticTest && <p className="warning-note" role="status">{t("syntheticTestNotice")}</p>}
       {retry.error && <ErrorNotice message={retry.error} locale={locale} />}
-      {submitted || (record.status !== "pending" && !draft.getSnapshot().conflict) ? <SubmissionPanel locale={locale} region={region} role={role} phase={pipeline ? pipeline.phase ?? null : outcome?.phase ?? record.phase ?? null} status={pipeline?.status ?? record.status} safetyGuidance={outcome?.safetyGuidance ?? record.safetyGuidance === true} reportId={reportId} reportHeld={(pipeline?.status ?? record.status) === "published"} onViewReport={onViewReport} onBack={onBack} retryBusy={retry.busy} onRetry={canRetryReport && isAdult(role) ? () => { if (!retry.busy) void retry.run(async () => { await retryAssessmentReport(id, locale); await onRefresh(); }); } : undefined} /> : <>
+      {submitted || (record.status !== "pending" && !draft.getSnapshot().conflict) ? <SubmissionPanel locale={locale} region={region} role={role} phase={pipeline ? pipeline.phase ?? null : outcome?.phase ?? record.phase ?? null} status={pipeline?.status ?? record.status} safetyGuidance={outcome?.safetyGuidance ?? record.safetyGuidance === true} reportId={reportId} reportHeld={(pipeline?.status ?? record.status) === "published"} privacyRefreshRequired={privacyRefreshRequired} onViewReport={onViewReport} onBack={onBack} retryBusy={retry.busy} onRetry={canRetryReport && isAdult(role) ? () => { if (!retry.busy) void retry.run(async () => { await retryAssessmentReport(id, locale); await onRefresh(); }); } : undefined} /> : <>
         <SurveyRunner key={`${id}:${loaded.locale}:${loaded.token}`} record={record} draft={draft} locale={loaded.locale} onReloadLatest={reloadLatest} openPrivacy={openPrivacy} privacyOpen={privacyOpen} onSubmitted={async result => { if (!draftSessions.isCurrent(owner, loaded.epoch)) return; setOutcome(result); setSubmitted(true); await onRefresh(); }} />
       </>}
     </>}
