@@ -3,6 +3,14 @@ import { answerableQuestions } from "./survey-navigation";
 
 export interface SurveyChapter { id: string; title: string }
 export interface SurveyProgress { position: number; total: number; answered: number; chapter: SurveyChapter }
+export interface SurveySectionProgress {
+  id: string;
+  title: string;
+  questionIds: string[];
+  answered: number;
+  total: number;
+  targetId: string;
+}
 const ungrouped: SurveyChapter = { id: "assessment", title: "" };
 
 /** Capture assigned section names before SurveyJS expands pages for inputPerPage. */
@@ -48,21 +56,72 @@ export function createSurveyProgressStore(model: Model, chapters: ReadonlyMap<st
     if (next.position !== snapshot.position || next.total !== snapshot.total || next.answered !== snapshot.answered || next.chapter !== snapshot.chapter) snapshot = next;
     return snapshot;
   };
+  const events = [model.onCurrentPageChanged, model.onQuestionVisibleChanged, model.onPageVisibleChanged, model.onPanelVisibleChanged, model.onValueChanged];
   return {
     getSnapshot,
     subscribe(listener: () => void) {
+      let previous = getSnapshot();
       const change = () => {
-        const previous = snapshot;
-        if (getSnapshot() !== previous) listener();
+        const next = getSnapshot();
+        if (next === previous) return;
+        previous = next;
+        listener();
       };
-      model.onCurrentPageChanged.add(change);
-      model.onQuestionVisibleChanged.add(change);
-      model.onValueChanged.add(change);
-      return () => {
-        model.onCurrentPageChanged.remove(change);
-        model.onQuestionVisibleChanged.remove(change);
-        model.onValueChanged.remove(change);
+      events.forEach(event => event.add(change));
+      return () => events.forEach(event => event.remove(change));
+    },
+  };
+}
+
+/** Derive navigation sections without changing the survey's questions or completion state. */
+export function readSurveySections(model: Model, chapters: ReadonlyMap<string, SurveyChapter>): readonly SurveySectionProgress[] {
+  const sections = new Map<string, SurveySectionProgress>();
+  const sourceOrder = new Map([...chapters.keys()].map((id, index) => [id, index]));
+  const questions = answerableQuestions(model)
+    .sort((left, right) => (sourceOrder.get(left.name) ?? chapters.size) - (sourceOrder.get(right.name) ?? chapters.size));
+  for (const question of questions) {
+    const chapter = chapters.get(question.name) ?? ungrouped;
+    let section = sections.get(chapter.id);
+    if (!section) {
+      section = { id: chapter.id, title: chapter.title.split(" · ")[0], questionIds: [], answered: 0, total: 0, targetId: question.name };
+      sections.set(chapter.id, section);
+    }
+    const answered = !question.isEmpty() && !(typeof question.value === "string" && !question.value.trim());
+    // The first unanswered question replaces the initial first-question target.
+    if (!answered && section.answered === section.total) section.targetId = question.name;
+    section.questionIds.push(question.name);
+    section.total += 1;
+    if (answered) section.answered += 1;
+  }
+  return [...sections.values()];
+}
+
+export function createSurveySectionsStore(model: Model, chapters: ReadonlyMap<string, SurveyChapter>) {
+  let snapshot = readSurveySections(model, chapters);
+  const getSnapshot = () => {
+    const next = readSurveySections(model, chapters);
+    const same = next.length === snapshot.length && next.every((section, index) => {
+      const previous = snapshot[index];
+      return section.id === previous.id && section.title === previous.title && section.answered === previous.answered &&
+        section.total === previous.total && section.targetId === previous.targetId &&
+        section.questionIds.every((id, questionIndex) => id === previous.questionIds[questionIndex]);
+    });
+    if (!same) snapshot = next;
+    return snapshot;
+  };
+  const events = [model.onCurrentPageChanged, model.onQuestionVisibleChanged, model.onPageVisibleChanged, model.onPanelVisibleChanged, model.onValueChanged];
+  return {
+    getSnapshot,
+    subscribe(listener: () => void) {
+      let previous = getSnapshot();
+      const change = () => {
+        const next = getSnapshot();
+        if (next === previous) return;
+        previous = next;
+        listener();
       };
+      events.forEach(event => event.add(change));
+      return () => events.forEach(event => event.remove(change));
     },
   };
 }
