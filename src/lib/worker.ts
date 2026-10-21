@@ -6,7 +6,7 @@ import { composeTriad,TRIAD_BUNDLE,triadRolesReady } from "../domain/triad-repor
 import { compareTriad, type TriadComparisonSource } from "../domain/triad-comparison";
 import { compareResults } from "../domain/scoring";
 import { reportHtml } from "../domain/report-html";
-import { normValidated } from "../domain/validation";
+import { instrumentWriteBlockReason, normValidated } from "../domain/validation";
 import { ACTIVE_CONSENT_ROWS_SQL, PARENT_REPORT_SCOPE, consentScopeGrantedSql, hasGranted } from "./consent";
 import { getConfig, isDemoMode } from "./config";
 import { query,transaction } from "./db";
@@ -178,7 +178,7 @@ async function runReportJob(jobId?:string):Promise<ReportJobResult>{
   const rejectSnapshot=(item:AssessmentSnapshot|null|undefined)=>{
     if(item?.syntheticTest&&!syntheticTest)rejectSyntheticScope();
     if(isDemoMode()||syntheticTest)return;
-    const code=!normValidated(item?.scale?.norm)?"UNVALIDATED_INSTRUMENT":item?.scale?.demo?"DEMO_INSTRUMENT":null;
+    const code=instrumentWriteBlockReason(item?.scale??{},"service");
     if(!code)return;
     blockCode=code;
     throw new Error(code==="UNVALIDATED_INSTRUMENT"?"Unvalidated instrument rejected in service mode":"Demo snapshot rejected in service mode");

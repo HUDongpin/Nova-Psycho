@@ -11,6 +11,10 @@ function payload():ReportPayload{
 function withComparison(comparison:Comparison):ReportPayload{return {...payload(),comparison};}
 function frozenDate(iso:string,locale:"zh-CN"|"zh-HK"){return new Intl.DateTimeFormat(locale,{timeZone:"Asia/Hong_Kong",year:"numeric",month:"long",day:"numeric"}).format(new Date(iso));}
 describe("parent-facing report contract",()=>{
+  it("keeps the fictional generic demo report explicitly labelled",()=>{
+    expect(reportHtml(payload(),"zh-CN")).toContain("演示报告 · 使用虚构题目与合成数据");
+    expect(reportHtml(payload(),"zh-HK")).toContain("示範報告 · 使用虛構題目與合成資料");
+  });
   it("escapes user content and includes no raw response field",()=>{const html=reportHtml(payload(),"zh-CN");expect(html).not.toContain("<script>");expect(html).toContain("&lt;script&gt;");expect(html).not.toContain('"q1"');expect(html).not.toContain("draft_answers");});
   it("prioritizes safety signal over routine suggestions",()=>{const html=reportHtml(payload(),"zh-CN");expect(html.indexOf("请先关注安全")).toBeLessThan(html.indexOf("家长可以尝试的下一步"));});
   it("renders real traditional text and historical version stamps",()=>{const html=reportHtml(payload(),"zh-HK");expect(html.includes("家庭支持測評報告")).toBe(true);expect(html.includes("示範報告")).toBe(true);expect(html.includes("專業規則模板")).toBe(true);expect(html.includes("1.0.0")).toBe(true);});

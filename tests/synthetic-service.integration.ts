@@ -66,7 +66,7 @@ try {
   closeDatabase = db.closeDatabase;
   closePdfBrowser = (await import("../src/lib/pdf")).closePdfBrowser;
   const { processReportJob } = await import("../src/lib/worker");
-  const { saveDraft, submitAssessment } = await import("../src/lib/assessments");
+  const { assessmentDetail } = await import("../src/lib/assessments");
   const { getSyntheticTestFamilyMembers } = await import("../src/lib/synthetic-testing");
   const { childScaleStaffNotes, parentScaleStaffNotes, teacherScaleStaffNotes } = await import("../src/domain/triad-scales");
   const { previewAnswers, TRIAD_BUNDLE } = await import("../src/domain/triad-report");
@@ -146,15 +146,17 @@ try {
     }
   });
   const tasks = {} as Record<RespondentRole, string>;
-  await check("test parent assigns unvalidated questionnaires only in configured family", async () => {
+  await check("test parent assigns known triad questionnaires in the configured synthetic family", async () => {
     for (const role of roles) tasks[role] = (await json<{ id: string }>("POST", "assessments", cookie.parent, { familyId, respondentId: users[role].id, scaleVersionId: `${definitions[role].id}@${definitions[role].version}`, locale: "zh-HK" }, 201)).id;
     const members = await getSyntheticTestFamilyMembers(familyId, "HK");
     assert.equal(members?.length, 3);
   });
-  await check("ordinary actor remains denied even inside designated family", async () => {
+  await check("ordinary actor can use the known triad without gaining synthetic provenance", async () => {
     const plain = { ...actors.parent }; delete plain.sessionMethod;
-    await assert.rejects(saveDraft(plain, tasks.parent, { answers: answers("parent"), acknowledged: true, revision: 0 }), (error: { code?: string }) => error.code === "UNVALIDATED_INSTRUMENT");
-    await assert.rejects(submitAssessment(plain, tasks.parent, { answers: answers("parent"), acknowledged: true, revision: 0 }), (error: { code?: string }) => error.code === "UNVALIDATED_INSTRUMENT");
+    const record = await assessmentDetail(plain, tasks.parent, "zh-HK");
+    assert.equal(record.responseBlockedReason, undefined);
+    assert.equal(record.syntheticTest, undefined);
+    assert.equal(record.demo, true);
   });
   await check("client cannot opt into synthetic mode through request fields", async () => {
     await rejected("PATCH", `assessments/${tasks.parent}`, cookie.parent, { answers: {}, acknowledged: true, revision: 0, syntheticTest: true }, "VALIDATION_FAILED", 422);
@@ -170,26 +172,36 @@ try {
     await rejected("PATCH", `assessments/${tasks.parent}`, cookie.parent, { answers: {}, acknowledged: true, revision: 0 }, "DRAFT_CONFLICT");
     assert.deepEqual((await json("GET", `assessments/${tasks.parent}`, cookie.parent)).draftAnswers, first);
   });
-  await check("removing family configuration immediately restores formal restriction", async () => {
+  await check("removing family configuration removes synthetic provenance without blocking the known triad", async () => {
     process.env.NOVA_SYNTHETIC_TEST_FAMILY_IDS = "";
     try {
-      await rejected("PATCH", `assessments/${tasks.parent}`, cookie.parent, { answers: {}, acknowledged: true, revision: 1 });
-      assert.equal((await json("GET", `assessments/${tasks.parent}`, cookie.parent)).responseBlockedReason, "UNVALIDATED_INSTRUMENT");
+      const record = await json("GET", `assessments/${tasks.parent}`, cookie.parent);
+      assert.equal(record.syntheticTest, undefined);
+      assert.equal(record.responseBlockedReason, undefined);
+      assert.equal(await getSyntheticTestFamilyMembers(familyId, "HK"), null);
     } finally { process.env.NOVA_SYNTHETIC_TEST_FAMILY_IDS = familyId; }
   });
   await check("a disabled member or extra member invalidates synthetic family", async () => {
     await direct.query("UPDATE users SET disabled=true WHERE id=$1", [users.teacher.id]);
-    try { await rejected("PATCH", `assessments/${tasks.parent}`, cookie.parent, { answers: {}, acknowledged: true, revision: 1 }); }
+    try {
+      assert.equal(await getSyntheticTestFamilyMembers(familyId, "HK"), null);
+      assert.equal((await json("GET", `assessments/${tasks.parent}`, cookie.parent)).syntheticTest, undefined);
+    }
     finally { await direct.query("UPDATE users SET disabled=false WHERE id=$1", [users.teacher.id]); }
     const extra = randomUUID();
     await direct.query("INSERT INTO users(id,region,name,role,demo) VALUES($1,'HK','Synthetic extra member','teacher',false)", [extra]);
     await direct.query("INSERT INTO memberships(family_id,user_id,role) VALUES($1,$2,'teacher')", [familyId, extra]);
-    try { await rejected("PATCH", `assessments/${tasks.parent}`, cookie.parent, { answers: {}, acknowledged: true, revision: 1 }); }
+    try {
+      assert.equal(await getSyntheticTestFamilyMembers(familyId, "HK"), null);
+      assert.equal((await json("GET", `assessments/${tasks.parent}`, cookie.parent)).syntheticTest, undefined);
+    }
     finally { await direct.query("DELETE FROM memberships WHERE family_id=$1 AND user_id=$2", [familyId, extra]); }
   });
-  await check("test session cannot assign or write in an unscoped family", async () => {
+  await check("known triad assignment outside the synthetic family does not gain synthetic provenance", async () => {
     const unscoped = await family();
-    await rejected("POST", "assessments", cookie.parent, { familyId: unscoped, respondentId: users.parent.id, scaleVersionId: `${definitions.parent.id}@${definitions.parent.version}`, locale: "zh-HK" });
+    const assigned = await json<{ id: string }>("POST", "assessments", cookie.parent, { familyId: unscoped, respondentId: users.parent.id, scaleVersionId: `${definitions.parent.id}@${definitions.parent.version}`, locale: "zh-HK" }, 201);
+    assert.equal((await json("GET", `assessments/${assigned.id}`, cookie.parent)).syntheticTest, undefined);
+    assert.equal(await getSyntheticTestFamilyMembers(unscoped, "HK"), null);
   });
   await check("consent remains necessary for synthetic drafts", async () => {
     const revoked = (await direct.query("UPDATE consents SET revoked_at=now() WHERE family_id=$1 AND scopes='[\"sensitive_data\"]'::jsonb RETURNING id", [familyId])).rows[0].id;

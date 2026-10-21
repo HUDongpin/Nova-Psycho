@@ -48,7 +48,7 @@ function triadReportHtml(p:ReportPayload,locale:Locale):string{
   @media(max-width:600px){article{margin:0;padding:26px 22px}h1{font-size:25px}.comparison-table th,.comparison-table td{padding:8px 4px}.comparison-table th:first-child{width:40%}}
   @page{size:A4;margin:14mm 14mm 18mm}@media print{body{background:#fff}article{margin:0;padding:0}}
   </style></head><body><article><header><div class="brand">TopE 心理助手</div><h1>${e(text(report.title,locale))}</h1><p>${e(p.childName)} · ${e(p.grade)}</p><p class="meta">${sources}</p><p>${e(t("这份报告把孩子、家长和老师各自的回答放在一起读。它不合成一个总分，也不做诊断。三方看到的不一样时，先把它当成不同情境里的观察。","這份報告把孩子、家長和老師各自的回答放在一起讀。它不合成一個總分，也不做診斷。三方看到的不一樣時，先把它當成不同情境裏的觀察。"))}</p></header>
-  ${syntheticTestNotice(p,locale)}${reportShowsDemo(p)?`<div class="demo"><strong>${e(t("演示报告 · 使用虚构题目与合成数据","示範報告 · 使用虛構題目與合成資料"))}</strong><br>${e(t("本示例没有临床常模，不代表任何真实孩子的心理健康评估结果。","本示例沒有臨床常模，不代表任何真實孩子的心理健康評估結果。"))}</div>`:""}
+  ${syntheticTestNotice(p,locale)}${reportShowsDemo(p)?`<div class="demo"><strong>${e(t("非临床试用报告 · 尚无经过验证的临床常模","非臨床試用報告 · 尚無經過驗證的臨床常模"))}</strong><br>${e(t("本报告整理本次填写的观察，仅供成长支持与沟通参考，不能用于临床诊断，也不能替代专业评估。","本報告整理本次填寫的觀察，僅供成長支持與溝通參考，不能用於臨床診斷，也不能替代專業評估。"))}</div>`:""}
   ${safety}<h2>${e(t("三方看到的情况","三方看到的情況"))}</h2>${domains||`<p>${e(t("这几个方面的有效回答还不够，这里先不概括。","這幾個方面的有效回答還不夠，這裏先不概括。"))}</p>`}${portrait}${situations}${priorities}${words}
   ${triadComparisonHtml(report,locale)}<p class="limitation">${e(text(p.template.content.limitation,locale))}</p><footer>TopE 心理助手 · ${e(t("三份都交齐后自动生成。家庭私密报告，请妥善保管。","三份都交齊後自動產生。家庭私密報告，請妥善保管。"))}</footer></article></body></html>`;
 }

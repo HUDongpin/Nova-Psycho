@@ -545,9 +545,10 @@ describe("targeted queue execution",()=>{
     expect(events.some(sql=>sql.includes("INSERT INTO reports"))).toBe(false);
     expect(mockQuery.mock.calls.some(([sql])=>String(sql).includes("UPDATE report_jobs SET state=$1"))).toBe(false);
   });
-  it("refuses to publish an unvalidated non-demo triad in service mode and writes no report",async()=>{
+  it("refuses an unknown unvalidated triad version in service mode and writes no report",async()=>{
     vi.stubEnv("NOVA_MODE","service");vi.stubEnv("NOVA_PUBLIC_URL","https://nova.example.invalid");
-    const legacy=([oldChild,oldParent,oldTeacher]).map((scale,index)=>{
+    const legacy=([oldChild,oldParent,oldTeacher]).map((definition,index)=>{
+      const scale={...definition,version:"99.0.0"};
       const role=scale.roles[0],answers=previewAnswers(scale,"calm");
       const score={...scoreAssessment(scale,answers,{age:12,region:"CN" as const,role}),demo:false as const};
       return {id:`legacy-${index}`,family_id:"family",triad_round_id:"round",respondent_role:role,answers,submitted_at:snapshot.submittedAt,
@@ -598,7 +599,7 @@ describe("targeted queue execution",()=>{
     expect(consentSql[0]).toContain("parent_report");
     expect(mockQuery.mock.calls.some(([sql])=>String(sql).includes("AS scopes FROM consents")||String(sql).includes("INSERT INTO reports"))).toBe(false);
   });
-  it("rejects a triad whose sibling snapshot is unvalidated before narrative or PDF",async()=>{
+  it("rejects a triad whose sibling snapshot has an unknown unvalidated version before narrative or PDF",async()=>{
     vi.stubEnv("NOVA_MODE","service");vi.stubEnv("NOVA_PUBLIC_URL","https://nova.example.invalid");
     vi.mocked(selectNarrative).mockClear();
     const parentScaleValidated=structuredClone(oldParent);
@@ -608,7 +609,7 @@ describe("targeted queue execution",()=>{
     const parentScore={...scoreAssessment(parentScaleValidated,parentAnswers,{age:12,region:"CN" as const,role:"parent" as const}),demo:false as const};
     const childAnswers=previewAnswers(oldChild,"calm");
     const rows=[
-      {id:"legacy-child",family_id:"family",triad_round_id:"round",respondent_role:"student",answers:childAnswers,submitted_at:snapshot.submittedAt,snapshot:{...snapshot,scale:oldChild,score:{...scoreAssessment(oldChild,childAnswers,{age:12,region:"CN" as const,role:"student" as const}),demo:false as const}}},
+      {id:"legacy-child",family_id:"family",triad_round_id:"round",respondent_role:"student",answers:childAnswers,submitted_at:snapshot.submittedAt,snapshot:{...snapshot,scale:{...oldChild,version:"99.0.0"},score:{...scoreAssessment(oldChild,childAnswers,{age:12,region:"CN" as const,role:"student" as const}),demo:false as const}}},
       {id:"legacy-parent",family_id:"family",triad_round_id:"round",respondent_role:"parent",answers:parentAnswers,submitted_at:snapshot.submittedAt,snapshot:{...snapshot,scale:parentScaleValidated,score:parentScore}},
       {id:"legacy-teacher",family_id:"family",triad_round_id:"round",respondent_role:"teacher",answers:previewAnswers(oldTeacher,"calm"),submitted_at:snapshot.submittedAt,snapshot:{...snapshot,scale:structuredClone(oldTeacher),score:parentScore}}
     ];
@@ -632,7 +633,9 @@ describe("targeted queue execution",()=>{
     expect(client.query.mock.calls.find(([sql])=>String(sql).includes("UPDATE report_jobs SET state=$1"))?.[1]).toEqual(["failed",JOB_ID,expect.any(String),"UNVALIDATED_INSTRUMENT"]);
     expect(mockQuery.mock.calls.some(([sql])=>String(sql).includes("INSERT INTO reports"))).toBe(false);
   });
-  it("publishes an unvalidated non-demo triad in demo mode with a demo label",async()=>{
+  it.each(["demo","service"] as const)("publishes the known unvalidated triad in %s mode with bilingual non-clinical limits and no AI",async mode=>{
+    vi.stubEnv("NOVA_MODE",mode);vi.stubEnv("NOVA_PUBLIC_URL",mode==="demo"?"http://127.0.0.1:3100":"https://nova.example.invalid");
+    vi.mocked(selectNarrative).mockClear();
     const legacy=([oldChild,oldParent,oldTeacher]).map((scale,index)=>{
       const role=scale.roles[0],answers=previewAnswers(scale,"calm");
       const score={...scoreAssessment(scale,answers,{age:12,region:"CN" as const,role}),demo:false as const};
@@ -653,7 +656,12 @@ describe("targeted queue execution",()=>{
     expect(payload.score.demo).toBe(true);
     expect(payload.scale.demo).toBe(false);
     expect(payload.scale.version).toBe("1.0.0");
-    expect(published.some(value=>value.includes("演示报告")&&value.includes("示範報告"))).toBe(true);
+    expect(payload.scale.norm.validated).toBe(false);
+    expect(payload.generationMode).toBe("template");
+    expect(payload.aiModel).toBeNull();
+    expect(selectNarrative).not.toHaveBeenCalled();
+    expect(published.some(value=>value.includes("尚无经过验证的临床常模")&&value.includes("尚無經過驗證的臨床常模"))).toBe(true);
+    expect(published.some(value=>value.includes("使用虚构题目与合成数据")||value.includes("使用虛構題目與合成資料"))).toBe(false);
     expect(legacy.every(row=>row.snapshot.scale.demo===false&&row.snapshot.score.demo===false)).toBe(true);
     expect(published.some(value=>value.includes("INSERT INTO reports"))).toBe(true);
 

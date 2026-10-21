@@ -99,6 +99,20 @@ describe("creating an assessment",()=>{
     await expect(createAssessment(actor("admin"),createInput)).rejects.toMatchObject({status:409,code:"DEMO_INSTRUMENT"});
     expect(mockTransaction).not.toHaveBeenCalled();
   });
+  it("assigns an approved triad even when its legacy demo flag is true and an official scale exists",async()=>{
+    vi.stubEnv("NOVA_MODE","service");vi.stubEnv("NOVA_PUBLIC_URL","https://nova.example.invalid");
+    const approved={...oldChild,demo:true};
+    mockGetScale.mockResolvedValueOnce({id:`${approved.id}@${approved.version}`,definition:approved,status:"active"} as never);
+    const read=mockQuery.getMockImplementation()!;
+    mockQuery.mockImplementation((async(sql:string,values:unknown[])=>{
+      if(sql.includes("definition->>'demo'"))return [{id:"official"}];
+      return read(sql,values);
+    }) as never);
+    await expect(createAssessment(actor("admin"),{...createInput,scaleVersionId:`${approved.id}@${approved.version}`})).resolves.toHaveProperty("id");
+    expect(mockQuery.mock.calls.some(([sql])=>String(sql).includes("definition->>'demo'"))).toBe(false);
+    expect(clientCalls.some(sql=>sql.includes("INSERT INTO assessments"))).toBe(true);
+    expect(approved.norm.validated).toBe(false);
+  });
   it("refuses a respondent who is not a member of the family",async()=>{
     // The family must resolve, otherwise the failure would come from the family lookup
     // rather than from the membership check this test is about.

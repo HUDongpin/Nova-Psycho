@@ -298,7 +298,7 @@ async function main(){
     assert.ok(silent.length>0,"Mutually exclusive child safety messages must not all fire for one answer set");
     for(const locale of ["zh-CN","zh-HK"] as const){
       const html=saved[locale].html,serialized=JSON.stringify(await ok<object>(triad.clients.parent,`/api/reports/${combined.id}?locale=${locale}`));
-      assert.ok(!serialized.includes(`STUDENT_PRIVATE_student_${nonce}`));assert.ok(!serialized.includes("STAFF_PRIVATE_"));assert.ok(!html.includes('"answers"'));assert.ok(html.includes(locale==="zh-CN"?"演示报告":"示範報告"));assert.ok(html.includes(`ADULT_WORDS_parent_${nonce}`));assert.ok(html.includes(`ADULT_WORDS_teacher_${nonce}`));
+      assert.ok(!serialized.includes(`STUDENT_PRIVATE_student_${nonce}`));assert.ok(!serialized.includes("STAFF_PRIVATE_"));assert.ok(!html.includes('"answers"'));assert.ok(html.includes(locale==="zh-CN"?"非临床试用报告":"非臨床試用報告"));assert.ok(html.includes(`ADULT_WORDS_parent_${nonce}`));assert.ok(html.includes(`ADULT_WORDS_teacher_${nonce}`));
       const aggregate=definitions.student.dimensions.find(d=>d.key==="c7");assert.ok(aggregate);assert.ok(html.includes(aggregate.label[locale]));assert.ok(html.includes("孩子自己"));assert.ok(html.includes("原始平均分 4"));
       for(const message of triggered)assert.ok(html.includes(message[locale]),"Triggered approved child safety template must remain visible");
       for(const rule of silent)assert.ok(!html.includes(rule.message[locale]),"Untriggered child safety template must not appear");
@@ -325,7 +325,7 @@ async function main(){
     const w=await workspace(triad.clients.parent,"zh-HK");assert.equal(w.reports.length,1);assert.ok(w.assessments.every(a=>a.status==="published"&&a.reportId===report.id));
     for(const role of ["student","teacher"] as const){assert.equal((await workspace(triad.clients[role],"zh-HK")).reports.length,0);await rejected(triad.clients[role],`/api/reports/${report.id}/pdf?locale=zh-HK`,"GET",undefined,403,"ROLE_DENIED");}
     await rejected(admin,`/api/reports/${report.id}`,"GET",undefined,404,"NOT_FOUND");
-    const saved=await documents(triad.clients.parent,report.id,"hong-kong-triad-report");assert.ok(saved["zh-HK"].html.includes("三方看到的情況"));assert.ok(saved["zh-HK"].html.includes("示範報告"));assert.ok(!saved["zh-HK"].html.includes(`STUDENT_PRIVATE_student_${nonce}`));assert.ok(!saved["zh-HK"].html.includes("STAFF_PRIVATE_"));
+    const saved=await documents(triad.clients.parent,report.id,"hong-kong-triad-report");assert.ok(saved["zh-HK"].html.includes("三方看到的情況"));assert.ok(saved["zh-HK"].html.includes("非臨床試用報告"));assert.ok(!saved["zh-HK"].html.includes(`STUDENT_PRIVATE_student_${nonce}`));assert.ok(!saved["zh-HK"].html.includes("STAFF_PRIVATE_"));
     return {...triad,reportId:report.id};
   });
   await check("family deletion removes family access while preserving independent accounts",async()=>{
