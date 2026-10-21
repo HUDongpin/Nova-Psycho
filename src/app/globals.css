@@ -497,6 +497,9 @@ input:-webkit-autofill {
 .entry-door strong { font-size: 15px; color: var(--ink); font-weight: 600; }
 .entry-door small { font-size: 13px; color: var(--muted); line-height: 1.55; }
 .join-code { font-family: var(--serif); font-size: 32px; letter-spacing: 0.04em; font-weight: 560; color: var(--teal); margin: 12px 0; font-variant-numeric: tabular-nums; }
+.join-panel { padding: 24px; text-align: center; }
+.join-panel .section-heading { justify-content: center; padding: 0; }
+.join-panel .join-code { margin: 16px 0 12px; font-family: var(--mono); font-size: 20px; font-weight: 600; line-height: 1.4; letter-spacing: 0.02em; overflow-wrap: anywhere; }
 .safety-alert { display: flex; gap: 10px; align-items: flex-start; padding: 14px 16px; margin-bottom: 20px; background: #f8ebe7; border: 1px solid #e7cfc8; border-radius: 12px; color: var(--danger); }
 .safety-alert .text-link { color: var(--danger); }
 .safety-alert-body { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; min-width: 0; }
