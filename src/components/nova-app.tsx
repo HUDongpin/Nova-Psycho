@@ -119,7 +119,10 @@ export default function NovaApp() {
       // Cookies may already belong to another identity. Pause owner-bound work
       // before reading that identity, including when verification later fails.
       draftSessions.suspend(); cancelRequests();
-      setWorkspace(null); setForm(null); setStatus(""); setSession(null);
+      setWorkspace(null); setForm(null); setStatus("");
+      // Public signed-out UI can stay mounted without retaining an authenticated
+      // workspace or an unfinished identity profile while verification runs.
+      setSession(value => value?.authProvider === "clerk" && !value.user && value.identityState === "signed_out" ? value : null);
       void loadSession();
     };
     window.addEventListener("nova-identity-change", refreshIdentity);
@@ -230,7 +233,7 @@ export default function NovaApp() {
   }
   const openForm: OpenForm = (kind, target) => { setForm({ kind, target }); setStatus(""); };
   if (!session) return <IconContext.Provider value={{ size: 20, weight: "regular" }}><main className="startup-page"><Brand />{error ? <ErrorNotice message={error} locale={locale} onRetry={() => void loadSession()} /> : <Loading locale={locale} />}</main></IconContext.Provider>;
-  if (!session.user || !owner || draftSessions.state === "mismatch") return <IconContext.Provider value={{ size: 20, weight: "regular" }}><Login session={session} locale={locale} setLocale={setLocale} onLogin={loadSession} recovery={draftSessions.hasUnsavedChanges() ? { mismatch: draftSessions.state === "mismatch", onReturn: returnToOwnerLogin, onDiscard: discardRetainedDrafts } : undefined} disabled={loggingOut} /></IconContext.Provider>;
+  if (!session.user || !owner || draftSessions.state === "mismatch") return <IconContext.Provider value={{ size: 20, weight: "regular" }}><Login session={session} locale={locale} setLocale={setLocale} onLogin={loadSession} sessionError={error} recovery={draftSessions.hasUnsavedChanges() ? { mismatch: draftSessions.state === "mismatch", onReturn: returnToOwnerLogin, onDiscard: discardRetainedDrafts } : undefined} disabled={loggingOut || refreshing} /></IconContext.Provider>;
   const user = session.user; const authProvider = session.authProvider; const adult = isAdult(user.role); const admin = user.role === "admin";
   const activeOwner = owner;
   const nav: { key: CopyKey; icon: typeof House; group: "main" | "admin" }[] = adult ? [{ key: "dashboard", icon: House, group: "main" }, { key: "families", icon: UsersThree, group: "main" }, { key: "assessments", icon: ClipboardText, group: "main" }, { key: "reports", icon: FileText, group: "main" }, { key: "care", icon: HandHeart, group: "main" }, ...(admin ? [{ key: "scales" as const, icon: BookOpenText, group: "admin" as const }, { key: "content" as const, icon: SlidersHorizontal, group: "admin" as const }, { key: "ops" as const, icon: Pulse, group: "admin" as const }, { key: "audit" as const, icon: ClockCounterClockwise, group: "admin" as const }] : [])] : [{ key: "assessments", icon: ClipboardText, group: "main" }];
