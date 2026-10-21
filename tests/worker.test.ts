@@ -13,8 +13,9 @@ import { scoreAssessment } from "../src/domain/scoring";
 import { childScale,parentScale,teacherScale } from "../src/domain/triad-scales";
 import { childScale as oldChild,parentScale as oldParent,teacherScale as oldTeacher } from "./fixtures/triad-scales-ed66f27";
 import { previewAnswers } from "../src/domain/triad-report";
+import * as triadReports from "../src/domain/triad-report";
 import { selectNarrative } from "../src/domain/narrative";
-import type { AssessmentSnapshot } from "../src/domain/types";
+import type { AssessmentSnapshot, ReportPayload } from "../src/domain/types";
 
 const mockQuery=vi.mocked(query);
 const mockTransaction=vi.mocked(transaction);
@@ -32,7 +33,7 @@ const snapshot:AssessmentSnapshot={
 };
 
 const clientCalls:string[]=[];
-const client={query:vi.fn(async(sql:string,_values:unknown[]=[])=>{clientCalls.push(String(sql));return {rows:[]};})};
+const client={query:vi.fn(async(sql:string,_values:unknown[]=[])=>{clientCalls.push(String(sql));return {rows:[] as Record<string,unknown>[]};})};
 
 function config(){
   vi.stubEnv("NOVA_REGION","CN");vi.stubEnv("NOVA_MODE","demo");
@@ -44,10 +45,15 @@ function config(){
 
 beforeEach(()=>{
   config();
-  mockQuery.mockReset();mockTransaction.mockReset();mockWrite.mockClear();mockRemove.mockReset();mockList.mockReset();mockRender.mockClear();
+  mockQuery.mockReset();mockTransaction.mockReset();mockWrite.mockClear();mockRemove.mockReset();mockList.mockReset();mockRender.mockReset().mockResolvedValue(Buffer.from("%PDF-1.4 stub"));
   mockRemove.mockResolvedValue("done");
   clientCalls.length=0;
-  client.query.mockClear();
+  client.query.mockReset().mockImplementation(async(sql:string)=>{
+    clientCalls.push(sql);
+    if(sql.includes("AS scopes FROM consents"))return {rows:[{scopes:["parent_report"]}]};
+    if(sql.includes("SELECT id FROM families")||sql.includes("FROM report_jobs WHERE id=$1 AND claim_token"))return {rows:[{id:"locked"}]};
+    return {rows:[]};
+  });
   mockTransaction.mockImplementation((async(fn:(c:unknown)=>Promise<unknown>)=>fn(client)) as never);
   mockList.mockResolvedValue([]);
 });
@@ -181,8 +187,7 @@ describe("processing one job",()=>{
   });
   it("renders both locales and stores them encrypted",async()=>{
     mockQuery.mockResolvedValueOnce([job])
-      .mockResolvedValueOnce([{snapshot}])
-      .mockResolvedValueOnce([{id:"c1"}])
+      .mockResolvedValueOnce([{id:ASSESSMENT_ID,family_id:"family",snapshot}])
       .mockResolvedValueOnce([])
       .mockResolvedValue([]);
     await processOneJob();
@@ -194,8 +199,7 @@ describe("processing one job",()=>{
   });
   it("does not contact the model when AI consent has been withdrawn",async()=>{
     mockQuery.mockResolvedValueOnce([job])
-      .mockResolvedValueOnce([{snapshot:{...snapshot,aiConsented:true}}])
-      .mockResolvedValueOnce([]) // consent row gone
+      .mockResolvedValueOnce([{id:ASSESSMENT_ID,family_id:"family",snapshot:{...snapshot,aiConsented:true}}])
       .mockResolvedValueOnce([])
       .mockResolvedValue([]);
     await processOneJob();
@@ -205,8 +209,7 @@ describe("processing one job",()=>{
   });
   it("requeues with a backoff while attempts remain",async()=>{
     mockQuery.mockResolvedValueOnce([{...job,attempts:1}])
-      .mockResolvedValueOnce([{snapshot}])
-      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{id:ASSESSMENT_ID,family_id:"family",snapshot}])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{assessment_id:ASSESSMENT_ID}])
       .mockResolvedValue([]);
@@ -217,8 +220,7 @@ describe("processing one job",()=>{
   });
   it("marks the job and the assessment failed after the final attempt",async()=>{
     mockQuery.mockResolvedValueOnce([{...job,attempts:3}])
-      .mockResolvedValueOnce([{snapshot}])
-      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{id:ASSESSMENT_ID,family_id:"family",snapshot}])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{assessment_id:ASSESSMENT_ID}])
       .mockResolvedValue([]);
@@ -226,19 +228,20 @@ describe("processing one job",()=>{
     await processOneJob();
     const failure=client.query.mock.calls.find(call=>String(call[0]).includes("UPDATE report_jobs SET state=$1"))!;
     expect(failure[1]).toContain("failed");
-    expect(client.query.mock.calls[0][0]).toContain("FOR UPDATE OF f");
-    expect(client.query.mock.calls[0][1]).toEqual([ASSESSMENT_ID,"CN"]);
+    const familyFailureLock=client.query.mock.calls.find(([sql])=>String(sql).includes("FOR UPDATE OF f"));
+    expect(familyFailureLock?.[1]).toEqual([ASSESSMENT_ID,"CN"]);
+    expect(client.query.mock.calls.indexOf(familyFailureLock!)).toBeLessThan(client.query.mock.calls.indexOf(failure));
     expect(failure[0]).toContain("UPDATE assessments SET status='failed'");
   });
   it("cleans up partially written files when rendering fails",async()=>{
     mockQuery.mockResolvedValueOnce([{...job,attempts:3}])
-      .mockResolvedValueOnce([{snapshot}])
-      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{id:ASSESSMENT_ID,family_id:"family",snapshot}])
       .mockResolvedValueOnce([])
       .mockResolvedValue([]);
-    mockRender.mockRejectedValueOnce(new Error("render failed"));
+    mockRender.mockResolvedValueOnce(Buffer.from("%PDF-1.4 stub")).mockRejectedValueOnce(new Error("render failed"));
     await processOneJob();
-    expect(mockRemove).toHaveBeenCalled();
+    expect(mockWrite).toHaveBeenCalledTimes(1);
+    expect(mockRemove.mock.calls.map(([key])=>key)).toEqual(mockWrite.mock.calls.map(([key])=>key));
   });
 });
 
@@ -246,15 +249,16 @@ describe("processing one job",()=>{
 describe("fixed triad report sources",()=>{
   const rows=([childScale,parentScale,teacherScale]).map((scale,index)=>{
     const role=scale.roles[0],answers=previewAnswers(scale);
-    return {id:`source-${index}`,family_id:"family",triad_round_id:"round",respondent_role:role,answers,submitted_at:snapshot.submittedAt,
+    return {id:`source-${index}`,family_id:"family",triad_round_id:"round",respondent_id:`respondent-${role}`,respondent_role:role,answers,submitted_at:snapshot.submittedAt,
       snapshot:{...snapshot,scale,score:scoreAssessment(scale,answers,{age:12,region:"CN",role})}};
   });
   const parent=rows[1],sourceIds=rows.map(row=>row.id);
-  function configure(sources:string[]|null=sourceIds,returned=rows){
+  function configure(sources:string[]|null=sourceIds,returned=rows,previous:typeof rows=[]){
     mockQuery.mockImplementation((async(sql:string)=>{
       if(sql.includes("WITH candidate AS"))return [{id:"triad-job",assessment_id:parent.id,attempts:1,source_assessment_ids:sources}];
       if(sql.includes("SELECT * FROM assessments WHERE id="))return [parent];
       if(sql.includes("SELECT id,respondent_role,answers"))return returned;
+      if(sql.includes("WITH prior_round AS"))return previous;
       return [];
     }) as never);
     mockTransaction.mockImplementation((async(fn:(c:unknown)=>Promise<unknown>)=>fn({query:async()=>({rows:[{id:"locked"}]})})) as never);
@@ -271,6 +275,57 @@ describe("fixed triad report sources",()=>{
     expect(publish?.values).toEqual([sourceIds]);
     expect(mockQuery.mock.calls.some(([sql])=>String(sql).includes("staff_alerts"))).toBe(false);
     expect(calls.some(call=>call.sql.includes("staff_alerts"))).toBe(false);
+  });
+  it("publishes comparison for the second complete triad round",async()=>{
+    const previous=rows.map(row=>{
+      const answers={...row.answers};
+      if(row.respondent_role==="parent")for(const item of row.snapshot.scale.dimensions.find(d=>d.key==="q14")!.items)answers[item]=2;
+      return {...row,id:`prior-${row.id}`,triad_round_id:"prior-round",submitted_at:"2026-06-01T00:00:00.000Z",
+        snapshot:{...row.snapshot,score:scoreAssessment(row.snapshot.scale,answers,{age:12,region:"CN",role:row.respondent_role})}};
+    });
+    configure(sourceIds,rows,previous);
+    let published:ReportPayload|undefined;
+    mockTransaction.mockImplementation((async(fn:(c:unknown)=>Promise<unknown>)=>fn({query:async(sql:string,values:unknown[])=>{
+      if(sql.includes("AS scopes FROM consents WHERE family_id=$1"))return {rows:[{scopes:["parent_report"]}]};
+      if(sql.includes("INSERT INTO reports"))published=JSON.parse(values[3] as string) as ReportPayload;
+      return {rows:[{id:"locked"}]};
+    }})) as never);
+    await processOneJob();
+    expect(published).toBeDefined();
+    expect(published!.comparison.available).toBe(true);
+    expect(published!.triad!.comparisons!.find(item=>item.role==="parent")!.changes!.find(item=>item.key==="q14")).toMatchObject({previous:2,current:4,delta:2});
+    expect(published!.triad!.comparisons!.every(item=>item.previousDate==="2026-06-01T00:00:00.000Z")).toBe(true);
+    expect(JSON.stringify(published!.triad!.comparisons)).not.toContain("respondent-");
+    const lookup=mockQuery.mock.calls.find(([sql])=>String(sql).includes("WITH prior_round AS"));
+    expect(lookup?.[1]).toEqual(["family","CN","round","growth-triad",snapshot.submittedAt]);
+  });
+  it("records a first-round reason for each role without fabricating changes",async()=>{
+    configure();
+    let published:ReportPayload|undefined;
+    mockTransaction.mockImplementation((async(fn:(c:unknown)=>Promise<unknown>)=>fn({query:async(sql:string,values:unknown[])=>{
+      if(sql.includes("AS scopes FROM consents WHERE family_id=$1"))return {rows:[{scopes:["parent_report"]}]};
+      if(sql.includes("INSERT INTO reports"))published=JSON.parse(values[3] as string) as ReportPayload;
+      return {rows:[{id:"locked"}]};
+    }})) as never);
+    await processOneJob();
+    expect(published!.comparison).toEqual({available:false,reason:"first_assessment"});
+    expect(published!.triad!.comparisons).toEqual(["student","parent","teacher"].map(role=>({
+      role,currentDate:snapshot.submittedAt,available:false,reason:"first_assessment"
+    })));
+  });
+  it("preserves other roles when the previous teacher is a different person",async()=>{
+    const previous=rows.map(row=>({...row,respondent_id:row.respondent_role==="teacher"?"old-teacher":row.respondent_id,submitted_at:"2026-06-01T00:00:00.000Z"}));
+    configure(sourceIds,rows,previous);
+    let published:ReportPayload|undefined;
+    mockTransaction.mockImplementation((async(fn:(c:unknown)=>Promise<unknown>)=>fn({query:async(sql:string,values:unknown[])=>{
+      if(sql.includes("AS scopes FROM consents WHERE family_id=$1"))return {rows:[{scopes:["parent_report"]}]};
+      if(sql.includes("INSERT INTO reports"))published=JSON.parse(values[3] as string) as ReportPayload;
+      return {rows:[{id:"locked"}]};
+    }})) as never);
+    await processOneJob();
+    expect(published!.comparison.available).toBe(true);
+    expect(published!.triad!.comparisons!.map(item=>item.available)).toEqual([true,true,false]);
+    expect(published!.triad!.comparisons![2]).toMatchObject({reason:"different_respondent",previousDate:"2026-06-01T00:00:00.000Z"});
   });
   it("fails an unbound legacy job without selecting historical answers or rendering",async()=>{
     configure(null);
@@ -331,6 +386,7 @@ describe("targeted queue execution",()=>{
     mockQuery.mockImplementation((async(sql:string)=>{
       if(sql.includes("WITH candidate AS"))return [{id:JOB_ID,assessment_id:ASSESSMENT_ID,attempts}];
       if(sql.includes("SELECT * FROM assessments WHERE id="))return [{id:ASSESSMENT_ID,family_id:"family",snapshot,submitted_at:snapshot.submittedAt}];
+      if(sql.includes("AS scopes FROM consents"))return [{scopes:["parent_report"]}];
       if(sql.includes("SELECT pdf_keys FROM reports"))return publishedKeys?[{pdf_keys:publishedKeys}]:[];
       return [];
     }) as never);
@@ -360,10 +416,14 @@ describe("targeted queue execution",()=>{
     mockQuery.mockImplementation((async(sql:string)=>{
       if(sql.includes("WITH candidate AS"))return [{id:JOB_ID,assessment_id:ASSESSMENT_ID,attempts:1}];
       if(sql.includes("SELECT * FROM assessments WHERE id="))return [{id:ASSESSMENT_ID,family_id:"family",snapshot,submitted_at:snapshot.submittedAt}];
+      if(sql.includes("AS scopes FROM consents"))return [{scopes:["parent_report"]}];
       if(sql.includes(failedLookup))throw new Error("Recovery database unavailable");
       return [];
     }) as never);
-    mockTransaction.mockRejectedValueOnce(new Error("Publication connection lost"));
+    mockTransaction.mockImplementation((async(fn:(c:unknown)=>Promise<unknown>)=>fn({query:async(sql:string)=>{
+      if(sql.includes("FROM families")&&sql.includes("FOR UPDATE"))throw new Error("Publication connection lost");
+      return {rows:sql.includes("AS scopes FROM consents")?[{scopes:["parent_report"]}]:[{id:"locked"}]};
+    }})) as never);
     await expect(processReportJob(JOB_ID)).rejects.toThrow("Recovery database unavailable");
     expect(mockWrite).toHaveBeenCalledTimes(2);
     expect(mockRemove).not.toHaveBeenCalled();
@@ -372,9 +432,13 @@ describe("targeted queue execution",()=>{
     mockQuery.mockImplementation((async(sql:string)=>{
       if(sql.includes("WITH candidate AS"))return [{id:JOB_ID,assessment_id:ASSESSMENT_ID,attempts:1}];
       if(sql.includes("SELECT * FROM assessments WHERE id="))return [{id:ASSESSMENT_ID,family_id:"family",snapshot,submitted_at:snapshot.submittedAt}];
+      if(sql.includes("AS scopes FROM consents"))return [{scopes:["parent_report"]}];
       return [];
     }) as never);
-    mockTransaction.mockRejectedValueOnce(new Error("Report claim expired"));
+    mockTransaction.mockImplementation((async(fn:(c:unknown)=>Promise<unknown>)=>fn({query:async(sql:string)=>{
+      if(sql.includes("FROM families")&&sql.includes("FOR UPDATE"))throw new Error("Report claim expired");
+      return {rows:sql.includes("AS scopes FROM consents")?[{scopes:["parent_report"]}]:[{id:"locked"}]};
+    }})) as never);
     await expect(processReportJob(JOB_ID)).resolves.toEqual({status:"already_done"});
     expect(mockWrite).toHaveBeenCalledTimes(2);
     expect(mockRemove.mock.calls.map(([key])=>key)).toEqual(mockWrite.mock.calls.map(([key])=>key));
@@ -383,7 +447,7 @@ describe("targeted queue execution",()=>{
     vi.stubEnv("NOVA_REPORT_STORAGE","database");
     mockQuery.mockResolvedValueOnce([{id:JOB_ID,assessment_id:ASSESSMENT_ID,attempts:1}])
       .mockResolvedValueOnce([{id:ASSESSMENT_ID,family_id:"family",snapshot,submitted_at:snapshot.submittedAt}])
-      .mockResolvedValueOnce([]).mockResolvedValueOnce([]).mockResolvedValue([]);
+      .mockResolvedValueOnce([]).mockResolvedValue([]);
     const events:string[]=[];
     const lockedClient={query:vi.fn(async(sql:string)=>{events.push(sql);if(sql.includes("AS scopes FROM consents WHERE family_id=$1"))return {rows:[{scopes:["parent_report"]}]};return {rows:[{id:"locked"}]};})};
     mockWrite.mockImplementation(async(_key,_pdf,client)=>{
@@ -396,9 +460,71 @@ describe("targeted queue execution",()=>{
     await expect(processReportJob(JOB_ID)).resolves.toEqual({status:"published"});
     expect(events.filter(value=>value==="pdf")).toHaveLength(2);
     expect(events.findIndex(value=>value.includes("INSERT INTO reports"))).toBeGreaterThan(events.lastIndexOf("pdf"));
-    expect(events.findIndex(value=>value.includes("AS scopes FROM consents WHERE family_id=$1"))).toBeGreaterThan(events.findIndex(value=>value.includes("FROM families")&&value.includes("FOR UPDATE")));
-    expect(events.findIndex(value=>value.includes("INSERT INTO reports"))).toBeGreaterThan(events.findIndex(value=>value.includes("AS scopes FROM consents WHERE family_id=$1")));
+    const publicationLock=events.findIndex(value=>value.includes("FROM families")&&value.includes("FOR UPDATE"));
+    const publicationConsent=events.findIndex((value,index)=>index>publicationLock&&value.includes("AS scopes FROM consents WHERE family_id=$1"));
+    expect(publicationConsent).toBeGreaterThan(publicationLock);
+    expect(events.findIndex(value=>value.includes("INSERT INTO reports"))).toBeGreaterThan(publicationConsent);
     mockWrite.mockImplementation(async()=>undefined);
+  });
+  it("does not select a narrative or render a PDF when a claimed job sees parent-report consent withdrawn",async()=>{
+    vi.mocked(selectNarrative).mockClear();
+    mockRender.mockClear();
+    mockWrite.mockClear();
+    const events:string[]=[];
+    mockQuery.mockImplementation((async(sql:string)=>{
+      const text=String(sql);
+      if(text.includes("WITH candidate AS"))return [{id:JOB_ID,assessment_id:ASSESSMENT_ID,attempts:1}];
+      if(text.includes("SELECT * FROM assessments WHERE id="))return [{id:ASSESSMENT_ID,family_id:"family",snapshot:{...snapshot,aiConsented:true},submitted_at:snapshot.submittedAt}];
+      if(text.includes("AS scopes FROM consents"))return [{scopes:["assessment","sensitive_data","ai_processing"]}];
+      if(text.includes("ai_processing"))return [{id:"ai-still-granted"}];
+      return [];
+    }) as never);
+    mockTransaction.mockImplementation((async(fn:(client:unknown)=>Promise<unknown>)=>fn({query:async(sql:string)=>{
+      events.push(String(sql));
+      if(String(sql).includes("AS scopes FROM consents"))return {rows:[{scopes:["assessment","sensitive_data","ai_processing"]}]};
+      return {rows:[{id:"locked"}]};
+    }})) as never);
+    await expect(processReportJob(JOB_ID)).resolves.toEqual({status:"paused"});
+    expect(selectNarrative).not.toHaveBeenCalled();
+    expect(mockRender).not.toHaveBeenCalled();
+    expect(mockWrite).not.toHaveBeenCalled();
+    const familyAt=events.findIndex(sql=>sql.includes("FROM families")&&sql.includes("FOR SHARE"));
+    const pauseAt=events.findIndex(sql=>sql.includes("PARENT_REPORT_CONSENT_REQUIRED"));
+    expect(familyAt).toBeGreaterThanOrEqual(0);
+    expect(pauseAt).toBeGreaterThan(familyAt);
+    expect(events.some(sql=>sql.includes("INSERT INTO reports"))).toBe(false);
+  });
+  it("does not compose a triad narrative or render a PDF when a claimed job sees parent-report consent withdrawn",async()=>{
+    const roleRows=([childScale,parentScale,teacherScale]).map((scale,index)=>{
+      const role=scale.roles[0],answers=previewAnswers(scale);
+      return {id:`source-${index}`,family_id:"family",triad_round_id:"round",respondent_id:`respondent-${role}`,respondent_role:role,answers,submitted_at:snapshot.submittedAt,
+        snapshot:{...snapshot,scale,score:scoreAssessment(scale,answers,{age:12,region:"CN",role})}};
+    });
+    const parent=roleRows[1],sourceIds=roleRows.map(row=>row.id);
+    vi.mocked(selectNarrative).mockClear();
+    mockRender.mockClear();
+    mockWrite.mockClear();
+    mockQuery.mockImplementation((async(sql:string)=>{
+      const text=String(sql);
+      if(text.includes("WITH candidate AS"))return [{id:JOB_ID,assessment_id:parent.id,attempts:1,source_assessment_ids:sourceIds}];
+      if(text.includes("SELECT * FROM assessments WHERE id="))return [parent];
+      if(text.includes("SELECT id,respondent_role,answers"))return roleRows;
+      if(text.includes("AS scopes FROM consents"))return [{scopes:["assessment","sensitive_data","ai_processing"]}];
+      return [];
+    }) as never);
+    mockTransaction.mockImplementation((async(fn:(client:unknown)=>Promise<unknown>)=>fn({query:async(sql:string)=>{
+      if(String(sql).includes("AS scopes FROM consents"))return {rows:[{scopes:["assessment","sensitive_data","ai_processing"]}]};
+      if(String(sql).includes("UPDATE report_jobs SET state=$1"))return {rows:[{assessment_id:parent.id}]};
+      return {rows:[{id:"locked"}]};
+    }})) as never);
+    const compose=vi.spyOn(triadReports,"composeTriad");
+    try{
+      await expect(processReportJob(JOB_ID)).resolves.toEqual({status:"paused"});
+      expect(compose).not.toHaveBeenCalled();
+      expect(selectNarrative).not.toHaveBeenCalled();
+      expect(mockRender).not.toHaveBeenCalled();
+      expect(mockWrite).not.toHaveBeenCalled();
+    }finally{compose.mockRestore();}
   });
   it("pauses a claimed job inside the family lock when parent-report consent is gone and writes no report",async()=>{
     mockQuery.mockResolvedValueOnce([{id:JOB_ID,assessment_id:ASSESSMENT_ID,attempts:1}])
@@ -412,15 +538,17 @@ describe("targeted queue execution",()=>{
     })};
     mockTransaction.mockImplementation((async(fn:(c:unknown)=>Promise<unknown>)=>fn(lockedClient)) as never);
     await expect(processReportJob(JOB_ID)).resolves.toEqual({status:"paused"});
-    const familyAt=events.findIndex(sql=>sql.includes("FROM families")&&sql.includes("FOR UPDATE"));
+    const familyAt=events.findIndex(sql=>sql.includes("FROM families")&&sql.includes("FOR SHARE"));
     const pauseAt=events.findIndex(sql=>sql.includes("state='paused'")&&sql.includes("PARENT_REPORT_CONSENT_REQUIRED"));
+    expect(familyAt).toBeGreaterThanOrEqual(0);
     expect(pauseAt).toBeGreaterThan(familyAt);
     expect(events.some(sql=>sql.includes("INSERT INTO reports"))).toBe(false);
     expect(mockQuery.mock.calls.some(([sql])=>String(sql).includes("UPDATE report_jobs SET state=$1"))).toBe(false);
   });
-  it("refuses to publish an unvalidated non-demo triad in service mode and writes no report",async()=>{
+  it("refuses an unknown unvalidated triad version in service mode and writes no report",async()=>{
     vi.stubEnv("NOVA_MODE","service");vi.stubEnv("NOVA_PUBLIC_URL","https://nova.example.invalid");
-    const legacy=([oldChild,oldParent,oldTeacher]).map((scale,index)=>{
+    const legacy=([oldChild,oldParent,oldTeacher]).map((definition,index)=>{
+      const scale={...definition,version:"99.0.0"};
       const role=scale.roles[0],answers=previewAnswers(scale,"calm");
       const score={...scoreAssessment(scale,answers,{age:12,region:"CN" as const,role}),demo:false as const};
       return {id:`legacy-${index}`,family_id:"family",triad_round_id:"round",respondent_role:role,answers,submitted_at:snapshot.submittedAt,
@@ -471,7 +599,7 @@ describe("targeted queue execution",()=>{
     expect(consentSql[0]).toContain("parent_report");
     expect(mockQuery.mock.calls.some(([sql])=>String(sql).includes("AS scopes FROM consents")||String(sql).includes("INSERT INTO reports"))).toBe(false);
   });
-  it("rejects a triad whose sibling snapshot is unvalidated before narrative or PDF",async()=>{
+  it("rejects a triad whose sibling snapshot has an unknown unvalidated version before narrative or PDF",async()=>{
     vi.stubEnv("NOVA_MODE","service");vi.stubEnv("NOVA_PUBLIC_URL","https://nova.example.invalid");
     vi.mocked(selectNarrative).mockClear();
     const parentScaleValidated=structuredClone(oldParent);
@@ -481,7 +609,7 @@ describe("targeted queue execution",()=>{
     const parentScore={...scoreAssessment(parentScaleValidated,parentAnswers,{age:12,region:"CN" as const,role:"parent" as const}),demo:false as const};
     const childAnswers=previewAnswers(oldChild,"calm");
     const rows=[
-      {id:"legacy-child",family_id:"family",triad_round_id:"round",respondent_role:"student",answers:childAnswers,submitted_at:snapshot.submittedAt,snapshot:{...snapshot,scale:oldChild,score:{...scoreAssessment(oldChild,childAnswers,{age:12,region:"CN" as const,role:"student" as const}),demo:false as const}}},
+      {id:"legacy-child",family_id:"family",triad_round_id:"round",respondent_role:"student",answers:childAnswers,submitted_at:snapshot.submittedAt,snapshot:{...snapshot,scale:{...oldChild,version:"99.0.0"},score:{...scoreAssessment(oldChild,childAnswers,{age:12,region:"CN" as const,role:"student" as const}),demo:false as const}}},
       {id:"legacy-parent",family_id:"family",triad_round_id:"round",respondent_role:"parent",answers:parentAnswers,submitted_at:snapshot.submittedAt,snapshot:{...snapshot,scale:parentScaleValidated,score:parentScore}},
       {id:"legacy-teacher",family_id:"family",triad_round_id:"round",respondent_role:"teacher",answers:previewAnswers(oldTeacher,"calm"),submitted_at:snapshot.submittedAt,snapshot:{...snapshot,scale:structuredClone(oldTeacher),score:parentScore}}
     ];
@@ -505,7 +633,9 @@ describe("targeted queue execution",()=>{
     expect(client.query.mock.calls.find(([sql])=>String(sql).includes("UPDATE report_jobs SET state=$1"))?.[1]).toEqual(["failed",JOB_ID,expect.any(String),"UNVALIDATED_INSTRUMENT"]);
     expect(mockQuery.mock.calls.some(([sql])=>String(sql).includes("INSERT INTO reports"))).toBe(false);
   });
-  it("publishes an unvalidated non-demo triad in demo mode with a demo label",async()=>{
+  it.each(["demo","service"] as const)("publishes the known unvalidated triad in %s mode with bilingual non-clinical limits and no AI",async mode=>{
+    vi.stubEnv("NOVA_MODE",mode);vi.stubEnv("NOVA_PUBLIC_URL",mode==="demo"?"http://127.0.0.1:3100":"https://nova.example.invalid");
+    vi.mocked(selectNarrative).mockClear();
     const legacy=([oldChild,oldParent,oldTeacher]).map((scale,index)=>{
       const role=scale.roles[0],answers=previewAnswers(scale,"calm");
       const score={...scoreAssessment(scale,answers,{age:12,region:"CN" as const,role}),demo:false as const};
@@ -526,7 +656,12 @@ describe("targeted queue execution",()=>{
     expect(payload.score.demo).toBe(true);
     expect(payload.scale.demo).toBe(false);
     expect(payload.scale.version).toBe("1.0.0");
-    expect(published.some(value=>value.includes("演示报告")&&value.includes("示範報告"))).toBe(true);
+    expect(payload.scale.norm.validated).toBe(false);
+    expect(payload.generationMode).toBe("template");
+    expect(payload.aiModel).toBeNull();
+    expect(selectNarrative).not.toHaveBeenCalled();
+    expect(published.some(value=>value.includes("尚无经过验证的临床常模")&&value.includes("尚無經過驗證的臨床常模"))).toBe(true);
+    expect(published.some(value=>value.includes("使用虚构题目与合成数据")||value.includes("使用虛構題目與合成資料"))).toBe(false);
     expect(legacy.every(row=>row.snapshot.scale.demo===false&&row.snapshot.score.demo===false)).toBe(true);
     expect(published.some(value=>value.includes("INSERT INTO reports"))).toBe(true);
 

@@ -198,3 +198,86 @@ For rollback, keep the additive schema. A previous local-auth deployment cannot 
 In Clerk mode, `NOVA_TEST_ACCOUNT_USERNAMES` enables a separate username/password entry for a comma-separated list of existing synthetic test accounts. Keep this variable in the production secret configuration; do not put usernames or passwords in the repository. The service database and account classification stay unchanged. Leave the variable unset to disable this entry. Ordinary local login, public demo login, and local registration remain disabled in Clerk mode.
 
 Test login verifies the existing password and uses a separate regional cookie and token namespace. Every request checks the allowlist, account status, region, and session expiry. Removing an account from the list immediately prevents its existing test session from authorizing requests. An expired test session cannot silently switch to a coexisting email identity. Opening the email sign-in or registration page clears the test session before showing the email form.
+
+### Synthetic questionnaire and report testing in production
+
+`NOVA_SYNTHETIC_TEST_FAMILY_IDS` optionally lists exact family UUIDs designated for
+synthetic testing. Keep this configuration private and unset by default. It grants
+no access by itself: the caller must use a designated test-account session, and the
+family must contain exactly one active parent, student and teacher, all in the
+configured region and all on `NOVA_TEST_ACCOUNT_USERNAMES`. Ordinary Clerk sessions,
+other families and ordinary members retain the formal-instrument restrictions.
+
+Draft, submission and assignment paths recheck this scope inside the family
+transaction. Report workers check the canonical pinned source identities and
+recheck membership before publication. Consent, ownership, age/role eligibility,
+retake intervals, immutable submissions, stale-draft rejection and report access
+rules still apply. This synthetic configuration does not change public registration
+or family joining; the application's registered `growth-triad` versions are available
+in service mode independently, with their unvalidated and non-diagnostic status retained.
+
+Synthetic snapshots and reports are explicitly marked. They always use rule
+templates, never call AI, and never change `scale.norm.validated`. An existing
+submitted synthetic source can participate only when its actual family, round,
+respondent and role match the current scoped family; it is not rewritten.
+Both questionnaire and report explain that this is synthetic testing, not a
+formal assessment or diagnosis.
+
+Before enabling a family, verify its members and synthetic-data provenance and
+preserve a recovery record. Ensure the keyed `growth-triad` advice/template library
+exists; the bounded helper in
+`scripts/migrations/20261020-synthetic-triad-content.ts` adds missing canonical
+rows in a caller-owned transaction and refuses conflicting existing content.
+Do not run full setup or mark an instrument validated to enable testing. Deploy
+after changing the environment allowlist, including when disabling this channel.
+Disabled or changed database members invalidate the scope on the next check.
+
+## Consent and workspace schema upgrade
+
+Existing databases created before the consent-scope changes need
+[`20261020-consent-workspace-schema.sql`](../scripts/migrations/20261020-consent-workspace-schema.sql).
+Back up the entire database, including `report_files`, verify the archive, and preserve
+the report encryption key separately before applying this migration. Compare the live
+schema with `src/lib/schema.sql` and rehearse against a schema-only copy with synthetic
+fixtures. Do not run the full setup script against production.
+
+The bounded migration adds consent-scope revocations, purpose-specific grant indexes,
+content-library metadata, alert resolution fields, and the report job `paused` state.
+Existing grants remain unchanged. Invalid or duplicate grants abort the transaction
+instead of being silently revoked. It uses an advisory lock and short lock and statement
+timeouts and can be applied again without rewriting existing rows.
+
+Use an authenticated PostgreSQL client with errors configured to stop execution.
+Afterward, compare original-column fingerprints and verify the resulting columns,
+constraints, indexes, and immutable-data triggers. Verify actual parent, student, and
+teacher login and workspace loading on the deployed domain. A ready deployment or a
+successful login alone does not prove that `/api/workspace` can read the production
+schema. Keep the additive schema during a code rollback; do not drop consent history
+or restore a database over subsequent user activity as a routine rollback.
+
+### Starting another synthetic round
+
+The designated parent test session can start a new round from its synthetic
+family's detail page after the latest three-person round has a published synthetic
+report. `POST /api/families/:id/synthetic-retake` accepts exactly
+`{ previousRoundId, locale }`. It checks the same synthetic family membership and
+all three participation/report consent scopes under a family lock, then creates
+three empty tasks using the prior round's same active questionnaire versions.
+Existing answers, timestamps and reports remain untouched. Repeating a request
+for the same previous round returns the same immediate successor rather than
+creating another round. An incomplete or inconsistent next round blocks creation.
+
+This separate endpoint alone permits immediate synthetic retesting. Ordinary
+assignment and its `RETAKE_INTERVAL` check are unchanged, as are Clerk email
+registration and verification. Disabling the existing test-account/family scope
+also disables this entry. Retake eligibility does not grant permission to change
+questionnaire definitions or mark norms validated.
+
+
+## Non-clinical triad trial release
+
+The default questionnaires are `growth-parent@1.3.0`, `growth-child@1.3.0`, and `growth-teacher@1.2.0`. Before deploying the trial admission change, run `npx tsx scripts/migrations/20261021-triad-trial.ts` against the approved production connection as a dry run. After reviewing its three target versions, run the same command with `--apply`. The migration requires an initialized HK/service database, compatible growth-triad advice and template content, and unvalidated canonical definitions. It inserts only missing target versions and rejects conflicting or retired targets. It preserves every original scale row and does not modify families, tasks, answers, reports, or prior versions. Repeating the migration inserts no duplicate versions. Do not run `db:setup` on the live service for this release.
+
+The web and worker use the same trial admission policy. Questionnaire entry and reports explicitly say “非临床试用 / 非臨床試用”; `norm.validated` remains false. Existing consent requirements, regional authorization, private report access, and the separate synthetic-account channel still apply. A code rollback can leave the additive questionnaire versions stored; do not delete versions already referenced by tasks.
+
+The service-mode browser regression is `NOVA_SERVICE_ONBOARDING_BASE_URL=https://localhost:<port> npx tsx tests/service-onboarding.browser.ts`. Run it only against an owned local service database with local authentication, HTTPS, the continuous report worker, and AI disabled. It creates ordinary synthetic parent/student/teacher accounts, fills each questionnaire through the browser, reloads saved drafts, submits, checks optional report consent, and downloads both report languages. It does not test real email verification delivery.

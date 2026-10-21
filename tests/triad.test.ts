@@ -59,7 +59,7 @@ describe("growth triad questionnaires", () => {
     expect(parentScale.demo).toBe(false);
     expect(parentScale.norm.validated).toBe(false);
     expect(sources[1].score.demo).toBe(false);
-    expect(html).toContain("演示报告");
+    expect(html).toContain("尚无经过验证的临床常模");
     expect(html.indexOf("请先关注安全")).toBeGreaterThan(-1);
     expect(html.indexOf("请先关注安全")).toBeLessThan(html.indexOf("三方看到的情况"));
     const portrait = html.slice(html.indexOf('class="portrait"'), html.indexOf('class="situations"'));
@@ -116,7 +116,7 @@ describe("growth triad questionnaires", () => {
       }
       for (const message of child.score.riskMessages) expect(html).toContain(message[locale]);
       expect(html).toContain(locale === "zh-CN" ? "不做诊断" : "不做診斷");
-      expect(html).toContain(locale === "zh-CN" ? "演示报告" : "示範報告");
+      expect(html).toContain(locale === "zh-CN" ? "尚无经过验证的临床常模" : "尚無經過驗證的臨床常模");
     }
   });
 });

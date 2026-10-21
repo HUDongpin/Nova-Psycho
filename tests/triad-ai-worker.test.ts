@@ -29,7 +29,7 @@ const advice:ContentSnapshot<AdviceLibrary>={
   }
 };
 interface SourceRow {
-  id:string;family_id:string;triad_round_id:string;respondent_role:"student"|"parent"|"teacher";
+  id:string;family_id:string;triad_round_id:string;respondent_id:string;respondent_role:"student"|"parent"|"teacher";
   answers:Record<string,StoredAnswer>;submitted_at:string;snapshot:AssessmentSnapshot;
 }
 let sources:SourceRow[];
@@ -56,7 +56,7 @@ function frozenSources():SourceRow[] {
       scale,advice:structuredClone(advice),template:{id:"synthetic-template",version:"1.0.0",content:demoTemplate},
       score:scoreAssessment(scale,answers,{age:12,region:"CN",role}),childName:"PRIVATE_CHILD",grade:"PRIVATE_GRADE",submittedAt,aiConsented:true
     };
-    return {id:IDS[index],family_id:FAMILY_ID,triad_round_id:ROUND_ID,respondent_role:role,answers,submitted_at:submittedAt,snapshot};
+    return {id:IDS[index],family_id:FAMILY_ID,triad_round_id:ROUND_ID,respondent_id:IDS[index],respondent_role:role,answers,submitted_at:submittedAt,snapshot};
   });
 }
 function currentAiRows(){return effectiveAiConsentIds.map(id=>({id}));}
@@ -74,7 +74,7 @@ beforeEach(()=>{
   for(const [key,value] of Object.entries(env))vi.stubEnv(key,value);
   vi.stubGlobal("fetch",nativeFetch);
   nativeFetch.mockImplementation(async()=>{throw new Error("Unexpected external request");});
-  provider.mockImplementation(async()=>{expect(transactionOpen).toBe(false);return response();});
+  provider.mockImplementation(async()=>{expect(transactionOpen).toBe(true);return response();});
   sources=frozenSources();pinnedIds=[...IDS];effectiveAiConsentIds=["consent-b","consent-a"];parentReportGranted=true;
   afterFamilyLock=()=>{};afterRender=()=>{};transactionOpen=false;publicationCount=0;persisted=undefined;events=[];
   vi.mocked(query).mockImplementation((async(sql:string,values:unknown[]=[])=>{
@@ -82,6 +82,7 @@ beforeEach(()=>{
     if(sql.includes("WITH candidate AS"))return [{id:JOB_ID,assessment_id:IDS[1],attempts:1,source_assessment_ids:pinnedIds}];
     if(sql.includes("SELECT * FROM assessments WHERE id="))return [sources.find(source=>source.id===IDS[1])];
     if(sql.includes("SELECT id,respondent_role,answers"))return sources;
+    if(sql.includes("WITH prior_round AS"))return [];
     if(isAiConsentRead(sql))return currentAiRows();
     if(sql.startsWith("SELECT pdf_keys FROM reports"))return persisted?[{pdf_keys:persisted.keys}]:[];
     if(sql.includes("UPDATE report_jobs SET state=$1"))return [{assessment_id:IDS[1],source_assessment_ids:pinnedIds,available_at:"2026-10-20T00:00:10.000Z"}];
@@ -91,7 +92,7 @@ beforeEach(()=>{
     events.push(`transaction:${sql}`);
     if(sql.includes("FROM families")&&sql.includes("FOR UPDATE")){afterFamilyLock();return {rows:[{id:FAMILY_ID}]};}
     if(sql.includes("FROM report_jobs")&&sql.includes("FOR UPDATE"))return {rows:[{id:JOB_ID}]};
-    if(sql.includes("AS scopes FROM consents WHERE family_id=$1"))return {rows:parentReportGranted?[{scopes:["parent_report"]}]:[]};
+    if(sql.includes("AS scopes FROM consents WHERE family_id=$1"))return {rows:[...(parentReportGranted?[{id:"parent-report",scopes:["parent_report"]}]:[]),...effectiveAiConsentIds.map(id=>({id,scopes:["ai_processing"]}))]};
     if(isAiConsentRead(sql))return {rows:currentAiRows()};
     if(sql.startsWith("INSERT INTO reports")){
       publicationCount++;
@@ -104,7 +105,7 @@ beforeEach(()=>{
     try{return await fn(client as unknown as PoolClient);}finally{transactionOpen=false;}
   });
   vi.mocked(renderPdf).mockImplementation(async html=>{
-    expect(transactionOpen).toBe(false);events.push("render");afterRender();
+    expect(transactionOpen).toBe(true);events.push("render");afterRender();
     return Buffer.from(`%PDF-1.4 synthetic ${html}`);
   });
   vi.mocked(writePrivatePdf).mockImplementation(async()=>undefined);
@@ -217,14 +218,14 @@ describe("triad AI worker publication",()=>{
     await expect(processReportJob(JOB_ID,{narrativeFetcher:provider})).resolves.toEqual({status:"paused"});
     expect(provider).toHaveBeenCalledTimes(1);expect(publicationCount).toBe(0);
     expect(events.some(event=>event.includes("state='paused'"))).toBe(true);
-    expect(removePrivatePdf).toHaveBeenCalledTimes(2);
+    expect(renderPdf).not.toHaveBeenCalled();expect(removePrivatePdf).not.toHaveBeenCalled();
   });
 
   it("still pauses if parent-report permission is withdrawn during the template rebuild",async()=>{
     let renders=0;
     afterRender=()=>{renders++;effectiveAiConsentIds=[];if(renders===3)parentReportGranted=false;};
     await expect(processReportJob(JOB_ID,{narrativeFetcher:provider})).resolves.toEqual({status:"paused"});
-    expect(provider).toHaveBeenCalledTimes(1);expect(renderPdf).toHaveBeenCalledTimes(4);expect(publicationCount).toBe(0);
+    expect(provider).toHaveBeenCalledTimes(1);expect(renderPdf).toHaveBeenCalledTimes(3);expect(publicationCount).toBe(0);
     const written=vi.mocked(writePrivatePdf).mock.calls.map(([key])=>key);
     expect(vi.mocked(removePrivatePdf).mock.calls.map(([key])=>key)).toEqual(written);
   });

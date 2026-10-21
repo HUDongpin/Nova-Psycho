@@ -11,6 +11,7 @@ import { body,checkOrigin,handle,HttpError,json,localeOf,requireRole } from "@/l
 import { privacyNotice } from "@/lib/privacy";
 import { opsStatus } from "@/lib/ops";
 import { acceptRecovery, createRecovery, recoveryInfo } from "@/lib/recovery";
+import { startSyntheticRetake } from "@/lib/synthetic-retake";
 import { workspaceFor } from "@/lib/workspace";
 import { acceptClerkInvitation,acceptInvitation,acceptInvitationForActor,assignFamily,createFamily,createInvitation,deleteFamily,invitationInfo,recordConsent } from "@/lib/families";
 import { acknowledgeSafetyAlert,assertPublicTriadOpen,createParentFamily,joinClerkStudent,joinFamily,joinWithCode,resolveSafetyAlert,startParentCase } from "@/lib/triad";
@@ -106,6 +107,7 @@ async function dispatch(request:Request,context:Context):Promise<Response>{retur
   if(method==="POST"&&path[0]==="alerts"&&path.length===3&&path[2]==="resolved")return json(await resolveSafetyAlert(actor,path[1]));
   if(method==="POST"&&route==="families")return json(await createFamily(actor,await body(request)),201);
   if(path[0]==="families"&&path[1]){
+    if(method==="POST"&&path.length===3&&path[2]==="synthetic-retake")return json(await startSyntheticRetake(actor,path[1],await body(request)),201);
     if(method==="PATCH"&&path.length===3&&path[2]==="assignment")return json(await assignFamily(actor,path[1],await body(request)));
     if(method==="POST"&&path.length===3&&path[2]==="consent")return json(await recordConsent(actor,path[1],await body(request),after));
     if(method==="POST"&&path.length===3&&path[2]==="invites")return json(await createInvitation(actor,path[1],await body(request)),201);
@@ -126,7 +128,7 @@ async function dispatch(request:Request,context:Context):Promise<Response>{retur
     }
   }
   if(method==="GET"&&path[0]==="reports"&&path[1]&&path.length<=3){
-    const report=await reportFor(actor,path[1]);
+    const report=await reportFor(actor,path[1],locale);
     if(path.length===2){await audit(actor,"report.viewed",report.id);return json(reportDetail(report,locale));}
     if(path[2]==="document")return new Response(report.html_documents[locale],{headers:{"Content-Type":"text/html; charset=utf-8","Cache-Control":"no-store","Content-Security-Policy":"default-src 'none'; style-src 'unsafe-inline'; img-src data:; frame-ancestors 'self'"}});
     if(path[2]==="pdf"){

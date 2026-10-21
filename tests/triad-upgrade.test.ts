@@ -112,7 +112,7 @@ function apply(sql: string, values: unknown[] = []): Record<string, unknown>[] {
   if (sql.includes("respondent_role,submitted_at")) return assessments.filter(item => item.triad_round_id === values[0]).map(item => ({ respondent_role: item.respondent_role, submitted_at: item.submitted_at }));
   if (sql.includes("submitted_at IS NOT NULL") && sql.includes("triad_round_id=$3")) return assessments.filter(item => item.family_id === values[0] && item.region === values[1] && item.triad_round_id === values[2] && item.submitted_at).map(item => ({ id: item.id, respondent_role: item.respondent_role }));
   if (sql.includes("status='pending'") && sql.includes("s.scale_id=$3")) {
-    return assessments.filter(item => item.family_id === values[0] && item.respondent_id === values[1] && item.status === "pending" && scales.find(scale => scale.id === item.scale_version_id)?.scale_id === values[2]).map(item => ({ id: item.id, triad_round_id: item.triad_round_id }));
+    return assessments.filter(item => item.family_id === values[0] && item.respondent_id === values[1] && item.status === "pending" && scales.find(scale => scale.id === item.scale_version_id)?.scale_id === values[2]).map(item => ({ id: item.id, triad_round_id: item.triad_round_id, definition: scales.find(scale => scale.id === item.scale_version_id)?.definition }));
   }
   if (sql.includes("a.submitted_at") && sql.includes("s.scale_id=$3")) {
     return assessments.filter(item => item.family_id === values[0] && item.respondent_id === values[1] && item.submitted_at && scales.find(scale => scale.id === item.scale_version_id)?.scale_id === values[2]).slice(-1).map(item => ({ submitted_at: item.submitted_at }));
@@ -337,7 +337,7 @@ describe("ed66f27 triad upgrade", () => {
     expect((freshRow?.snapshot as { score: { demo: boolean; status: string; age: number; reviewFlags?: string[] } }).score).toMatchObject({ demo: false, status: "valid", age: 12, reviewFlags: ["age_mismatch"] });
   });
 
-  it("keeps service-team writing on the previous versions in the parent report and out of the new one", async () => {
+  it("keeps frozen service-team answers out of parent reports on previous and current versions", async () => {
     const legacyFamily = "abababab-abab-4aba-8aba-abababababab";
     const legacyParentId = "cdcdcdcd-cdcd-4cdc-8cdc-cdcdcdcdcdcd";
     const legacyTeacherId = "efefefef-efef-4efe-8efe-efefefefefef";
@@ -377,7 +377,7 @@ describe("ed66f27 triad upgrade", () => {
       { role: "teacher", scale: (oldTeacher?.snapshot as AssessmentSnapshot).scale, answers: oldTeacherAnswers, score: (oldTeacher?.snapshot as AssessmentSnapshot).score, submittedAt: (oldTeacher?.snapshot as AssessmentSnapshot).submittedAt }
     ]);
     const oldHtml = reportHtml({ ...(oldParent?.snapshot as AssessmentSnapshot), selectedAdviceIds: [], generationMode: "template", fallbackReason: "triad_combined", aiModel: null, comparison: { available: false }, triad: oldTriad }, "zh-CN");
-    for (const id of [...PARENT_TEAM_WRITING, "t23"]) expect(oldHtml).toContain(`OLD_REPORT_${id}`);
+    for (const id of [...PARENT_TEAM_WRITING, "t23"]) expect(oldHtml).not.toContain(`OLD_REPORT_${id}`);
     for (const id of PARENT_TEAM_WRITING) expect(staffOnlyText(parentScaleSafety, oldParentAnswers).map(note => note.value)).not.toContain(`OLD_REPORT_${id}`);
     expect(staffOnlyText(teacherScaleSafety, oldTeacherAnswers).map(note => note.value)).not.toContain("OLD_REPORT_t23");
 

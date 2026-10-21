@@ -3,6 +3,7 @@ import type { Actor } from "../src/domain/types";
 
 vi.mock("../src/lib/db", () => ({ query: vi.fn(), transaction: vi.fn() }));
 vi.mock("../src/lib/auth", () => ({ audit: vi.fn(), hashPassword: vi.fn(async () => "synthetic-hash"), limitLogin: vi.fn(async () => undefined) }));
+vi.mock("../src/lib/clerk-auth", () => ({ createClerkUserInTransaction: vi.fn(async () => actor) }));
 
 import { transaction } from "../src/lib/db";
 import { limitLogin } from "../src/lib/auth";
@@ -15,9 +16,11 @@ const parentActor: Actor = { ...actor, id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb
 const principal = { subject: "user_synthetic", issuer: "https://synthetic.clerk.invalid", sessionId: "sess_synthetic", region: "CN" as const, emailVerified: true as const };
 const familyInput = { requestId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", relationship: "母亲" as const, childName: "Synthetic child", birthDate: "2014-06-01", grade: "初中" as const, assessment: true as const, sensitiveData: true as const, parentReport: true };
 
-const sql = vi.fn(async (text: string) => {
+const sql = vi.fn(async (text: string, values: unknown[] = []) => {
   if (text.startsWith("SELECT id FROM scales")) return { rows: [{ id: "growth-parent@1.3.0" }] };
   if (text.startsWith("SELECT id,birth_date FROM families")) return { rows: [{ id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", birth_date: "2014-06-01" }] };
+  if (text.startsWith("SELECT id,region,birth_date,join_code FROM families")) return { rows: [{ id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", region: "CN", birth_date: "2014-06-01", join_code: joining.code }] };
+  if (text.includes("FROM users WHERE id=$1")) return { rows: [{ ...(values[0] === parentActor.id ? parentActor : actor), disabled: false, demo: false }] };
   if (text.includes("AS scopes FROM consents") || text.startsWith("SELECT id FROM consents")) return { rows: [{ scopes: ["assessment", "sensitive_data", "parent_report"] }] };
   return { rows: [] };
 });
@@ -47,15 +50,16 @@ describe("public triad family and join routes", () => {
     expect(transaction).toHaveBeenCalled();
   });
 
-  it("refuses family creation and join in service mode until the assigned scales are validated", async () => {
+  it("creates families and assigns known triad questionnaires through all five service entry paths", async () => {
     stub("service");
-    const refused = { status: 409, code: "UNVALIDATED_INSTRUMENT" };
-    await expect(startParentCase(parent, "zh-CN")).rejects.toMatchObject(refused);
-    await expect(joinWithCode({ ...joining, role: "teacher" }, "zh-CN")).rejects.toMatchObject(refused);
-    await expect(joinFamily(actor, { code: joining.code }, "zh-CN")).rejects.toMatchObject(refused);
-    await expect(createParentFamily(parentActor, familyInput, "zh-CN")).rejects.toMatchObject(refused);
-    await expect(joinClerkStudent(principal, { code: joining.code, name: "Synthetic student", role: "student" }, "zh-CN")).rejects.toMatchObject(refused);
-    expect(transaction).not.toHaveBeenCalled();
-    expect(limitLogin).not.toHaveBeenCalled();
+    await expect(startParentCase(parent, "zh-CN")).resolves.toHaveProperty("familyId");
+    await expect(joinWithCode({ ...joining, role: "teacher" }, "zh-CN")).resolves.toHaveProperty("userId");
+    await expect(joinFamily(actor, { code: joining.code }, "zh-CN")).resolves.toMatchObject({ assessmentId: expect.any(String), alreadyMember: false });
+    await expect(createParentFamily(parentActor, familyInput, "zh-CN")).resolves.toHaveProperty("familyId");
+    await expect(joinClerkStudent(principal, { code: joining.code, name: "Synthetic student", role: "student" }, "zh-CN")).resolves.toMatchObject({ assessmentId: expect.any(String), alreadyMember: false });
+    expect(transaction).toHaveBeenCalledTimes(5);
+    expect(limitLogin).toHaveBeenCalledTimes(2);
+    expect(sql.mock.calls.filter(([text]) => text.startsWith("INSERT INTO assessments"))).toHaveLength(5);
+    expect(sql.mock.calls.filter(([text]) => text.startsWith("INSERT INTO memberships"))).toHaveLength(5);
   });
 });

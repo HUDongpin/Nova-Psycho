@@ -23,6 +23,14 @@ describe("separate account and family forms", () => {
     expect(html).not.toContain('name="username"'); expect(html).not.toContain('name="password"');
     expect(html).toContain("请输入家长提供的完整家庭编号");
   });
+  it.each(["zh-CN", "zh-HK"] as const)("explains the non-clinical trial before guardian consent in %s", locale => {
+    const html = renderToStaticMarkup(createElement(FamilyEntry, { ...common, locale, user: { id: "p", name: "Synthetic parent", role: "parent", region: "HK" }, hasFamilies: false }));
+    const notice = locale === "zh-CN" ? "当前问卷为非临床试用，尚无经过验证的临床常模" : "目前問卷為非臨床試用，尚無經過驗證的臨床常模";
+    expect(html).toContain(notice);
+    expect(html.indexOf(notice)).toBeLessThan(html.indexOf('name="assessment"'));
+    expect(html).toContain('name="parentReport"');
+    expect(html).not.toContain('checked=""');
+  });
   it("gives an unassigned teacher an actionable empty workspace without requesting another identity", () => {
     const html = renderToStaticMarkup(createElement(FamilyEntry, { ...common, user: { id: "t", name: "教师", role: "teacher", region: "CN" }, hasFamilies: false }));
     expect(html).toContain("尚未加入家庭"); expect(html).toContain('name="code"');

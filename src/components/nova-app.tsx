@@ -50,7 +50,7 @@ export default function NovaApp() {
     draftSessions.suspend(); cancelRequests();
     if (!mounted.current) return;
     setWorkspace(null); setForm(null); setStatus(""); setRefreshing(false);
-    setSession(value => value ? { ...value, user: null } : null);
+    setSession(value => value ? { ...value, user: null, identityState: value.sessionMethod === "test" ? "signed_out" : value.identityState } : null);
   };
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; cancelRequests(); }; }, [cancelRequests]);
   const navigate = useCallback((value: Route) => { window.location.hash = `${value.page}${value.id ? `/${encodeURIComponent(value.id)}` : ""}`; setRoute(value); setMobileMenu(false); setStatus(""); document.getElementById("main-content")?.focus(); window.scrollTo({ top: 0, behavior: "instant" }); }, []);
@@ -119,7 +119,10 @@ export default function NovaApp() {
       // Cookies may already belong to another identity. Pause owner-bound work
       // before reading that identity, including when verification later fails.
       draftSessions.suspend(); cancelRequests();
-      setWorkspace(null); setForm(null); setStatus(""); setSession(null);
+      setWorkspace(null); setForm(null); setStatus("");
+      // Public signed-out UI can stay mounted without retaining an authenticated
+      // workspace or an unfinished identity profile while verification runs.
+      setSession(value => value?.authProvider === "clerk" && !value.user && value.identityState === "signed_out" ? value : null);
       void loadSession();
     };
     window.addEventListener("nova-identity-change", refreshIdentity);
@@ -218,7 +221,7 @@ export default function NovaApp() {
   }
   function returnToOwnerLogin() {
     draftSessions.suspend(); cancelRequests(); setWorkspace(null); setForm(null); setStatus("");
-    setSession(value => value ? { ...value, user: null } : null);
+    setSession(value => value ? { ...value, user: null, identityState: value.sessionMethod === "test" ? "signed_out" : value.identityState } : null);
   }
   async function discardRetainedDrafts() {
     cancelRequests(); draftSessions.discardAll(); setWorkspace(null); setForm(null); setStatus(""); updateDraftNotice(value => value + 1);
@@ -230,7 +233,7 @@ export default function NovaApp() {
   }
   const openForm: OpenForm = (kind, target) => { setForm({ kind, target }); setStatus(""); };
   if (!session) return <IconContext.Provider value={{ size: 20, weight: "regular" }}><main className="startup-page"><Brand />{error ? <ErrorNotice message={error} locale={locale} onRetry={() => void loadSession()} /> : <Loading locale={locale} />}</main></IconContext.Provider>;
-  if (!session.user || !owner || draftSessions.state === "mismatch") return <IconContext.Provider value={{ size: 20, weight: "regular" }}><Login session={session} locale={locale} setLocale={setLocale} onLogin={loadSession} recovery={draftSessions.hasUnsavedChanges() ? { mismatch: draftSessions.state === "mismatch", onReturn: returnToOwnerLogin, onDiscard: discardRetainedDrafts } : undefined} disabled={loggingOut} /></IconContext.Provider>;
+  if (!session.user || !owner || draftSessions.state === "mismatch") return <IconContext.Provider value={{ size: 20, weight: "regular" }}><Login session={session} locale={locale} setLocale={setLocale} onLogin={loadSession} sessionError={error} recovery={draftSessions.hasUnsavedChanges() ? { mismatch: draftSessions.state === "mismatch", onReturn: returnToOwnerLogin, onDiscard: discardRetainedDrafts } : undefined} disabled={loggingOut || refreshing} /></IconContext.Provider>;
   const user = session.user; const authProvider = session.authProvider; const adult = isAdult(user.role); const admin = user.role === "admin";
   const activeOwner = owner;
   const nav: { key: CopyKey; icon: typeof House; group: "main" | "admin" }[] = adult ? [{ key: "dashboard", icon: House, group: "main" }, { key: "families", icon: UsersThree, group: "main" }, { key: "assessments", icon: ClipboardText, group: "main" }, { key: "reports", icon: FileText, group: "main" }, { key: "care", icon: HandHeart, group: "main" }, ...(admin ? [{ key: "scales" as const, icon: BookOpenText, group: "admin" as const }, { key: "content" as const, icon: SlidersHorizontal, group: "admin" as const }, { key: "ops" as const, icon: Pulse, group: "admin" as const }, { key: "audit" as const, icon: ClockCounterClockwise, group: "admin" as const }] : [])] : [{ key: "assessments", icon: ClipboardText, group: "main" }];
@@ -246,7 +249,7 @@ export default function NovaApp() {
       case "families": return <FamiliesView {...viewProps} />;
       case "family": { const record = workspace.families.find(item => item.id === route.id); return record ? <FamilyView {...viewProps} family={record} authProvider={authProvider} onRefresh={loadWorkspaceAfterMutation} openPrivacy={() => setPrivacy(true)} /> : <Empty title={t("missing")} />; }
       case "assessments": return <><div className="page-title"><div><h1>{t("assessments")}</h1><p>{t(adult ? "taskIntro" : "respondentIntro")}</p></div>{adult && <button className="button primary" disabled={!workspace.families.length} onClick={() => openForm("assessment")}><Plus />{t("newAssessment")}</button>}</div><section className="panel"><AssessmentList assessments={workspace.assessments} locale={locale} navigate={navigate} adult={adult} workspace={workspace} onRefresh={loadWorkspaceAfterMutation} /></section></>;
-      case "assessment": return route.id ? <AssessmentView key={`${activeOwner.region}:${activeOwner.id}`} owner={activeOwner} id={route.id} refreshKey={refreshKey} locale={locale} region={user.region} role={user.role} draftSessions={draftSessions} reportId={adult ? workspace.assessments.find(item => item.id === route.id && item.status === "published")?.reportId ?? null : null} onViewReport={id => navigate({ page: "report", id })} onBack={() => navigate({ page: "assessments" })} onRefresh={loadWorkspaceAfterMutation} openPrivacy={() => setPrivacy(true)} privacyOpen={privacy} /> : <Empty title={t("missing")} />;
+      case "assessment": return route.id ? <AssessmentView key={`${activeOwner.region}:${activeOwner.id}`} owner={activeOwner} id={route.id} refreshKey={refreshKey} locale={locale} region={user.region} role={user.role} draftSessions={draftSessions} privacyRefreshRequired={adult && workspace.assessments.some(item => item.id === route.id && item.privacyRefreshRequired)} reportId={adult ? workspace.assessments.find(item => item.id === route.id && item.status === "published")?.reportId ?? null : null} onViewReport={id => navigate({ page: "report", id })} onBack={() => navigate({ page: "assessments" })} onRefresh={loadWorkspaceAfterMutation} openPrivacy={() => setPrivacy(true)} privacyOpen={privacy} /> : <Empty title={t("missing")} />;
       case "reports": return <><div className="page-title"><div><h1>{t("reports")}</h1><p>{t("reportIntro")}</p></div><span className="automation-label"><FlowerLotus weight="regular" />{t("automatic")}</span></div><p className="info-strip"><ShieldCheck />{t("automaticNote")}</p><ReportCards reports={workspace.reports} locale={locale} navigate={navigate} /></>;
       case "report": return route.id ? <ReportView id={route.id} refreshKey={refreshKey} locale={locale} onBack={() => navigate({ page: "reports" })} /> : <Empty title={t("missing")} />;
       case "care": return <><div className="page-title"><div><h1>{t("care")}</h1><p>{t("careNote")}</p></div><button className="button primary" onClick={() => openForm("goal")} disabled={!workspace.families.length}><Plus />{t("newGoal")}</button></div><section className="panel care-list-panel"><GoalList goals={workspace.goals} workspace={workspace} locale={locale} onChange={loadWorkspaceAfterMutation} /></section></>;

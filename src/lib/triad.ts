@@ -5,7 +5,7 @@ import { z } from "zod";
 import { childScale, childScaleStaffNotes, currentTriadScaleIds, teacherScale, teacherScaleStaffNotes, triadScales } from "../domain/triad-scales";
 import { TRIAD_BUNDLE, triadRolesReady } from "../domain/triad-report";
 import { pair } from "../domain/zh-pair";
-import { parseStoredScale, parseTemplate } from "../domain/validation";
+import { instrumentWriteBlockReason, parseStoredScale, parseTemplate } from "../domain/validation";
 import { triadAdvice } from "../domain/triad-advice";
 import { ageAt } from "./access";
 import { hashPassword, limitLogin } from "./auth";
@@ -84,14 +84,13 @@ async function familyByJoinCode(client: PoolClient, code: string): Promise<Regis
 
 export interface FamilyJoinResult { userId: string; familyId: string; assessmentId: string; alreadyMember: boolean }
 
-// Demo mode can open the unvalidated triad. Service mode refuses while any
-// version these routes assign still has norm.validated !== true.
 export function assertPublicTriadOpen(): void {
   if (isDemoMode()) return;
   const assignedIds = new Set<string>(Object.values(currentTriadScaleIds));
   const assigned = triadScales.filter(scale => assignedIds.has(`${scale.id}@${scale.version}`));
-  if (assigned.length !== assignedIds.size || assigned.some(scale => scale.norm.validated !== true)) throw new HttpError(409, "正式服务尚未提供已验证常模的三方问卷，暂时不能创建或加入家庭。", "UNVALIDATED_INSTRUMENT");
-  if (assigned.some(scale => scale.demo)) throw new HttpError(409, "正式服务环境不能使用演示问卷创建或加入家庭。", "DEMO_INSTRUMENT");
+  const blockers = assigned.map(scale => instrumentWriteBlockReason(scale, "service"));
+  if (assigned.length !== assignedIds.size || blockers.includes("UNVALIDATED_INSTRUMENT")) throw new HttpError(409, "三方问卷尚未准备好，暂时不能创建或加入家庭。", "UNVALIDATED_INSTRUMENT");
+  if (blockers.includes("DEMO_INSTRUMENT")) throw new HttpError(409, "正式服务环境不能使用未开放的演示问卷创建或加入家庭。", "DEMO_INSTRUMENT");
 }
 
 // The caller holds the family lock and has validated the current account and consent.

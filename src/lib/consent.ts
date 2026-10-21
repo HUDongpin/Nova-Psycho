@@ -48,7 +48,7 @@ export function consentScopePredicate(alias: string, scope: ConsentScope): strin
   return `${name}.revoked_at IS NULL AND ${name}.scopes @> '["${scope}"]'::jsonb AND ${scopeNotRevokedSql(name, `'${scope}'`)}`;
 }
 
-export const ACTIVE_CONSENT_ROWS_SQL = `SELECT ${effectiveScopesSelect("consents")} AS scopes FROM consents WHERE family_id=$1 AND revoked_at IS NULL`;
+export const ACTIVE_CONSENT_ROWS_SQL = `SELECT consents.id, ${effectiveScopesSelect("consents")} AS scopes FROM consents WHERE family_id=$1 AND revoked_at IS NULL`;
 
 export function consentScopeGrantedSql(familyIdExpr: string, scope: ConsentScope): string {
   return `EXISTS (SELECT 1 FROM consents c WHERE c.family_id=${familyExpr(familyIdExpr)} AND ${consentScopePredicate("c", scope)})`;
