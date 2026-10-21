@@ -58,7 +58,7 @@ beforeEach(() => {
     if (sql.startsWith("SELECT id FROM scales")) return { rows: missingDefault ? [] : [{ id: values[0] }] };
     if (sql.includes("FROM assessments") && sql.includes("status='pending'")) {
       expect(locked).toBe(true);
-      return { rows: tasks.filter(task => task.status === "pending" && (task.version === values[2] || definitions[task.version]?.id === values[2])).map(task => ({ id: task.id, triad_round_id: task.triad_round_id })) };
+      return { rows: tasks.filter(task => task.status === "pending" && (task.version === values[2] || definitions[task.version]?.id === values[2])).map(task => ({ id: task.id, triad_round_id: task.triad_round_id, definition: definitions[task.version] })) };
     }
     if (sql.includes("FROM assessments") && sql.includes("submitted_at IS NOT NULL") && sql.includes("ORDER BY")) {
       expect(locked).toBe(true);
@@ -107,6 +107,20 @@ describe("parent version assignment compatibility", () => {
     tasks.push({ id: "other-pending", version: "custom@1.0.0", status: "pending", submitted_at: null, triad_round_id: null });
     const created = await createAssessment(actor, input("custom@1.1.0"));
     expect(created.id).not.toBe("other-pending"); expect(tasks).toHaveLength(2);
+  });
+
+  it("does not hand back an open growth-parent@1.2.0 task when 1.3.0 is requested", async () => {
+    tasks.push({ id: "open-1-2", version: "growth-parent@1.2.0", status: "pending", submitted_at: null, triad_round_id: "round-1-2" });
+    const before = structuredClone(tasks);
+    await expect(createAssessment(actor, input("growth-parent@1.3.0"))).rejects.toMatchObject({ status: 409, code: "PARENT_VERSION_PENDING" });
+    expect(tasks).toEqual(before);
+  });
+
+  it("reuses an open growth-parent@1.3.0 task when that same version is requested", async () => {
+    tasks.push({ id: "open-1-3", version: "growth-parent@1.3.0", status: "pending", submitted_at: null, triad_round_id: "round-1-3" });
+    const before = structuredClone(tasks);
+    expect(await createAssessment(actor, input("growth-parent@1.3.0"))).toEqual({ id: "open-1-3" });
+    expect(tasks).toEqual(before);
   });
 
   it("does not return a pending task after the current account has been revoked", async () => {
