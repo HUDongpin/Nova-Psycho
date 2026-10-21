@@ -51,6 +51,16 @@ describe("assessment rows after a triad report exists", () => {
     expect(simplified).not.toContain("<button");
   });
 
+  it("replaces stale report links with a privacy hold in both languages", () => {
+    const held = trio.map(item => ({ ...item, privacyRefreshRequired: true, phase: null }));
+    for (const locale of ["zh-CN", "zh-HK"] as const) {
+      const markup = renderToStaticMarkup(createElement(AssessmentList, { assessments: held, locale, navigate: () => undefined, adult: true }));
+      expect(markup.includes(locale === "zh-CN" ? "隐私保护" : "私隱保護")).toBe(true);
+      expect(markup.includes(locale === "zh-CN" ? "查看报告" : "查看報告")).toBe(false);
+      expect(markup.includes(locale === "zh-CN" ? "等待家长报告同意" : "等待家長報告同意")).toBe(false);
+    }
+  });
+
   it("tells a waiting child that the other two people have not finished", () => {
     const markup = html([
       row({ id: "child", respondentRole: "student", respondentName: "孩子", status: "queued", phase: "waiting", reportId: null })

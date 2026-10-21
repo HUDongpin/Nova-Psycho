@@ -1,6 +1,7 @@
 import type { DimensionScore, Locale, RespondentRole, ScaleDefinition, ScaleDimension, ScaleItem, StoredAnswer, TextPair, TriadReport } from "./types";
 import { answerVisible, scoreAssessment } from "./scoring";
 import { pair } from "./zh-pair";
+import { PARENT_REPORT_AUDIENCE_VERSION, parentReportWordAllowed } from "./report-privacy";
 
 export const TRIAD_BUNDLE = "growth-triad";
 const ROLE_ORDER: RespondentRole[] = ["student", "parent", "teacher"];
@@ -141,11 +142,12 @@ export function composeTriad(sources: TriadSource[]): TriadReport {
     const choices = value.flatMap(entry => { const label = choiceLabel(item, entry); return label ? [label] : []; });
     return choices.length ? [{ role: source.role, prompt: item.label, choices }] : [];
   }));
-  const words = adultSources.flatMap(source => source.scale.items.filter(item => item.report === "words").flatMap(item => {
+  const words = adultSources.flatMap(source => source.scale.items.filter(item => parentReportWordAllowed(source.scale, item)).flatMap(item => {
     const value = source.answers[item.id];
     return typeof value === "string" && value.trim() ? [{ role: source.role, prompt: item.label, value: value.trim() }] : [];
   }));
   return {
+    parentAudienceVersion: PARENT_REPORT_AUDIENCE_VERSION,
     title: pair("孩子的成长了解"),
     sources: ordered.map(source => ({ role: source.role, submittedAt: source.submittedAt })),
     safety, domains, portrait, situations, priorities, words
