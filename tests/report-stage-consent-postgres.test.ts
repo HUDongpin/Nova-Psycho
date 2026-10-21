@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { PoolClient } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Actor, AssessmentSnapshot } from "../src/domain/types";
 import { demoAdvice, demoScale, demoTemplate } from "../src/domain/demo";
@@ -84,6 +85,11 @@ describe.skipIf(!raceUrl)("PostgreSQL report stage consent races", () => {
     expect((await pool().query("SELECT id FROM reports WHERE family_id=$1", [familyId])).rows).toEqual([]);
     expect((await pool().query("SELECT file_key FROM report_files WHERE family_id=$1", [familyId])).rows).toEqual([]);
   }
+  async function expireClaim(client: PoolClient | ReturnType<typeof pool>) {
+    await client.query("UPDATE report_jobs SET lease_until=clock_timestamp()+interval '100 milliseconds' WHERE id=$1", [jobId]);
+    await expect.poll(async () => (await client.query("SELECT lease_until<=clock_timestamp() AS expired FROM report_jobs WHERE id=$1", [jobId])).rows[0].expired,
+      { timeout: 2000, interval: 20 }).toBe(true);
+  }
 
   it("honors a withdrawal queued ahead of narrative admission on the family row", async () => {
     const holder = await pool().connect();
@@ -154,4 +160,71 @@ describe.skipIf(!raceUrl)("PostgreSQL report stage consent races", () => {
     expect(renderPdf).toHaveBeenCalledTimes(2);
     expect((await pool().query("SELECT file_key FROM report_files WHERE family_id=$1", [familyId])).rows).toHaveLength(2);
   });
+
+  it.each(["family", "claim"] as const)("refuses narrative admission when its lease expires waiting for the %s lock", async waitingFor => {
+    const familyHolder = await pool().connect(), claimHolder = await pool().connect();
+    let familyOpen = false, claimOpen = false;
+    let running: ReturnType<typeof processReportJob> | undefined;
+    try {
+      await familyHolder.query("BEGIN"); familyOpen = true;
+      await familyHolder.query("SELECT id FROM families WHERE id=$1 FOR UPDATE", [familyId]);
+      running = processReportJob(jobId);
+      await waitForLock("SELECT id FROM families WHERE id=$1 AND region=$2 FOR SHARE");
+      if (waitingFor === "claim") {
+        await claimHolder.query("BEGIN"); claimOpen = true;
+        await claimHolder.query("SELECT id FROM report_jobs WHERE id=$1 FOR UPDATE", [jobId]);
+        await familyHolder.query("COMMIT"); familyOpen = false;
+        await waitForLock("claim_token=$2 AND state='running'");
+        await expireClaim(claimHolder);
+        await claimHolder.query("COMMIT"); claimOpen = false;
+      } else {
+        await expireClaim(pool());
+        await familyHolder.query("COMMIT"); familyOpen = false;
+      }
+      await expect(running).resolves.toMatchObject({ status: "retry_at" });
+      expect(vi.mocked(selectNarrative).mock.calls.length).toBe(0);
+      expect(vi.mocked(renderPdf).mock.calls.length).toBe(0);
+      expect((await pool().query("SELECT id FROM reports WHERE family_id=$1", [familyId])).rows).toEqual([]);
+    } finally {
+      if (familyOpen) await familyHolder.query("ROLLBACK");
+      if (claimOpen) await claimHolder.query("ROLLBACK");
+      familyHolder.release(); claimHolder.release();
+      await running;
+    }
+  }, 10_000);
+
+  it.each(["family", "claim"] as const)("refuses publication when its lease expires waiting for the %s lock", async waitingFor => {
+    const entered = deferred<void>(), finish = deferred<Buffer>();
+    vi.mocked(renderPdf).mockResolvedValueOnce(pdf).mockImplementationOnce(() => { entered.resolve(); return finish.promise; });
+    const familyHolder = await pool().connect(), claimHolder = await pool().connect();
+    let familyOpen = false, claimOpen = false;
+    const running = processReportJob(jobId);
+    try {
+      await entered.promise;
+      await familyHolder.query("BEGIN"); familyOpen = true;
+      await familyHolder.query("SELECT id FROM families WHERE id=$1 FOR UPDATE", [familyId]);
+      finish.resolve(pdf);
+      await waitForLock("SELECT id FROM families WHERE id=$1 AND region=$2 FOR UPDATE");
+      if (waitingFor === "claim") {
+        await claimHolder.query("BEGIN"); claimOpen = true;
+        await claimHolder.query("SELECT id FROM report_jobs WHERE id=$1 FOR UPDATE", [jobId]);
+        await familyHolder.query("COMMIT"); familyOpen = false;
+        await waitForLock("claim_token=$2 AND state='running'");
+        await expireClaim(claimHolder);
+        await claimHolder.query("COMMIT"); claimOpen = false;
+      } else {
+        await expireClaim(pool());
+        await familyHolder.query("COMMIT"); familyOpen = false;
+      }
+      await expect(running).resolves.toMatchObject({ status: "retry_at" });
+      expect(renderPdf).toHaveBeenCalledTimes(2);
+      expect((await pool().query("SELECT id FROM reports WHERE family_id=$1", [familyId])).rows).toEqual([]);
+      expect((await pool().query("SELECT file_key FROM report_files WHERE family_id=$1", [familyId])).rows).toEqual([]);
+    } finally {
+      if (familyOpen) await familyHolder.query("ROLLBACK");
+      if (claimOpen) await claimHolder.query("ROLLBACK");
+      familyHolder.release(); claimHolder.release();
+      finish.resolve(pdf); await running;
+    }
+  }, 10_000);
 });

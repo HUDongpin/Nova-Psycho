@@ -105,6 +105,10 @@ async function pauseDueReadyJobMissingParentReportConsent(jobId:string):Promise<
   });
 }
 type StageValue<T>={ok:true;value:T}|{ok:false;error:unknown};
+// Materialization puts the wall-clock lease check after any claim-row lock wait.
+const LOCK_LIVE_REPORT_CLAIM_SQL=`WITH locked_claim AS MATERIALIZED (
+  SELECT id,lease_until FROM report_jobs WHERE id=$1 AND claim_token=$2 AND state='running' FOR UPDATE
+) SELECT id FROM locked_claim WHERE lease_until>clock_timestamp()`;
 // Withdrawal takes the family UPDATE lock. Start one stage while its grant is
 // locked, then release before waiting for external work. In-flight work cannot
 // be unsent; the next stage and publication each need a fresh grant.
@@ -114,7 +118,7 @@ async function reportStage<T>(jobId:string,token:string,familyId:string,start:(a
     const admitted=await transaction(async client=>{
       const familyLock=await client.query("SELECT id FROM families WHERE id=$1 AND region=$2 FOR SHARE",[familyId,getConfig().region]);
       if(!familyLock.rows[0])throw new Error("Family deleted");
-      const claim=await client.query("SELECT id FROM report_jobs WHERE id=$1 AND claim_token=$2 AND state='running' AND lease_until>now() FOR UPDATE",[jobId,token]);
+      const claim=await client.query(LOCK_LIVE_REPORT_CLAIM_SQL,[jobId,token]);
       if(!claim.rows[0])throw new Error("Report claim expired or family deleted");
       const consent=await client.query<{scopes:unknown}>(ACTIVE_CONSENT_ROWS_SQL,[familyId]);
       if(!hasGranted(consent.rows,[PARENT_REPORT_SCOPE])){
@@ -258,7 +262,7 @@ async function runReportJob(jobId?:string):Promise<ReportJobResult>{
     const outcome=await transaction(async client=>{
       const familyLock=await client.query("SELECT id FROM families WHERE id=$1 AND region=$2 FOR UPDATE",[assessment.family_id,getConfig().region]);
       if(!familyLock.rows[0])throw new Error("Family deleted");
-      const claim=await client.query("SELECT id FROM report_jobs WHERE id=$1 AND claim_token=$2 AND state='running' AND lease_until>now() FOR UPDATE",[job.id,token]);
+      const claim=await client.query(LOCK_LIVE_REPORT_CLAIM_SQL,[job.id,token]);
       if(!claim.rows[0])throw new Error("Report claim expired or family deleted");
       if(syntheticTest){
         const members=await getSyntheticTestFamilyMembers(String(assessment.family_id),getConfig().region,client);

@@ -32,7 +32,7 @@ function database(withdrawOnFirstScopeRead = false) {
     if (sql.includes("WITH candidate AS")) return [{ id: JOB, assessment_id: ASSESSMENT, attempts: 1 }];
     if (sql.includes("SELECT * FROM assessments WHERE id=")) return [{ id: ASSESSMENT, family_id: FAMILY, snapshot, submitted_at: snapshot.submittedAt }];
     if (sql.includes("SELECT id FROM families") && /FOR (UPDATE|SHARE)/.test(sql)) { state.familyLocked = locked; return [{ id: FAMILY }]; }
-    if (sql.includes("SELECT id FROM report_jobs") && sql.includes("claim_token")) return [{ id: JOB }];
+    if (sql.includes("FROM report_jobs") && sql.includes("claim_token")) return [{ id: JOB }];
     if (sql.includes("AS scopes FROM consents")) {
       const rows = [{ scopes: scopes() }];
       state.scopeReads += 1;

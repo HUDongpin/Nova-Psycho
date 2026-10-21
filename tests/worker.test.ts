@@ -51,7 +51,7 @@ beforeEach(()=>{
   client.query.mockReset().mockImplementation(async(sql:string)=>{
     clientCalls.push(sql);
     if(sql.includes("AS scopes FROM consents"))return {rows:[{scopes:["parent_report"]}]};
-    if(sql.includes("SELECT id FROM families")||sql.includes("SELECT id FROM report_jobs WHERE id=$1 AND claim_token"))return {rows:[{id:"locked"}]};
+    if(sql.includes("SELECT id FROM families")||sql.includes("FROM report_jobs WHERE id=$1 AND claim_token"))return {rows:[{id:"locked"}]};
     return {rows:[]};
   });
   mockTransaction.mockImplementation((async(fn:(c:unknown)=>Promise<unknown>)=>fn(client)) as never);
