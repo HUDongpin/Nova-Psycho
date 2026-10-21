@@ -112,7 +112,7 @@ function apply(sql: string, values: unknown[] = []): Record<string, unknown>[] {
   if (sql.includes("respondent_role,submitted_at")) return assessments.filter(item => item.triad_round_id === values[0]).map(item => ({ respondent_role: item.respondent_role, submitted_at: item.submitted_at }));
   if (sql.includes("submitted_at IS NOT NULL") && sql.includes("triad_round_id=$3")) return assessments.filter(item => item.family_id === values[0] && item.region === values[1] && item.triad_round_id === values[2] && item.submitted_at).map(item => ({ id: item.id, respondent_role: item.respondent_role }));
   if (sql.includes("status='pending'") && sql.includes("s.scale_id=$3")) {
-    return assessments.filter(item => item.family_id === values[0] && item.respondent_id === values[1] && item.status === "pending" && scales.find(scale => scale.id === item.scale_version_id)?.scale_id === values[2]).map(item => ({ id: item.id, triad_round_id: item.triad_round_id }));
+    return assessments.filter(item => item.family_id === values[0] && item.respondent_id === values[1] && item.status === "pending" && scales.find(scale => scale.id === item.scale_version_id)?.scale_id === values[2]).map(item => ({ id: item.id, triad_round_id: item.triad_round_id, definition: scales.find(scale => scale.id === item.scale_version_id)?.definition }));
   }
   if (sql.includes("a.submitted_at") && sql.includes("s.scale_id=$3")) {
     return assessments.filter(item => item.family_id === values[0] && item.respondent_id === values[1] && item.submitted_at && scales.find(scale => scale.id === item.scale_version_id)?.scale_id === values[2]).slice(-1).map(item => ({ submitted_at: item.submitted_at }));
