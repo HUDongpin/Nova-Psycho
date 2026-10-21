@@ -5,17 +5,35 @@ import { createContext, useContext, useEffect, useMemo, useState, type ReactNode
 import type { Locale } from "./api";
 import { LocaleContext } from "./ui";
 
-// @clerk/localizations 4.22.1 leaves these authentication hints untranslated.
+// The installed Chinese resources leave these authentication hints/errors untranslated.
 const clerkLocalizations: Record<Locale, typeof zhCN> = {
   "zh-CN": {
     ...zhCN,
     formFieldInputPlaceholder__password: "请输入密码",
     formFieldInputPlaceholder__signUpPassword: "设置密码",
     formFieldInput__emailAddress_format: "示例格式：name@example.com",
+    signIn: {
+      ...zhCN.signIn,
+      start: { ...zhCN.signIn?.start, title: "登录 TopE", subtitle: "欢迎回来，继续你的陪伴之旅。", actionText: "还没有账号？", actionLink: "使用邮箱注册" },
+    },
+    unstable__errors: {
+      ...zhCN.unstable__errors,
+      form_password_incorrect: "密码不正确，请重试或使用其他方式登录。",
+      form_code_incorrect: "验证码不正确，请检查后重试。",
+    },
   },
   "zh-HK": {
     ...zhTW,
     formFieldInputPlaceholder__signUpPassword: "設定密碼",
+    signIn: {
+      ...zhTW.signIn,
+      start: { ...zhTW.signIn?.start, title: "登入 TopE", subtitle: "歡迎回來，繼續你的陪伴之旅。", actionText: "還沒有帳號？", actionLink: "使用電郵註冊" },
+    },
+    unstable__errors: {
+      ...zhTW.unstable__errors,
+      form_password_incorrect: "密碼不正確，請重試或使用其他方式登入。",
+      form_code_incorrect: "驗證碼不正確，請檢查後重試。",
+    },
   },
 };
 

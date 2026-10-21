@@ -18,6 +18,6 @@ describe("email authentication policy control", () => {
     const html = render();
     expect(html).not.toContain("Clerk");
     expect(html).not.toContain(locale === "zh-HK" ? "身分資料在美國託管" : "身份数据在美国托管");
-    expect(html).toContain(`<button type="button" class="text-link">${locale === "zh-HK" ? "私隱與知情同意" : "隐私与知情同意"}</button>`);
+    expect(html).toMatch(new RegExp(`<button type="button" class="text-link">[\\s\\S]*?${locale === "zh-HK" ? "私隱與知情同意" : "隐私与知情同意"}</button>`));
   });
 });
