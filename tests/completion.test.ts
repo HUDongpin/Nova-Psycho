@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { completionIssues, completionRules, type CompletionRules } from "../src/domain/completion";
 import { scoreAssessment } from "../src/domain/scoring";
 import { previewAnswers } from "../src/domain/triad-report";
-import { childScale, parentScale, teacherScale } from "../src/domain/triad-scales";
+import { childScale, childScaleBirthAge, childScaleStaffNotes, parentScale, teacherScale } from "../src/domain/triad-scales";
 
 function rulesFor(count: number, maxMissing: number): CompletionRules {
   const itemIds = Array.from({ length: count }, (_, index) => `q_${index + 1}`);
@@ -124,6 +124,15 @@ describe("questionnaire completion diagnostics", () => {
     conditional?.showIf?.anyOf.push(99);
     rules.items.find(item => item.excludeValues)?.excludeValues?.push(99);
     expect(scale).toEqual(original);
+  });
+
+  it.each([childScaleBirthAge, childScaleStaffNotes])("does not require birth-date youth items hidden from an under-12 child on $id@$version", scale => {
+    const answers = previewAnswers(scale);
+    for (const id of Object.keys(answers)) if (id.startsWith("c18_")) delete answers[id];
+    expect(scoreAssessment(scale, answers, { age: 11, region: "CN", role: "student" }).status).toBe("valid");
+    expect(completionIssues(completionRules(scale, 11), answers)).toEqual([]);
+    expect(completionIssues(completionRules(scale, 12), answers).filter(issue => issue.kind === "required_missing").map(issue => issue.itemId)).toEqual(["c18_1", "c18_2", "c18_3", "c18_4", "c18_5", "c18_6"]);
+    expect(completionRules(scale).items.find(item => item.id === "c18_1")?.required).toBe(true);
   });
 
   it.each([childScale, parentScale, teacherScale])("agrees with unchanged scoring coverage across $id dimension boundaries", scale => {

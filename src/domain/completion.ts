@@ -30,12 +30,14 @@ export type CompletionIssue =
       excludedItemIds: string[];
     };
 
-export function completionRules(scale: ScaleDefinition): CompletionRules {
+export function completionRules(scale: ScaleDefinition, age?: number): CompletionRules {
+  const birthAge = Number.isInteger(age) ? age : undefined;
   return {
     items: scale.items.map(item => ({
       id: item.id,
       kind: item.kind ?? "single",
-      required: item.required,
+      // Birth-date age removes the same items the survey hides. showIf stays on the rule.
+      required: item.required && !(birthAge !== undefined && item.visibleFromAge !== undefined && birthAge < item.visibleFromAge),
       ...(item.showIf ? { showIf: { itemId: item.showIf.itemId, anyOf: [...item.showIf.anyOf] } } : {}),
       ...(item.excludeValues ? { excludeValues: [...item.excludeValues] } : {})
     })),
