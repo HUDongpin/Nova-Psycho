@@ -22,6 +22,16 @@ import { currentContent,getScale,lockContent } from "./content";
 import { query,transaction } from "./db";
 import { HttpError,requireRole,validateId } from "./http";
 import { isSyntheticTestActorForFamily } from "./synthetic-testing";
+function storedScale(value:unknown):ScaleDefinition|undefined{
+  if(typeof value==="string"){try{return JSON.parse(value) as ScaleDefinition;}catch{return undefined;}}
+  return value&&typeof value==="object"?value as ScaleDefinition:undefined;
+}
+// Handing back an older parent form would publish service-team writing that the requested version keeps for staff.
+function parentStaffWritingWouldLeak(requested:ScaleDefinition,pending:ScaleDefinition|undefined):boolean{
+  if(!pending||requested.id!=="growth-parent"||pending.id!=="growth-parent")return false;
+  const pendingReport=new Map(pending.items.map(item=>[item.id,item.report]));
+  return requested.items.some(item=>item.report==="staff"&&pendingReport.get(item.id)==="words");
+}
 const answerSchema=z.record(z.string(),z.union([z.number(),z.array(z.number()).max(20),z.string().max(2000),z.null()])).transform(record=>{
   const answers:Record<string,number|number[]|string>={};
   for(const [key,value] of Object.entries(record)){
@@ -108,8 +118,9 @@ export async function createAssessment(actor:Actor,input:unknown){
     if(scale.definition.demo)await refuseDemoBesideOfficial(family.id,d.respondentId,actor.region,role,age,client);
     const parentVersions=scale.definition.bundle===TRIAD_BUNDLE&&scale.definition.id==="growth-parent";
     const pending=parentVersions
-      ?await client.query("SELECT a.id,a.triad_round_id FROM assessments a JOIN scales s ON s.id=a.scale_version_id WHERE a.family_id=$1 AND a.respondent_id=$2 AND s.scale_id=$3 AND a.status='pending' ORDER BY a.created_at,a.id LIMIT 1",[family.id,d.respondentId,scale.definition.id])
+      ?await client.query("SELECT a.id,a.triad_round_id,s.definition FROM assessments a JOIN scales s ON s.id=a.scale_version_id WHERE a.family_id=$1 AND a.respondent_id=$2 AND s.scale_id=$3 AND a.status='pending' ORDER BY a.created_at,a.id LIMIT 1",[family.id,d.respondentId,scale.definition.id])
       :await client.query("SELECT id,triad_round_id FROM assessments WHERE family_id=$1 AND respondent_id=$2 AND scale_version_id=$3 AND status='pending'",[family.id,d.respondentId,d.scaleVersionId]);
+    if(pending.rows[0]&&parentStaffWritingWouldLeak(scale.definition,storedScale(pending.rows[0].definition)))throw new HttpError(409,"已有一份旧版家长问卷尚未提交，暂时不能分配新版。请联系服务人员核对旧任务；不要为切换版本而继续提交旧问卷。","PARENT_VERSION_PENDING");
     if(pending.rows[0]){
       if(scale.definition.bundle===TRIAD_BUNDLE&&!pending.rows[0].triad_round_id){
         const roundId=await triadRoundFor(client,family.id,role);
@@ -138,7 +149,8 @@ export async function assessmentDetail(actor:Actor,id:string,locale:Locale){
   const supplements=surveySupplements(s,locale);
   const syntheticTest=a.status==="pending"?await isSyntheticTestActorForFamily(actor,String(a.family_id)):a.snapshot?.syntheticTest===true;
   const responseBlockedReason=a.status==="pending"&&!syntheticTest?instrumentWriteBlockReason(s,getConfig().mode):null;
-  return {id,status:a.status,...(responseBlockedReason?{responseBlockedReason}:{}),...(syntheticTest?{syntheticTest:true}:{}),childName:a.child_name,scaleTitle:text(s.title,locale),demo:effectiveDemo(s),description:text(s.description,locale),surveyJson:surveyDefinition(s,a.respondent_role,locale,{age:ageAt(String(a.birth_date).slice(0,10))}),...(s.bundle===TRIAD_BUNDLE?{completionRules:completionRules(s)}:{}),...(emphasis.length?{titleEmphasis:emphasis}:{}),...(supplements.length?{supplements}:{}),draftAnswers:a.status==="pending"?a.draft_answers:{},draftRevision:a.draft_revision,consentRequired:!await consentFor(a.family_id),phase,safetyGuidance};
+  const age=ageAt(String(a.birth_date).slice(0,10));
+  return {id,status:a.status,...(responseBlockedReason?{responseBlockedReason}:{}),...(syntheticTest?{syntheticTest:true}:{}),childName:a.child_name,scaleTitle:text(s.title,locale),demo:effectiveDemo(s),description:text(s.description,locale),surveyJson:surveyDefinition(s,a.respondent_role,locale,{age}),...(s.bundle===TRIAD_BUNDLE?{completionRules:completionRules(s,age)}:{}),...(emphasis.length?{titleEmphasis:emphasis}:{}),...(supplements.length?{supplements}:{}),draftAnswers:a.status==="pending"?a.draft_answers:{},draftRevision:a.draft_revision,consentRequired:!await consentFor(a.family_id),phase,safetyGuidance};
 }
 export async function saveDraft(actor:Actor,id:string,input:unknown){
   const {answers,revision}=z.object({answers:answerSchema,acknowledged:z.literal(true),revision:z.number().int().nonnegative()}).strict().parse(input),a=await ownAssessment(actor,id);
@@ -178,7 +190,7 @@ export async function submitAssessment(actor:Actor,id:string,input:unknown){
     if(score.status==="ineligible")throw new HttpError(422,"当前量表不适用于此孩子。","INELIGIBLE");
     if(statedAgeMismatch(scale,d.answers,age))score={...score,reviewFlags:["age_mismatch" as const]};
     if(scale.items.some(item=>item.gate!==undefined&&d.answers[item.id]!==item.gate))throw new HttpError(422,"需要先同意参加这次了解，才能提交。","ENTRY_GATE");
-    if(scale.bundle===TRIAD_BUNDLE&&score.status!=="valid")throw new HttpError(422,"请查看未完成的题目或资料不足的部分。","INCOMPLETE_TRIAD",undefined,completionIssues(completionRules(scale),d.answers));
+    if(scale.bundle===TRIAD_BUNDLE&&score.status!=="valid")throw new HttpError(422,"请查看未完成的题目或资料不足的部分。","INCOMPLETE_TRIAD",undefined,completionIssues(completionRules(scale,age),d.answers));
     // Only a new submission depends on current content. Replays above retain the
     // accepted snapshot even when its retired scale's advice is later removed.
     await lockContent(client);

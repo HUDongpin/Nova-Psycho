@@ -50,7 +50,7 @@ export default function NovaApp() {
     draftSessions.suspend(); cancelRequests();
     if (!mounted.current) return;
     setWorkspace(null); setForm(null); setStatus(""); setRefreshing(false);
-    setSession(value => value ? { ...value, user: null } : null);
+    setSession(value => value ? { ...value, user: null, identityState: value.sessionMethod === "test" ? "signed_out" : value.identityState } : null);
   };
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; cancelRequests(); }; }, [cancelRequests]);
   const navigate = useCallback((value: Route) => { window.location.hash = `${value.page}${value.id ? `/${encodeURIComponent(value.id)}` : ""}`; setRoute(value); setMobileMenu(false); setStatus(""); document.getElementById("main-content")?.focus(); window.scrollTo({ top: 0, behavior: "instant" }); }, []);
@@ -218,7 +218,7 @@ export default function NovaApp() {
   }
   function returnToOwnerLogin() {
     draftSessions.suspend(); cancelRequests(); setWorkspace(null); setForm(null); setStatus("");
-    setSession(value => value ? { ...value, user: null } : null);
+    setSession(value => value ? { ...value, user: null, identityState: value.sessionMethod === "test" ? "signed_out" : value.identityState } : null);
   }
   async function discardRetainedDrafts() {
     cancelRequests(); draftSessions.discardAll(); setWorkspace(null); setForm(null); setStatus(""); updateDraftNotice(value => value + 1);

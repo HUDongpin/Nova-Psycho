@@ -73,10 +73,12 @@ describe("parent-report consent and exactly one report", () => {
   });
 
   it("pauses a claimed job when consent is withdrawn, then one re-consent resumes that same job", async () => {
+    let parentReportGranted = false;
     vi.mocked(query).mockImplementation((async (sql: string) => {
       const text = String(sql);
       if (text.includes("WITH candidate")) return [{ id: JOB, assessment_id: ASSESSMENT, attempts: 1 }];
       if (text.includes("FROM assessments WHERE id=$1")) return [{ id: ASSESSMENT, family_id: FAMILY, snapshot, submitted_at: snapshot.submittedAt }];
+      if (text.includes("AS scopes FROM consents")) return [{ scopes: parentReportGranted ? ["assessment", "sensitive_data", "parent_report"] : ["assessment", "sensitive_data"] }];
       if (text.includes("FROM families f WHERE f.id=$1")) return [{ id: FAMILY, region: "CN", family_name: "Synthetic", child_name: "Synthetic child", birth_date: "2014-01-01", grade: "S2", guardian_label: "Synthetic guardian", assigned_to: null, created_at: new Date() }];
       return [];
     }) as never);
@@ -106,6 +108,7 @@ describe("parent-report consent and exactly one report", () => {
     }) };
     vi.mocked(dispatchAssessmentReport).mockClear();
     vi.mocked(transaction).mockImplementationOnce((async (fn: (client: PoolClient) => Promise<unknown>) => fn(client as unknown as PoolClient)) as never);
+    parentReportGranted = true;
     await recordConsent(actor, FAMILY, { action: "grant", scope: "parent_report", guardianName: "Synthetic guardian" });
     expect(resumed).toEqual([]);
     expect(vi.mocked(dispatchAssessmentReport).mock.calls.map(call => call[0])).toEqual([ASSESSMENT]);
@@ -117,7 +120,7 @@ describe("parent-report consent and exactly one report", () => {
       if (sql.includes("INSERT INTO reports")) return { rows: [{ id: ASSESSMENT }] };
       return { rows: [{ id: "locked" }] };
     }) };
-    vi.mocked(transaction).mockImplementationOnce((async (fn: (client: PoolClient) => Promise<unknown>) => fn(publishing as unknown as PoolClient)) as never);
+    vi.mocked(transaction).mockImplementation((async (fn: (client: PoolClient) => Promise<unknown>) => fn(publishing as unknown as PoolClient)) as never);
     await expect(processReportJob(JOB)).resolves.toEqual({ status: "published" });
     expect(published.filter(sql => sql.includes("INSERT INTO reports"))).toHaveLength(1);
   });
