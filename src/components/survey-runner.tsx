@@ -4,6 +4,7 @@ import { Model } from "survey-core";
 import { Survey } from "survey-react-ui";
 import "survey-core/i18n/simplified-chinese";
 import "survey-core/i18n/traditional-chinese";
+import "../app/garden-survey.css";
 import { ArrowClockwise, CheckCircle, CircleNotch, Copy, FloppyDisk, Warning } from "@phosphor-icons/react";
 import { ApiError, errorMessage, type Locale, type SubmissionPhase, type SurveyRecord } from "./api";
 import { AssessmentDraftSession } from "./draft-session";
@@ -14,6 +15,8 @@ import { configureTitleEmphasis } from "./survey-presentation";
 import { SurveyNotice } from "./survey-notice";
 import { SurveySupplementController } from "./survey-supplement-controller";
 import { SurveySupplements } from "./survey-supplements";
+import { SurveyGardenIntro, SurveyGardenJourney, SurveyGardenProgress } from "./survey-garden";
+import { createQuestionChapters } from "./survey-progress";
 import { ErrorNotice, Field } from "./ui";
 
 export default function SurveyRunner({ record, draft, locale, onSubmitted, onReloadLatest, openPrivacy, privacyOpen = false }: {
@@ -49,6 +52,7 @@ export default function SurveyRunner({ record, draft, locale, onSubmitted, onRel
   lockedRef.current = locked;
   const privacyOpenRef = useRef(privacyOpen);
   privacyOpenRef.current = privacyOpen;
+  const chapters = useMemo(() => createQuestionChapters(record.surveyJson), [record.surveyJson]);
 
   const { model, completionNavigation, supplementController } = useMemo(() => {
     const survey = new Model(record.surveyJson);
@@ -90,7 +94,7 @@ export default function SurveyRunner({ record, draft, locale, onSubmitted, onRel
   // Bind before passive draft/auto-advance listeners so hidden details are
   // removed before any consumer observes a changed parent answer.
   useLayoutEffect(() => { supplementController.connect(questionsRef.current); return () => supplementController.dispose(); }, [supplementController]);
-  useEffect(() => { model.mode = locked ? "display" : "edit"; model.showProgressBar = !locked; }, [model, locked]);
+  useEffect(() => { model.mode = locked ? "display" : "edit"; }, [model, locked]);
   useEffect(() => { completionNavigation.connect(); return () => completionNavigation.dispose(); }, [completionNavigation]);
   useEffect(() => { if (locked) completionNavigation.cancel(); }, [locked, completionNavigation]);
   useLayoutEffect(() => {
@@ -180,6 +184,8 @@ export default function SurveyRunner({ record, draft, locale, onSubmitted, onRel
   const issues = snapshot.completionAttempted ? surveyCompletionIssues(model, record.completionRules, snapshot.completionIssues) : [];
 
   return <div className="survey-container">
+    {!acknowledged && <SurveyGardenIntro locale={locale} />}
+    <SurveyGardenJourney locale={locale} acknowledged={acknowledged} submitting={snapshot.submitting} />
     <SurveyNotice locale={locale} acknowledged={acknowledged} disabled={snapshot.submitting || snapshot.conflict || sessionLocked || record.consentRequired} consentRequired={record.consentRequired} onAcknowledged={value => { setAcknowledged(value); draft.setAcknowledged(value, locale); }} onOpen={() => { advanceRef.current?.cancel(); completionNavigation.cancel(); openPrivacy(); }} />
     {snapshot.conflict && <section className="draft-conflict" role="alert">
       <div className="draft-conflict-heading"><Warning size={22} /><h2>{t("draftConflictTitle")}</h2></div>
@@ -190,8 +196,9 @@ export default function SurveyRunner({ record, draft, locale, onSubmitted, onRel
         <button type="button" className="button primary" disabled={reloading || sessionLocked} onClick={async () => { setReloading(true); try { await onReloadLatest(); } catch (err) { setError(errorMessage(err)); setReloading(false); } }}><ArrowClockwise className={reloading ? "spin" : ""} />{t("reloadLatestDraft")}</button>
       </div>
     </section>}
-    <div className="survey-save-status" aria-live="polite" hidden={record.consentRequired || !acknowledged || snapshot.conflict}>
-      {snapshot.status === "saved" ? <CheckCircle weight="fill" /> : snapshot.status === "saving" || snapshot.submitting ? <CircleNotch className="spin" /> : <FloppyDisk />}
+    {acknowledged && !record.consentRequired && !snapshot.conflict && <SurveyGardenProgress model={model} chapters={chapters} locale={locale} />}
+    <div className="survey-save-status" data-status={snapshot.status} aria-live="polite" hidden={record.consentRequired || !acknowledged || snapshot.conflict}>
+      {snapshot.status === "saved" ? <CheckCircle weight="fill" /> : snapshot.status === "saving" || snapshot.submitting ? <CircleNotch className="spin" /> : snapshot.status === "failed" ? <Warning /> : <FloppyDisk />}
       <span>{t(snapshot.status === "saved" ? "savedDraft" : snapshot.status === "saving" || snapshot.submitting ? "saving" : snapshot.status === "failed" ? "saveFailed" : "unsaved")}</span>
       {snapshot.status === "failed" && <button className="text-link" disabled={sessionLocked} onClick={() => void draft.save(locale).catch(() => undefined)}>{t("saveDraft")}</button>}
     </div>
