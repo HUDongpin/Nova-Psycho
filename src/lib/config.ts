@@ -4,6 +4,7 @@ export interface Config {
   region:Region;mode:"demo"|"service";databaseUrl:string;publicUrl:string;reportDir:string;reportKey:Buffer;siblingUrl:string|null;
   reportStorage:"filesystem"|"database";workerMode:"continuous"|"queue";queueRegion:string|null;dataRegion:"CN"|"HK"|"SG";
   ai:{enabled:boolean;url:string;key:string;model:string;scope:string};
+  triadAiEnabled:boolean;
 }
 export function getConfig():Config{
   const region=process.env.NOVA_REGION;
@@ -47,6 +48,6 @@ export function getConfig():Config{
   }
   const sibling=process.env.NOVA_DEMO_SIBLING_URL;
   const siblingUrl=mode==="demo"&&sibling&&["localhost","127.0.0.1"].includes(new URL(sibling).hostname)?sibling:null;
-  return {region,mode,databaseUrl,publicUrl:url.origin,reportDir:resolved,reportKey:Buffer.from(key,"hex"),reportStorage,workerMode,queueRegion,dataRegion,siblingUrl,ai};
+  return {region,mode,databaseUrl,publicUrl:url.origin,reportDir:resolved,reportKey:Buffer.from(key,"hex"),reportStorage,workerMode,queueRegion,dataRegion,siblingUrl,ai,triadAiEnabled:process.env.NOVA_TRIAD_AI_ENABLED==="true"};
 }
 export function isDemoMode():boolean{return getConfig().mode==="demo";}

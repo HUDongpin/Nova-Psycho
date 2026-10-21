@@ -2,12 +2,13 @@ import { randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
 import type { AssessmentSnapshot,Locale,ReportPayload,StoredAnswer } from "../domain/types";
 import { eligibleAdviceIds, selectNarrative } from "../domain/narrative";
+import { buildTriadNarrativeSource,selectTriadNarrative,triadTemplateSelection,type TriadNarrativeSource } from "../domain/triad-narrative";
 import { composeTriad,TRIAD_BUNDLE,triadRolesReady } from "../domain/triad-report";
 import { compareTriad, type TriadComparisonSource } from "../domain/triad-comparison";
 import { compareResults } from "../domain/scoring";
 import { reportHtml } from "../domain/report-html";
 import { instrumentWriteBlockReason, normValidated } from "../domain/validation";
-import { ACTIVE_CONSENT_ROWS_SQL, PARENT_REPORT_SCOPE, consentScopeGrantedSql, hasGranted } from "./consent";
+import { ACTIVE_CONSENT_ROWS_SQL, PARENT_REPORT_SCOPE, consentScopePredicate, consentScopeGrantedSql, hasGranted } from "./consent";
 import { getConfig, isDemoMode } from "./config";
 import { query,transaction } from "./db";
 import { renderPdf } from "./pdf";
@@ -25,6 +26,13 @@ export type ReportJobResult=
   |{status:"paused"}
   |{status:"retry_at";retryAt:string}
   |{status:"terminal"};
+export interface ReportWorkerDependencies {narrativeFetcher?:typeof fetch}
+const AI_CONSENT_IDS_SQL=`SELECT c.id FROM consents c WHERE c.family_id=$1 AND ${consentScopePredicate("c","ai_processing")} ORDER BY c.id`;
+function consentIds(rows:{id:string}[]):string[]{return rows.map(row=>row.id).sort();}
+function sameConsentIds(expected:string[],actual:{id:string}[]):boolean{
+  const current=consentIds(actual);
+  return expected.length>0&&current.length===expected.length&&current.every((id,index)=>id===expected[index]);
+}
 export async function processDeletionJobs():Promise<"done"|"busy">{
   if(getConfig().reportStorage==="database")return "done";
   const jobs=await query("SELECT file_key FROM file_deletion_jobs LIMIT 50");
@@ -57,12 +65,12 @@ export async function recordHeartbeat(workerId:string):Promise<void>{
       cycles=CASE WHEN worker_heartbeats.worker_id<>EXCLUDED.worker_id THEN 1 ELSE worker_heartbeats.cycles+1 END`,
     [getConfig().region,workerId]);
 }
-export async function processOneJob():Promise<boolean>{
-  return (await runReportJob()).status!=="already_done";
+export async function processOneJob(dependencies:ReportWorkerDependencies={}):Promise<boolean>{
+  return (await runReportJob(undefined,dependencies)).status!=="already_done";
 }
-export async function processReportJob(jobId:string):Promise<ReportJobResult>{
+export async function processReportJob(jobId:string,dependencies:ReportWorkerDependencies={}):Promise<ReportJobResult>{
   validateId(jobId);
-  return runReportJob(jobId);
+  return runReportJob(jobId,dependencies);
 }
 async function unclaimedJobResult(jobId:string|undefined):Promise<ReportJobResult>{
   if(!jobId)return {status:"already_done"};
@@ -105,6 +113,7 @@ async function pauseDueReadyJobMissingParentReportConsent(jobId:string):Promise<
   });
 }
 type StageValue<T>={ok:true;value:T}|{ok:false;error:unknown};
+interface ReportStageConsent {aiConsented:boolean;aiConsentIds:string[]}
 // Materialization puts the wall-clock lease check after any claim-row lock wait.
 const LOCK_LIVE_REPORT_CLAIM_SQL=`WITH locked_claim AS MATERIALIZED (
   SELECT id,lease_until FROM report_jobs WHERE id=$1 AND claim_token=$2 AND state='running' FOR UPDATE
@@ -112,7 +121,7 @@ const LOCK_LIVE_REPORT_CLAIM_SQL=`WITH locked_claim AS MATERIALIZED (
 // Withdrawal takes the family UPDATE lock. Start one stage while its grant is
 // locked, then release before waiting for external work. In-flight work cannot
 // be unsent; the next stage and publication each need a fresh grant.
-async function reportStage<T>(jobId:string,token:string,familyId:string,start:(aiConsented:boolean)=>Promise<T>):Promise<{status:"paused"}|{status:"completed";value:T}>{
+async function reportStage<T>(jobId:string,token:string,familyId:string,start:(consent:ReportStageConsent)=>Promise<T>):Promise<{status:"paused"}|{status:"completed";value:T}>{
   let pending:Promise<StageValue<T>>|undefined;
   try{
     const admitted=await transaction(async client=>{
@@ -120,12 +129,13 @@ async function reportStage<T>(jobId:string,token:string,familyId:string,start:(a
       if(!familyLock.rows[0])throw new Error("Family deleted");
       const claim=await client.query(LOCK_LIVE_REPORT_CLAIM_SQL,[jobId,token]);
       if(!claim.rows[0])throw new Error("Report claim expired or family deleted");
-      const consent=await client.query<{scopes:unknown}>(ACTIVE_CONSENT_ROWS_SQL,[familyId]);
+      const consent=await client.query<{id:string;scopes:unknown}>(ACTIVE_CONSENT_ROWS_SQL,[familyId]);
       if(!hasGranted(consent.rows,[PARENT_REPORT_SCOPE])){
         await client.query("UPDATE report_jobs SET state='paused', lease_until=NULL, claim_token=NULL, last_error_code='PARENT_REPORT_CONSENT_REQUIRED', attempts=GREATEST(attempts-1,0) WHERE id=$1 AND claim_token=$2 AND state='running'",[jobId,token]);
         return false;
       }
-      pending=start(hasGranted(consent.rows,["ai_processing"])).then(value=>({ok:true,value} as const),error=>({ok:false,error} as const));
+      const aiConsents=consent.rows.filter(row=>hasGranted([row],["ai_processing"]));
+      pending=start({aiConsented:aiConsents.length>0,aiConsentIds:consentIds(aiConsents)}).then(value=>({ok:true,value} as const),error=>({ok:false,error} as const));
       return true;
     });
     if(!admitted)return {status:"paused"};
@@ -151,7 +161,7 @@ async function pauseIdleJobsMissingParentReportConsent():Promise<boolean>{
   }
   return pausedAny;
 }
-async function runReportJob(jobId?:string):Promise<ReportJobResult>{
+async function runReportJob(jobId:string|undefined,dependencies:ReportWorkerDependencies):Promise<ReportJobResult>{
   const token=randomUUID();
   const jobs=await query(`WITH candidate AS (
     SELECT j.id,j.attempts>=3 AS attempt_limit_reached FROM report_jobs j JOIN assessments a ON a.id=j.assessment_id
@@ -168,6 +178,7 @@ async function runReportJob(jobId?:string):Promise<ReportJobResult>{
   }
   const keys:Partial<Record<Locale,string>>={};
   const pdfs:Partial<Record<Locale,Buffer>>={};
+  const attemptedKeys=new Set<string>();
   let unboundTriad=false;
   let blockCode:string|null=null;
   let syntheticTest=false;
@@ -195,15 +206,18 @@ async function runReportJob(jobId?:string):Promise<ReportJobResult>{
     let publishIds=[assessment.id as string];
     const sources:AssessmentSnapshot[]=[snapshot];
     let sourceIdentities:SyntheticSourceIdentity[]=[assessment as SyntheticSourceIdentity];
+    let triadSelection:{sources:TriadNarrativeSource[];consentIds:string[]}|undefined;
     if(snapshot.scale.bundle===TRIAD_BUNDLE){
       unboundTriad=!assessment.triad_round_id||!job.source_assessment_ids;
       if(unboundTriad)throw new Error("Triad sources require review");
       const sourceIds=job.source_assessment_ids as string[];
       if(sourceIds.length!==3||new Set(sourceIds).size!==3||!sourceIds.includes(assessment.id))throw new Error("Invalid triad sources");
       const siblings=await query("SELECT id,respondent_role,answers,snapshot,submitted_at,respondent_id FROM assessments WHERE id=ANY($1::uuid[]) AND family_id=$2 AND region=$3 AND triad_round_id=$4 AND submitted_at IS NOT NULL",[sourceIds,assessment.family_id,getConfig().region,assessment.triad_round_id]);
-      if(siblings.length!==3||!triadRolesReady(siblings.map(row=>row.respondent_role))||siblings.some(row=>row.snapshot?.scale?.bundle!==TRIAD_BUNDLE))throw new Error("Triad incomplete");
+      if(siblings.length!==3||new Set(siblings.map(row=>row.id)).size!==3||!triadRolesReady(siblings.map(row=>row.respondent_role))||siblings.some(row=>!sourceIds.includes(row.id)||row.snapshot?.scale?.bundle!==TRIAD_BUNDLE))throw new Error("Triad incomplete");
       if(syntheticTest&&!syntheticSourcesMatch(siblings as SyntheticSourceIdentity[],syntheticMembers!))rejectSyntheticScope();
       for(const row of siblings)rejectSnapshot(row.snapshot as AssessmentSnapshot);
+      if(siblings.some(row=>row.snapshot.score.region!==getConfig().region||row.snapshot.score.respondentRole!==row.respondent_role||!row.snapshot.scale.roles.includes(row.respondent_role)))throw new Error("Invalid triad source snapshot");
+      if(siblings.find(row=>row.respondent_role==="parent")?.id!==assessment.id)throw new Error("Invalid triad report owner");
       sources.splice(0,sources.length,...siblings.map(row=>row.snapshot as AssessmentSnapshot));
       sourceIdentities=siblings as SyntheticSourceIdentity[];
       // Select one completed round before this round, even when its report failed
@@ -226,11 +240,19 @@ async function runReportJob(jobId?:string):Promise<ReportJobResult>{
         const stored=row.snapshot as AssessmentSnapshot;
         return {role:row.respondent_role,respondentId:row.respondent_id,scale:stored.scale,score:stored.score,submittedAt:new Date(row.submitted_at).toISOString()};
       };
-      const composed=await reportStage(job.id,token,assessment.family_id,async()=>{
+      const narrativeSources=siblings.map(row=>buildTriadNarrativeSource(row.respondent_role,row.snapshot.scale.dimensions,row.snapshot.score,row.snapshot.aiConsented));
+      const composed=await reportStage(job.id,token,assessment.family_id,async({aiConsented,aiConsentIds})=>{
         const comparisons=compareTriad(siblings.map(comparisonSource),previous.length?previous.map(comparisonSource):null);
         const triad=composeTriad(siblings.map(row=>{const stored=row.snapshot as AssessmentSnapshot;return {role:row.respondent_role,scale:stored.scale,answers:row.answers as Record<string,StoredAnswer>,score:stored.score,submittedAt:new Date(row.submitted_at).toISOString()};}));
         triad.comparisons=comparisons;
-        return {...snapshot,selectedAdviceIds:[],generationMode:"template",fallbackReason:"triad_combined",aiModel:null,
+        triadSelection={sources:narrativeSources,consentIds:aiConsentIds};
+        const config=getConfig();
+        let selection=syntheticTest?triadTemplateSelection(narrativeSources,snapshot.advice,"synthetic_test")
+          :await selectTriadNarrative(narrativeSources,snapshot.advice,config.ai,{triadEnabled:config.triadAiEnabled,currentAiConsented:aiConsented},dependencies.narrativeFetcher);
+        if(selection.generationMode==="ai"&&!sameConsentIds(aiConsentIds,await query<{id:string}>(AI_CONSENT_IDS_SQL,[assessment.family_id]))){
+          selection=triadTemplateSelection(narrativeSources,snapshot.advice,"ai_consent_changed");
+        }
+        return {...snapshot,...selection,
           comparison:comparisons.some(comparison=>comparison.available)?{available:true}:{available:false,reason:previous.length?"incomplete":"first_assessment"},
           triad,score:{...snapshot.score,risk:triad.safety.length>0,riskMessages:triad.safety}} satisfies ReportPayload;
       });
@@ -238,7 +260,7 @@ async function runReportJob(jobId?:string):Promise<ReportJobResult>{
       payload=composed.value;
       publishIds=siblings.map(row=>row.id);
     }else{
-      const selection=await reportStage(job.id,token,assessment.family_id,async aiConsented=>syntheticTest
+      const selection=await reportStage(job.id,token,assessment.family_id,async({aiConsented})=>syntheticTest
         ?{selectedAdviceIds:eligibleAdviceIds(snapshot),generationMode:"template" as const,fallbackReason:"synthetic_test",aiModel:null}
         :selectNarrative({...snapshot,aiConsented:snapshot.aiConsented&&aiConsented},getConfig().ai));
       if(selection.status==="paused")return {status:"paused"};
@@ -248,47 +270,67 @@ async function runReportJob(jobId?:string):Promise<ReportJobResult>{
     }
     if(syntheticTest)payload={...payload,syntheticTest:true,aiConsented:false,generationMode:"template",aiModel:null,score:{...payload.score,demo:true}};
     if(sources.some(item=>!normValidated(item?.scale?.norm)))payload={...payload,score:{...payload.score,demo:true}};
-    const htmlDocuments={"zh-CN":reportHtml(payload,"zh-CN"),"zh-HK":reportHtml(payload,"zh-HK")};
-    for(const locale of ["zh-CN","zh-HK"] as const){
-      const rendered=await reportStage(job.id,token,assessment.family_id,()=>renderPdf(htmlDocuments[locale]));
-      if(rendered.status==="paused"){
-        if(getConfig().reportStorage==="filesystem")for(const key of Object.values(keys))await removePrivatePdf(key).catch(()=>{});
+    for(let renderPass=0;renderPass<2;renderPass++){
+      const htmlDocuments={"zh-CN":reportHtml(payload,"zh-CN"),"zh-HK":reportHtml(payload,"zh-HK")};
+      const renderToken=renderPass===0?token:randomUUID();
+      for(const locale of ["zh-CN","zh-HK"] as const){
+        const rendered=await reportStage(job.id,token,assessment.family_id,()=>renderPdf(htmlDocuments[locale]));
+        if(rendered.status==="paused"){
+          if(getConfig().reportStorage==="filesystem")for(const key of attemptedKeys)await removePrivatePdf(key).catch(()=>{});
+          return {status:"paused"};
+        }
+        const key=`${assessment.id}.${renderToken}.${locale}.pdf.enc`;keys[locale]=key;attemptedKeys.add(key);
+        if(getConfig().reportStorage==="database")pdfs[locale]=rendered.value;
+        else await writePrivatePdf(key,rendered.value);
+      }
+      const outcome=await transaction(async client=>{
+        const familyLock=await client.query("SELECT id FROM families WHERE id=$1 AND region=$2 FOR UPDATE",[assessment.family_id,getConfig().region]);
+        if(!familyLock.rows[0])throw new Error("Family deleted");
+        const claim=await client.query(LOCK_LIVE_REPORT_CLAIM_SQL,[job.id,token]);
+        if(!claim.rows[0])throw new Error("Report claim expired or family deleted");
+        if(syntheticTest){
+          const members=await getSyntheticTestFamilyMembers(String(assessment.family_id),getConfig().region,client);
+          const current=await client.query<SyntheticSourceIdentity>("SELECT id,respondent_id,respondent_role FROM assessments WHERE id=ANY($1::uuid[]) AND family_id=$2 AND region=$3 AND triad_round_id IS NOT DISTINCT FROM $4::uuid AND submitted_at IS NOT NULL FOR SHARE",[publishIds,assessment.family_id,getConfig().region,assessment.triad_round_id??null]);
+          if(!members||current.rows.length!==sourceIdentities.length||!syntheticSourcesMatch(current.rows,members)||
+            current.rows.some(row=>!sourceIdentities.some(source=>source.id===row.id&&source.respondent_id===row.respondent_id&&source.respondent_role===row.respondent_role)))rejectSyntheticScope();
+        }
+        const consent=await client.query<{scopes:unknown}>(ACTIVE_CONSENT_ROWS_SQL,[assessment.family_id]);
+        if(!hasGranted(consent.rows,[PARENT_REPORT_SCOPE])){
+          await client.query("UPDATE report_jobs SET state='paused', lease_until=NULL, claim_token=NULL, last_error_code='PARENT_REPORT_CONSENT_REQUIRED', attempts=GREATEST(attempts-1,0) WHERE id=$1 AND claim_token=$2 AND state='running'",[job.id,token]);
+          return "paused" as const;
+        }
+        if(triadSelection&&payload.generationMode==="ai"){
+          const current=await client.query<{id:string}>(AI_CONSENT_IDS_SQL,[assessment.family_id]);
+          if(!sameConsentIds(triadSelection.consentIds,current.rows))return "ai_consent_changed" as const;
+        }
+        if(getConfig().reportStorage==="database")for(const locale of ["zh-CN","zh-HK"] as const){
+          await writePrivatePdf(keys[locale]!,pdfs[locale]!,client);
+        }
+        await client.query("INSERT INTO reports(id,assessment_id,family_id,region,payload,pdf_keys,created_at,html_documents) VALUES($1,$1,$2,$3,$4,$5,$6,$7) ON CONFLICT(assessment_id) DO NOTHING",[assessment.id,assessment.family_id,getConfig().region,JSON.stringify(payload),JSON.stringify(keys),assessment.submitted_at,JSON.stringify(htmlDocuments)]);
+        await client.query("UPDATE assessments SET status='published' WHERE id=ANY($1::uuid[])",[publishIds]);
+        await client.query("UPDATE report_jobs SET state='done',lease_until=NULL,last_error_code=NULL WHERE id=$1 AND claim_token=$2",[job.id,token]);
+        await client.query("INSERT INTO audit_events(region,action,entity_id) VALUES($1,'report.auto_published',$2)",[getConfig().region,assessment.id]);
+        return "published" as const;
+      });
+      if(outcome==="ai_consent_changed"){
+        if(getConfig().reportStorage==="filesystem"){
+          const published=await query<{pdf_keys:Record<Locale,string>}>("SELECT pdf_keys FROM reports WHERE assessment_id=$1 AND region=$2",[assessment.id,getConfig().region]);
+          const referenced=new Set(Object.values(published[0]?.pdf_keys??{}));
+          for(const key of attemptedKeys){
+            if(referenced.has(key))continue;
+            if(await removePrivatePdf(key).catch(()=>undefined)==="done")attemptedKeys.delete(key);
+          }
+        }
+        payload={...payload,...triadTemplateSelection(triadSelection!.sources,snapshot.advice,"ai_consent_changed")};
+        continue;
+      }
+      if(outcome==="paused"){
+        if(getConfig().reportStorage==="filesystem")for(const key of attemptedKeys)await removePrivatePdf(key).catch(()=>{});
         return {status:"paused"};
       }
-      const key=`${assessment.id}.${token}.${locale}.pdf.enc`;keys[locale]=key;
-      if(getConfig().reportStorage==="database")pdfs[locale]=rendered.value;
-      else await writePrivatePdf(key,rendered.value);
+      return {status:"published"};
     }
-    const outcome=await transaction(async client=>{
-      const familyLock=await client.query("SELECT id FROM families WHERE id=$1 AND region=$2 FOR UPDATE",[assessment.family_id,getConfig().region]);
-      if(!familyLock.rows[0])throw new Error("Family deleted");
-      const claim=await client.query(LOCK_LIVE_REPORT_CLAIM_SQL,[job.id,token]);
-      if(!claim.rows[0])throw new Error("Report claim expired or family deleted");
-      if(syntheticTest){
-        const members=await getSyntheticTestFamilyMembers(String(assessment.family_id),getConfig().region,client);
-        const current=await client.query<SyntheticSourceIdentity>("SELECT id,respondent_id,respondent_role FROM assessments WHERE id=ANY($1::uuid[]) AND family_id=$2 AND region=$3 AND triad_round_id IS NOT DISTINCT FROM $4::uuid AND submitted_at IS NOT NULL FOR SHARE",[publishIds,assessment.family_id,getConfig().region,assessment.triad_round_id??null]);
-        if(!members||current.rows.length!==sourceIdentities.length||!syntheticSourcesMatch(current.rows,members)||
-          current.rows.some(row=>!sourceIdentities.some(source=>source.id===row.id&&source.respondent_id===row.respondent_id&&source.respondent_role===row.respondent_role)))rejectSyntheticScope();
-      }
-      const consent=await client.query<{scopes:unknown}>(ACTIVE_CONSENT_ROWS_SQL,[assessment.family_id]);
-      if(!hasGranted(consent.rows,[PARENT_REPORT_SCOPE])){
-        await client.query("UPDATE report_jobs SET state='paused', lease_until=NULL, claim_token=NULL, last_error_code='PARENT_REPORT_CONSENT_REQUIRED', attempts=GREATEST(attempts-1,0) WHERE id=$1 AND claim_token=$2 AND state='running'",[job.id,token]);
-        return "paused" as const;
-      }
-      if(getConfig().reportStorage==="database")for(const locale of ["zh-CN","zh-HK"] as const){
-        await writePrivatePdf(keys[locale]!,pdfs[locale]!,client);
-      }
-      await client.query("INSERT INTO reports(id,assessment_id,family_id,region,payload,pdf_keys,created_at,html_documents) VALUES($1,$1,$2,$3,$4,$5,$6,$7) ON CONFLICT(assessment_id) DO NOTHING",[assessment.id,assessment.family_id,getConfig().region,JSON.stringify(payload),JSON.stringify(keys),assessment.submitted_at,JSON.stringify(htmlDocuments)]);
-      await client.query("UPDATE assessments SET status='published' WHERE id=ANY($1::uuid[])",[publishIds]);
-      await client.query("UPDATE report_jobs SET state='done',lease_until=NULL,last_error_code=NULL WHERE id=$1 AND claim_token=$2",[job.id,token]);
-      await client.query("INSERT INTO audit_events(region,action,entity_id) VALUES($1,'report.auto_published',$2)",[getConfig().region,assessment.id]);
-      return "published" as const;
-    });
-    if(outcome==="paused"){
-      if(getConfig().reportStorage==="filesystem")for(const key of Object.values(keys))await removePrivatePdf(key).catch(()=>{});
-      return {status:"paused"};
-    }
-    return {status:"published"};
+    throw new Error("Report rendering did not converge");
   }catch{
     const terminal=unboundTriad||blockCode!==null||job.attempts>=3;
     const reason=blockCode??(unboundTriad?"TRIAD_SOURCES_UNBOUND":job.attempt_limit_reached?"REPORT_ATTEMPTS_EXHAUSTED":"REPORT_GENERATION_FAILED");
@@ -304,12 +346,12 @@ async function runReportJob(jobId?:string):Promise<ReportJobResult>{
       await client.query("SELECT f.id FROM families f JOIN assessments a ON a.family_id=f.id WHERE a.id=$1 AND f.region=$2 FOR UPDATE OF f",[job.assessment_id,getConfig().region]);
       return (await client.query(failureSql,failureValues)).rows;
     }):await query(failureSql,failureValues);
-    if(getConfig().reportStorage==="filesystem"&&Object.keys(keys).length){
+    if(getConfig().reportStorage==="filesystem"&&attemptedKeys.size){
       // COMMIT may succeed even if its response is lost. The job update above
       // waits for that transaction before deciding which files are unreferenced.
       const published=changed.length?[]:await query<{pdf_keys:Record<Locale,string>}>("SELECT pdf_keys FROM reports WHERE assessment_id=$1 AND region=$2",[job.assessment_id,getConfig().region]);
       const referenced=new Set(Object.values(published[0]?.pdf_keys??{}));
-      for(const key of Object.values(keys))if(!referenced.has(key))await removePrivatePdf(key).catch(()=>{});
+      for(const key of attemptedKeys)if(!referenced.has(key))await removePrivatePdf(key).catch(()=>{});
     }
     console.error("nova_report_generation_failed",{region:getConfig().region,attempt:job.attempts});
     if(!changed[0])return unclaimedJobResult(job.id);

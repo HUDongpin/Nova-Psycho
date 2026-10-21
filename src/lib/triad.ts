@@ -5,7 +5,8 @@ import { z } from "zod";
 import { childScale, childScaleStaffNotes, currentTriadScaleIds, teacherScale, teacherScaleStaffNotes, triadScales } from "../domain/triad-scales";
 import { TRIAD_BUNDLE, triadRolesReady } from "../domain/triad-report";
 import { pair } from "../domain/zh-pair";
-import { instrumentWriteBlockReason, parseAdvice, parseStoredScale, parseTemplate } from "../domain/validation";
+import { instrumentWriteBlockReason, parseStoredScale, parseTemplate } from "../domain/validation";
+import { triadAdvice } from "../domain/triad-advice";
 import { ageAt } from "./access";
 import { hashPassword, limitLogin } from "./auth";
 import { ACTIVE_CONSENT_ROWS_SQL, PARENT_REPORT_SCOPE, PARTICIPATION_SCOPES, hasGranted, insertConsentRecords, recordedScopes, rejectBundledConsent } from "./consent";
@@ -17,6 +18,7 @@ import { noticeVersion } from "./privacy";
 import type { VerifiedClerkIdentity } from "./clerk-auth";
 import { formatJoinCode, joinCodeFormatMessage, parseJoinCode, registrationName, registrationPassword, registrationUsername } from "../domain/registration";
 export { formatJoinCode } from "../domain/registration";
+export { triadAdvice } from "../domain/triad-advice";
 
 const SCALE_ID = currentTriadScaleIds;
 const short = registrationName;
@@ -214,7 +216,6 @@ export async function ensureTriadInstruments(): Promise<void> {
   await upsertSeededContent("template", TRIAD_LIBRARY_KEY, triadTemplate);
 }
 
-export const triadAdvice = parseAdvice({ title: pair("三方了解说明"), blocks: [{ id: "triad_context", title: pair("先看具体情境"), body: pair("这份报告把孩子、家长和老师的观察放在一起，不合成一个总分，也不做诊断。"), source: "Nova growth triad intake, 2026-10", dimensionKeys: ["cognition"] }] });
 export const triadTemplate = parseTemplate({ title: pair("孩子的成长了解"), introduction: pair("这份报告给家长阅读。它把孩子、家长和老师各自看到的情况放在一起。"), limitation: pair("这不是诊断，也没有临床常模。三方说法不同时，不代表有人说了谎。香港繁体文本是便于阅读的字形转换，不是另行验证的译本。"), nextStep: pair("可以挑一个小变化，和孩子一起试四周。如果报告开头有安全提示，请先处理安全。") });
 
 async function freshCode(client: PoolClient): Promise<string> {

@@ -65,16 +65,20 @@ In demo mode the entry page offers five one-click synthetic accounts, and those 
 2. Share the family join code with the student and teacher. Each signs in or creates the supported role profile and receives that role's questionnaire. Rejoining returns the existing membership/task rather than adding another copy.
 3. Complete the questionnaires. Draft revisions prevent stale overwrites. Eligibility and the child's 12+ items use the birth-date age on the deployment region's local date. A stated-age mismatch is a staff review flag; it is not itself a safety signal.
 4. A submission is `waiting` while other triad roles are missing, `consent` when report generation or access lacks parent-report permission, including after withdrawal, and `reporting` when an authorised report job exists. Students and teachers see a neutral submitted message for a report-consent hold.
-5. With all three submissions and parent-report consent, the worker publishes one combined template report automatically. It includes approved safety messages and aggregate observations, but excludes the child's raw free text, situation choices, priorities and staff contact information. Student and teacher accounts cannot fetch parent reports.
+5. With all three submissions and parent-report consent, the worker publishes one combined report automatically. Scores, safety messages and aggregate observations use deterministic rules. Optional AI can order the approved support suggestions when the separate triad switch and consent checks permit it; otherwise the report uses the library's default order. The report excludes the child's raw free text, situation choices, priorities and staff contact information. Student and teacher accounts cannot fetch parent reports.
 6. Withdrawing parent-report consent blocks report JSON, HTML and PDF access and prevents a held job from publishing. Re-granting resumes the same report without duplicating it. Original grants and later withdrawal evidence remain separate.
 
 ## Scoring and automatic report conventions
 
 Scoring is authoritative on the server; client-supplied totals are not accepted. Every submission freezes the instrument, scores (including age), advice library, template and the AI-consent boolean. Purpose-specific grant and withdrawal evidence is recorded separately in the consent ledger. Submitted answers and published reports are protected by database triggers. The simplified- and traditional-Chinese HTML and PDF are frozen together at publication and are not rewritten by later template changes.
 
-Combined triad reports use the deterministic template path. For the single-instrument report path, the optional model can only order eligible, approved advice IDs; it cannot invent scores, diagnoses or new advice. The payload excludes names, contact information, raw answers and free text. Without AI consent or credentials, on model failure, or when risk is present, the template path is used. Missing information is shown explicitly and risk notices take precedence.
+The optional model can only order all eligible, approved advice IDs. It cannot change scores, write report prose, add diagnoses, invent suggestions, or omit an eligible suggestion. Combined triad reports use the advice library frozen in the parent's submitted assessment. Candidate eligibility uses each role's frozen instrument and valid dimension summaries; it does not depend on clinical score bands. Historical snapshots without triad applicability metadata continue to use templates, and published reports are not rewritten.
 
-Configuration supports a matching regional Bailian workspace and the explicitly allowed DeepSeek Flash endpoint. `NOVA_AI_DEPLOYMENT_SCOPE` is a configuration assertion; it does not establish the physical processing location of a nonregional endpoint. `NOVA_REGION` selects the application's CN/HK data boundary; `NOVA_DATA_REGION` records the configured hosting location. Operators must match those choices to the deployment's actual data arrangements before using real data. Local checks keep AI disabled and use synthetic data.
+Triad AI is off by default. It requires both `NOVA_TRIAD_AI_ENABLED=true` and `NOVA_AI_ENABLED=true`, valid provider configuration, AI consent in all three submission snapshots, and a current family `ai_processing` grant. Later consent does not change an earlier snapshot. The worker captures the current grant identity while holding the report-stage admission locks, then rechecks it after inference and during publication. If the grant was withdrawn or replaced, the worker discards the AI order and regenerates the unpublished bilingual files in the default order. This cannot recall a request already sent. Each narrative and PDF stage requires a live job lease and current `parent_report` consent. Withdrawing that permission blocks subsequent stages, publication and access. Designated synthetic test families always use templates without contacting AI.
+
+Each report-job attempt makes at most one AI request; simplified and traditional Chinese share the saved order. With fewer than two triad candidates, missing consent or configuration, a safety risk in any source, an invalid reply, a provider error, or an 8-second timeout, the worker automatically uses templates. The AI payload contains only age band, source role, dimension and domain identifiers, valid dimension summaries with their interpretation direction, and the approved candidates. Names, contact details, school, grade, family and user IDs, raw answers, free text and staff notes are excluded. Safety notices remain first. The HTML and PDF show the actual advice generation mode and frozen advice-library version.
+
+Configuration supports a matching regional Bailian workspace and the explicitly allowed DeepSeek Flash endpoint. `NOVA_AI_DEPLOYMENT_SCOPE` is a configuration assertion; it does not establish the physical processing location of a nonregional endpoint. The generic DeepSeek hostname is not evidence of CN or HK inference. `NOVA_REGION` selects the application's CN/HK data boundary; `NOVA_DATA_REGION` records the configured hosting location. Operators must match those choices to the deployment's actual data arrangements before using real data. The existing integration checks keep AI disabled. Dedicated triad checks use synthetic data, fake credentials and an injected local HTTP mock.
 
 Report PDFs are stored server-side encrypted with AES-256-GCM. Role, family and region permissions are checked before decryption and delivery. A PDF the user downloads is an ordinary readable file with no file password; revoking access cannot recall copies a parent has already downloaded.
 
@@ -92,6 +96,7 @@ npm test
 npm run typecheck
 NOVA_DIST_DIR=.next-verify npm run build
 npm run test:integration
+npm run test:triad-ai
 node scripts/run-region.mjs CN database-checks
 node scripts/run-region.mjs CN content-regressions
 node scripts/run-region.mjs CN retry-regressions
@@ -100,15 +105,19 @@ node scripts/run-region.mjs CN recovery-checks
 
 The ESLint CLI checks application code, maintained scripts and tests. Core JavaScript, TypeScript and React Hooks correctness rules can fail CI; narrowly documented warnings remain visible for existing imperative UI and browser-harness patterns. Generated output and private `work/` files are excluded.
 
-Integration tests run only against explicitly classified demo environments. Concurrency and lifecycle checks use synthetic families, or an isolated test database that is created and then dropped; they do not delete a user's existing families. Evidence is written to `work/qa/`.
+Integration tests run only against explicitly classified demo environments. Concurrency and lifecycle checks use synthetic families, or an isolated test database that is created and then dropped; they do not delete a user's existing families. Evidence is written to `work/qa/`. The independent `test:triad-ai` command uses an isolated local database and an injected HTTP mock for triad advice ordering and fallback. Its evidence is kept under `work/qa/triad-ai/`; it does not require or use live-model credentials.
+
+`test:triad-ai` requires local PostgreSQL binaries, Chromium, and Poppler (`pdftotext` / `pdftoppm`). It defaults to Homebrew PostgreSQL 16; set `NOVA_TEST_PG_BIN` for another installation. For a long worktree path, set `NOVA_TEST_TMP_ROOT` to a short private `work/` directory so local IPC sockets fit the operating system's path limit. The runner creates and cleans only its own temporary directory and processes, retaining database files and verification evidence.
 
 The PDF renderer tests need a real Chromium and are skipped without one; the suite says so when it skips them rather than passing quietly. Run `npx playwright install chromium`, or point `NOVA_CHROMIUM_EXECUTABLE` at one, to include them. GitHub Actions installs Playwright Chromium before the unit tests and fails the job if those tests are skipped.
 
-Live AI conformance against a real regional workspace is checked separately, using an in-memory synthetic snapshot and no database:
+Live AI conformance is a separate, explicitly authorised check using in-memory synthetic data and no database:
 
 ```sh
 node scripts/run-region.mjs CN ai-conformance
 ```
+
+Local mock results establish application behaviour only. Real-model output quality, latency and inference-region evidence still require live conformance before regional production enablement. See `docs/ai-regional-verification.md`.
 
 Regional backups are taken with `npm run backup:cn` or `npm run backup:hk`, and restored into an isolated environment with `node scripts/run-region.mjs CN restore <backup-directory>`. The restore refuses to overwrite a live database or a non-empty target. See `docs/deployment.md` for the procedure and its guards.
 

@@ -60,7 +60,7 @@ beforeEach(() => {
 describe("one revocation predicate for every consent read", () => {
   it("builds the active-row, family-list, existence, and AI checks from the same exclusion", () => {
     const exclusion = "consent_scope_revocations";
-    expect(ACTIVE_CONSENT_ROWS_SQL).toBe(`SELECT ${effectiveScopesSelect("consents")} AS scopes FROM consents WHERE family_id=$1 AND revoked_at IS NULL`);
+    expect(ACTIVE_CONSENT_ROWS_SQL).toBe(`SELECT consents.id, ${effectiveScopesSelect("consents")} AS scopes FROM consents WHERE family_id=$1 AND revoked_at IS NULL`);
     expect(ACTIVE_CONSENT_ROWS_SQL).toContain(exclusion);
     expect(consentScopeGrantedSql("a.family_id", "parent_report")).toContain(consentScopePredicate("c", "parent_report"));
     expect(consentScopeGrantedSql("$1", "ai_processing")).toContain(exclusion);

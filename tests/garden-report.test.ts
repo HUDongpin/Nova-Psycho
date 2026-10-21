@@ -99,7 +99,7 @@ describe("garden report navigation and offline presentation", () => {
     report.portrait = []; report.situations = []; report.priorities = []; report.words = []; report.safety = [];
     const doc = documentFor(payload(report), "zh-CN");
     const links = [...doc.querySelectorAll(".report-directory a")].map(link => link.getAttribute("href"));
-    expect(links).toEqual(["#report-observations", "#report-comparison"]);
+    expect(links).toEqual(["#report-observations", "#report-comparison", "#report-advice"]);
     expect(doc.body.textContent).toContain("这几个方面的有效回答还不够，这里先不概括。");
     expect(doc.querySelector(".risk")).toBeNull();
   });

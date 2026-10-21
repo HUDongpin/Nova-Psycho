@@ -2,6 +2,8 @@ export type Region = "CN" | "HK";
 export type Locale = "zh-CN" | "zh-HK";
 export type Role = "admin" | "staff" | "parent" | "student" | "teacher";
 export type RespondentRole = "parent" | "student" | "teacher";
+export const TRIAD_DOMAIN_KEYS = ["cognition", "connection", "guidance", "curriculum", "community", "state", "impact", "autonomy"] as const;
+export type TriadDomainKey = typeof TRIAD_DOMAIN_KEYS[number];
 export type TextPair = Record<Locale, string>;
 export const text = (value: TextPair, locale: Locale) => value[locale];
 export type ItemKind = "single" | "multi" | "text";
@@ -122,6 +124,10 @@ export interface AdviceBlock {
   body: TextPair;
   source: string;
   dimensionKeys: string[];
+  triadApplicability?: {
+    domainKeys: TriadDomainKey[];
+    roles: RespondentRole[];
+  };
 }
 export interface AdviceLibrary {
   title: TextPair;

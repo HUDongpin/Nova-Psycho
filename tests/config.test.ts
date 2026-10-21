@@ -13,6 +13,8 @@ describe("deployment configuration",()=>{
   it("accepts explicitly configured durable queue mode",()=>{base();vi.stubEnv("NOVA_REPORT_STORAGE","database");vi.stubEnv("NOVA_WORKER_MODE","queue");vi.stubEnv("NOVA_QUEUE_REGION","sin1");expect(getConfig()).toMatchObject({reportStorage:"database",workerMode:"queue",queueRegion:"sin1"});});
   it("refuses an unconfigured continuous worker on Vercel",()=>{base();vi.stubEnv("VERCEL","1");expect(()=>getConfig()).toThrow(/Vercel requires/);});
   it("keeps template reports working if AI was enabled without credentials",()=>{base();vi.stubEnv("NOVA_AI_ENABLED","true");vi.stubEnv("NOVA_AI_BASE_URL","");vi.stubEnv("NOVA_AI_API_KEY","");vi.stubEnv("NOVA_AI_MODEL","");expect(getConfig().ai.enabled).toBe(false);});
+  it.each([undefined,"false","1","TRUE"])("keeps triad AI off unless explicitly enabled (%s)",value=>{base();vi.stubEnv("NOVA_TRIAD_AI_ENABLED",value);expect(getConfig().triadAiEnabled).toBe(false);});
+  it("keeps the triad switch independent from global AI enablement",()=>{base();vi.stubEnv("NOVA_TRIAD_AI_ENABLED","true");expect(getConfig()).toMatchObject({triadAiEnabled:true,ai:{enabled:false}});});
   it("does not permit public demo mode",()=>{base();vi.stubEnv("NOVA_PUBLIC_URL","https://demo.example.invalid");expect(()=>getConfig()).toThrow();});
   it("uses deployment mode as the only demo switch",()=>{base();expect(isDemoMode()).toBe(true);vi.stubEnv("NOVA_MODE","service");vi.stubEnv("NOVA_PUBLIC_URL","https://nova.example.invalid");expect(isDemoMode()).toBe(false);});
   it("does not permit public report storage",()=>{base();vi.stubEnv("NOVA_REPORT_DIR","public/reports");expect(()=>getConfig()).toThrow();});

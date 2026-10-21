@@ -20,6 +20,7 @@
     "worker:cn": "node scripts/run-region.mjs CN worker",
     "worker:hk": "node scripts/run-region.mjs HK worker",
     "test:integration": "tsx scripts/integration.ts",
+    "test:triad-ai": "node scripts/test-triad-ai.mjs",
     "test:alert-race": "tsx scripts/alert-lock-race.ts",
     "test:consent-race": "tsx scripts/consent-lock-race.ts",
     "backup:cn": "node scripts/run-region.mjs CN backup",

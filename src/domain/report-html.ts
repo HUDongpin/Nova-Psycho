@@ -53,6 +53,7 @@ function triadReportHtml(p:ReportPayload,locale:Locale):string{
   const fmt=(iso:string)=>new Intl.DateTimeFormat(locale,{timeZone:"Asia/Hong_Kong",year:"numeric",month:"long",day:"numeric"}).format(new Date(iso));
   const roleName=(role:RespondentRole)=>role==="student"?t("孩子","孩子"):role==="parent"?t("家长","家長"):t("老师","老師");
   const sources=report.sources.map(source=>`${e(roleName(source.role))} ${e(fmt(source.submittedAt))}`).join(" · ");
+  const advice=p.selectedAdviceIds.map(id=>p.advice.content.blocks.find(block=>block.id===id)).filter(block=>block!==undefined);
   const safety=report.safety.length?`<section class="risk">${reportHeading(t("请先关注安全","請先關注安全"),"report-safety","shield")}${report.safety.map(message=>`<p>${e(text(message,locale))}</p>`).join("")}<p>${e(t("报告仍然发给家长。工作人员也会同时看到安全提示。如有眼前危险，请联系当地紧急服务。","報告仍然發給家長。工作人員也會同時看到安全提示。如有眼前危險，請聯絡當地緊急服務。"))}</p></section>`:"";
   const domains=report.domains.map((domain,index)=>{
     const roles=[...new Set(domain.views.map(view=>view.role))];
@@ -72,11 +73,14 @@ function triadReportHtml(p:ReportPayload,locale:Locale):string{
     ...(priorities?[{id:"report-priorities",label:t("这次最希望得到的帮助","這次最希望得到的幫助"),icon:"compass" as const}]:[]),
     ...(words?[{id:"report-words",label:t("他们写下的话","他們寫下的話"),icon:"words" as const}]:[]),
     {id:"report-comparison",label:t("和上一轮相比","和上一輪相比"),icon:"comparison"},
+    {id:"report-advice",label:t("家长可以尝试的下一步","家長可以嘗試的下一步"),icon:"compass"},
   ];
   return `<!DOCTYPE html><html lang="${locale}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${e(text(report.title,locale))} · TopE 心理助手</title><style>${reportGardenStyle}</style></head><body><article class="garden-report" data-report-layout="garden-v1"><header><div class="brand">TopE 心理助手</div>${reportArtwork()}<h1>${e(text(report.title,locale))}</h1><p>${e(p.childName)} · ${e(p.grade)}</p><p class="meta">${sources}</p><p>${e(t("这份报告把孩子、家长和老师各自的回答放在一起读。它不合成一个总分，也不做诊断。三方看到的不一样时，先把它当成不同情境里的观察。","這份報告把孩子、家長和老師各自的回答放在一起讀。它不合成一個總分，也不做診斷。三方看到的不一樣時，先把它當成不同情境裏的觀察。"))}</p></header>
   ${syntheticTestNotice(p,locale)}${reportShowsDemo(p)?`<div class="demo"><strong>${e(t("非临床试用报告 · 尚无经过验证的临床常模","非臨床試用報告 · 尚無經過驗證的臨床常模"))}</strong><br>${e(t("本报告整理本次填写的观察，仅供成长支持与沟通参考，不能用于临床诊断，也不能替代专业评估。","本報告整理本次填寫的觀察，僅供成長支持與溝通參考，不能用於臨床診斷，也不能替代專業評估。"))}</div>`:""}
   ${safety}${reportDirectory(directory,locale)}${reportHeading(t("三方看到的情况","三方看到的情況"),"report-observations","family")}${domains||`<p>${e(t("这几个方面的有效回答还不够，这里先不概括。","這幾個方面的有效回答還不夠，這裏先不概括。"))}</p>`}${portrait}${situations}${priorities}${words}
-  ${triadComparisonHtml(report,locale)}<p class="limitation">${e(text(p.template.content.limitation,locale))}</p><footer>TopE 心理助手 · ${e(t("三份都交齐后自动生成。家庭私密报告，请妥善保管。","三份都交齊後自動產生。家庭私密報告，請妥善保管。"))}</footer></article></body></html>`;
+  ${triadComparisonHtml(report,locale)}
+  ${reportHeading(t("家长可以尝试的下一步","家長可以嘗試的下一步"),"report-advice","compass")}${advice.length?advice.map((block,index)=>`<section class="advice"><h3>${reportIcon("compass")}<span>${index+1}. ${e(text(block.title,locale))}</span></h3><p>${e(text(block.body,locale))}</p><p class="meta">${e(block.source)}</p></section>`).join(""):`<p>${e(t("本次报告未附加支持建议。","本次報告未附加支持建議。"))}</p>`}
+  <p class="limitation">${e(text(p.template.content.limitation,locale))}</p><footer>${e(p.generationMode==="ai"?t("AI 辅助排序建议","AI 輔助排序建議"):t("规则模板生成","規則模板產生"))} · ${e(t("建议库版本","建議庫版本"))} ${e(p.advice.version)}<br>TopE 心理助手 · ${e(t("三份都交齐后自动生成。家庭私密报告，请妥善保管。","三份都交齊後自動產生。家庭私密報告，請妥善保管。"))}</footer></article></body></html>`;
 }
 export function reportHtml(p:ReportPayload,locale:Locale):string{
   if(p.triad)return triadReportHtml(p,locale);
