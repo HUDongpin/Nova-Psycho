@@ -468,10 +468,11 @@ describe("triad reports with fixed round sources",()=>{
   function row(over:Record<string,unknown>){
     return {...assessmentRow,definition:triadDefinition,status:"published",submitted_at:at("03-01"),report_id:null,has_consent:true,triad_round_id:"round-1",triad_job_id:null,respondent_id:OTHER,...over};
   }
-  function load(rows:unknown[],role:Role="parent"){
+  function load(rows:unknown[],role:Role="parent",reports:unknown[]=[]){
     mockQuery.mockImplementation((async(sql:string)=>{
       if(String(sql).includes("FROM families f WHERE"))return [familyRow];
       if(String(sql).includes("FROM assessments a JOIN families f"))return rows;
+      if(String(sql).includes("FROM reports WHERE family_id"))return reports;
       return [];
     }) as never);
     return workspaceFor(actor(role),"zh-CN");
@@ -482,6 +483,16 @@ describe("triad reports with fixed round sources",()=>{
     for(const item of workspace.assessments)expect(item).toMatchObject({status:"published",reportId:null,phase:"consent"});
     expect(workspace.reports).toEqual([]);
   });
+  it("withholds a held report from all published source rows while preserving ready mappings",async()=>{
+    const stored=(id:string,safe:boolean)=>({id,family_id:FAMILY_ID,assessment_id:"parent",created_at:at("03-01"),payload:{scale:triadDefinition,score:{risk:false,dimensions:[],respondentRole:"parent",demo:true},childName:"Synthetic child",generationMode:"template",comparison:{available:false},triad:{title:{"zh-CN":"孩子的成长了解","zh-HK":"孩子的成長了解"},safety:[],...(safe?{parentAudienceVersion:1}:{})}}});
+    const workspace=await load([
+      ...["student","parent","teacher"].map(role=>row({id:role,respondent_role:role,report_id:"held"})),
+      row({id:"ready-source",respondent_role:"parent",report_id:"ready"})
+    ],"parent",[stored("held",false),stored("ready",true)]);
+    for(const item of workspace.assessments.filter(item=>item.id!=="ready-source"))expect(item).toMatchObject({reportId:null,privacyRefreshRequired:true,phase:null});
+    expect(workspace.assessments.find(item=>item.id==="ready-source")?.reportId).toBe("ready");
+  });
+
   it("shows the same stored report for all three published sources",async()=>{
     const workspace=await load(["student","parent","teacher"].map(role=>row({id:role,respondent_role:role,report_id:"r1",triad_job_id:"job1"})));
     for(const item of workspace.assessments)expect(item).toMatchObject({status:"published",reportId:"r1",phase:null});
