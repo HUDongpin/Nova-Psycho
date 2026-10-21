@@ -43,6 +43,9 @@ describe("triad advice presentation", () => {
     const p = payload();
     p.selectedAdviceIds = ["second", "unknown-model-text", "first"];
     const document = documentFor(p, locale);
+    expect(document.querySelector('[data-report-layout="garden-v1"]')).not.toBeNull();
+    expect(document.querySelector('.report-directory a[href="#report-advice"]')?.textContent).toBe(document.getElementById("report-advice")?.textContent);
+    expect(document.querySelectorAll("#report-advice")).toHaveLength(1);
     const blocks = [...document.querySelectorAll(".advice")];
     expect(blocks.map(block => block.querySelector("h3")?.textContent)).toEqual([
       `1. ${frozenAdvice.blocks[1].title[locale]}`,
@@ -70,7 +73,8 @@ describe("triad advice presentation", () => {
     expect(advice.querySelector("h3")?.textContent).toBe(`2. ${block.title[locale]}`);
     expect(advice.querySelector("p")?.textContent).toBe(block.body[locale]);
     expect(advice.textContent).toContain(block.source);
-    expect(document.querySelector("script, img, b")).toBeNull();
+    expect(document.querySelector('script, img[onerror], img[src="x"], b')).toBeNull();
+    for (const image of document.querySelectorAll("img")) expect(image.getAttribute("src")).toMatch(/^data:image\/svg\+xml;charset=utf-8,/);
     expect(document.querySelector("footer")?.textContent).toContain("<version>");
   });
 

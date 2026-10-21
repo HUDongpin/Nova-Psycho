@@ -10,7 +10,7 @@ import { listPrivatePdfKeys,removePrivatePdf,writePrivatePdf } from "../src/lib/
 import { cleanOrphanReports,processDeletionJobs,processOneJob,processReportJob,recordHeartbeat } from "../src/lib/worker";
 import { demoAdvice,demoScale,demoTemplate } from "../src/domain/demo";
 import { scoreAssessment } from "../src/domain/scoring";
-import { childScale,parentScale,teacherScale } from "../src/domain/triad-scales";
+import { childScale,parentScale,teacherScale,childScaleStaffNotes,parentScaleStaffNotes,teacherScaleStaffNotes } from "../src/domain/triad-scales";
 import { childScale as oldChild,parentScale as oldParent,teacherScale as oldTeacher } from "./fixtures/triad-scales-ed66f27";
 import { previewAnswers } from "../src/domain/triad-report";
 import * as triadReports from "../src/domain/triad-report";
@@ -247,8 +247,10 @@ describe("processing one job",()=>{
 
 
 describe("fixed triad report sources",()=>{
-  const rows=([childScale,parentScale,teacherScale]).map((scale,index)=>{
-    const role=scale.roles[0],answers=previewAnswers(scale);
+  const rows=([childScaleStaffNotes,parentScaleStaffNotes,teacherScaleStaffNotes]).map((scale,index)=>{
+    const role=scale.roles[0],preview=structuredClone(scale);
+    for(const item of preview.items)if(item.id==="c_age"||item.id==="p_age")item.choices=item.choices.filter(choice=>choice.value===12);
+    const answers=previewAnswers(preview);
     return {id:`source-${index}`,family_id:"family",triad_round_id:"round",respondent_id:`respondent-${role}`,respondent_role:role,answers,submitted_at:snapshot.submittedAt,
       snapshot:{...snapshot,scale,score:scoreAssessment(scale,answers,{age:12,region:"CN",role})}};
   });
@@ -261,7 +263,7 @@ describe("fixed triad report sources",()=>{
       if(sql.includes("WITH prior_round AS"))return previous;
       return [];
     }) as never);
-    mockTransaction.mockImplementation((async(fn:(c:unknown)=>Promise<unknown>)=>fn({query:async()=>({rows:[{id:"locked"}]})})) as never);
+    mockTransaction.mockImplementation((async(fn:(c:unknown)=>Promise<unknown>)=>fn({query:async(sql:string)=>sql.includes("AS scopes FROM consents WHERE family_id=$1")?{rows:[{scopes:["parent_report"]}]}:{rows:[{id:"locked"}]}})) as never);
   }
   it("renders only the pinned round and publishes those three sources",async()=>{
     configure();
@@ -326,6 +328,24 @@ describe("fixed triad report sources",()=>{
     expect(published!.comparison.available).toBe(true);
     expect(published!.triad!.comparisons!.map(item=>item.available)).toEqual([true,true,false]);
     expect(published!.triad!.comparisons![2]).toMatchObject({reason:"different_respondent",previousDate:"2026-06-01T00:00:00.000Z"});
+  });
+  it("pauses a computed triad comparison when parent-report consent is withdrawn before publication",async()=>{
+    configure(sourceIds,rows,rows.map(row=>({...row,submitted_at:"2026-06-01T00:00:00.000Z"})));
+    const calls:string[]=[];
+    let publicationLocked=false;
+    mockTransaction.mockImplementation((async(fn:(c:unknown)=>Promise<unknown>)=>fn({query:async(sql:string)=>{
+      calls.push(sql);
+      if(sql.includes("FROM families")&&sql.includes("FOR UPDATE"))publicationLocked=true;
+      if(sql.includes("AS scopes FROM consents WHERE family_id=$1"))return {rows:[{scopes:publicationLocked?["assessment","sensitive_data"]:["parent_report"]}]};
+      return {rows:[{id:"locked"}]};
+    }})) as never);
+    await processOneJob();
+    expect(mockQuery.mock.calls.some(([sql])=>String(sql).includes("WITH prior_round AS"))).toBe(true);
+    expect(mockRender).toHaveBeenCalledTimes(2);
+    expect(publicationLocked).toBe(true);
+    expect(calls.some(sql=>sql.includes("state='paused'")&&sql.includes("PARENT_REPORT_CONSENT_REQUIRED"))).toBe(true);
+    expect(calls.some(sql=>sql.includes("INSERT INTO reports")||sql.includes("UPDATE assessments SET status='published'"))).toBe(false);
+    expect(mockRemove).toHaveBeenCalledTimes(2);
   });
   it("fails an unbound legacy job without selecting historical answers or rendering",async()=>{
     configure(null);

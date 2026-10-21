@@ -1,6 +1,7 @@
 /**
  * Synthetic HTTP -> PostgreSQL -> worker -> HTML/PDF regression.
- * Usage: NOVA_AI_ENABLED=false NOVA_TRIAD_COMPARISON_CN_CONFIG=/absolute/work/.../cn/private-config.json
+ * One-command setup and execution: node scripts/triad-comparison-checks.mjs
+ * Direct usage against an already owned runtime: NOVA_AI_ENABLED=false NOVA_TRIAD_COMPARISON_CN_CONFIG=/absolute/work/.../cn/private-config.json
  *        NOVA_TRIAD_COMPARISON_HK_CONFIG=/absolute/work/.../hk/private-config.json
  *        node --import tsx tests/triad-comparison.integration.ts
  * Optional NOVA_TRIAD_COMPARISON_OUTPUT_DIR must be inside work/.
@@ -33,6 +34,9 @@ const roles = ["student", "parent", "teacher"] as const;
 const definitions = { parent: parentScale, student: childScale, teacher: teacherScale };
 const runId = `${new Date().toISOString().replace(/[:.]/g, "-")}-${randomBytes(4).toString("hex")}`;
 const nonce = randomBytes(6).toString("hex");
+// A birthday six months ago keeps the child 12 at both ends of the 91-day interval.
+const childBirthday = new Date(Date.now() - 183 * 86400000);
+childBirthday.setUTCFullYear(childBirthday.getUTCFullYear() - 12);
 const output = path.resolve(process.env.NOVA_TRIAD_COMPARISON_OUTPUT_DIR ?? `work/qa/triad-comparison-${runId}`);
 const results: { name: string; passed: boolean; durationMs: number; error?: string }[] = [];
 const fixtures: { region: Region; familyId: string; rounds: { reportId: string; assessmentIds: string[] }[] }[] = [];
@@ -73,7 +77,7 @@ async function regional(region: Region): Promise<Regional> {
   return { region, locale: region === "CN" ? "zh-CN" : "zh-HK", base, database, config, admin: await admin(base, region) };
 }
 async function register(r: Regional): Promise<Triad> {
-  const visitor = { base: r.base, cookie: "" }, response = await request(visitor, `/api/triad/parent?locale=${r.locale}`, "POST", { parentName: "合成比较家长", username: `cmp_${r.region.toLowerCase()}_p_${nonce}`, password: randomBytes(24).toString("base64url"), relationship: "母亲", childName: "合成比较孩子", birthDate: `${new Date().getUTCFullYear() - 12}-01-01`, grade: "初中", assessment: true, sensitiveData: true, parentReport: true });
+  const visitor = { base: r.base, cookie: "" }, response = await request(visitor, `/api/triad/parent?locale=${r.locale}`, "POST", { parentName: "合成比较家长", username: `cmp_${r.region.toLowerCase()}_p_${nonce}`, password: randomBytes(24).toString("base64url"), relationship: "母亲", childName: "合成比较孩子", birthDate: childBirthday.toISOString().slice(0, 10), grade: "初中", assessment: true, sensitiveData: true, parentReport: true });
   assert.equal(response.status, 201); const value = await response.json() as { familyId: string; joinCode: string };
   const clients = { parent: session(r.base, response) } as Record<RespondentRole, Client>;
   for (const role of ["student", "teacher"] as const) { const joined = await request(visitor, `/api/triad/join?locale=${r.locale}`, "POST", { code: value.joinCode, role, name: `合成比较${role}`, username: `cmp_${r.region.toLowerCase()}_${role}_${nonce}`, password: randomBytes(24).toString("base64url") }); assert.equal(joined.status, 201); clients[role] = session(r.base, joined); }
@@ -104,7 +108,7 @@ async function documents(r: Regional, triad: Triad, report: Report, round: numbe
   return collected;
 }
 async function browse(r: Regional, triad: Triad, report: Report) {
-  browser ??= await chromium.launch({ headless: true, executablePath: process.env.NOVA_CHROMIUM_EXECUTABLE ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" });
+  browser ??= await chromium.launch({ headless: true, executablePath: process.env.NOVA_CHROMIUM_EXECUTABLE });
   for (const locale of ["zh-CN", "zh-HK"] as const) for (const mobile of [false, true]) {
     const context = await browser.newContext({ viewport: mobile ? { width: 390, height: 844 } : { width: 1280, height: 1000 }, isMobile: mobile, hasTouch: mobile });
     try { await context.route("**/*", route => new URL(route.request().url()).origin === r.base ? route.continue() : route.abort()); await context.addInitScript(value => localStorage.setItem("nova-locale", value), locale); const cookie = triad.clients.parent.cookie, split = cookie.indexOf("="); await context.addCookies([{ name: cookie.slice(0, split), value: cookie.slice(split + 1), url: r.base, httpOnly: true, sameSite: "Lax" }]); const page = await context.newPage(), errors: string[] = []; page.on("pageerror", error => errors.push(error.name)); await page.goto(`${r.base}/#report/${report.id}`); const frame = page.frameLocator("iframe.report-frame"); await frame.locator("h1").waitFor({ timeout: 45000 }); const body = await frame.locator("body").innerText(); assert.ok(body.includes(locale === "zh-CN" ? "和上一轮相比" : "和上一輪相比"), "Real parent report iframe displays longitudinal comparison"); assert.equal(await frame.locator(".comparison-role").count(), 3, "Every respondent has a separate longitudinal section"); for (const [index, role] of roles.entries()) { assert.ok(body.includes(definitions[role].dimensions[0].label[locale])); const section = frame.locator(".comparison-role").nth(index); const previous = scoreAssessment(definitions[role], answers(definitions[role], role, false), { role, age: 12, region: r.region }).dimensions[0].raw!, current = scoreAssessment(definitions[role], answers(definitions[role], role, true), { role, age: 12, region: r.region }).dimensions[0].raw!; const cells = await section.locator("tbody tr").first().locator("td").allInnerTexts(); assert.deepEqual(cells.slice(0, 2), [String(previous), String(current)], "Browser comparison table displays actual prior/current values"); assert.equal(cells[2].split("\n")[0], `+${current - previous}`, "Browser displays the deterministic change"); } const pageOverflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1); const reportOverflow = await frame.locator("html").evaluate(node => node.scrollWidth > node.clientWidth + 1); assert.equal(pageOverflow, false, "Parent report page fits viewport"); assert.equal(reportOverflow, false, "Comparison document fits its iframe at this viewport"); assert.deepEqual(errors, []); const stem = `${r.region.toLowerCase()}-${locale}-${mobile ? "mobile" : "desktop"}`; await page.screenshot({ path: path.join(output, `${stem}-report.png`), fullPage: true }); const heading = frame.getByRole("heading", { name: /和上一轮相比|和上一輪相比/ }); await heading.scrollIntoViewIfNeeded(); await page.screenshot({ path: path.join(output, `${stem}-comparison.png`), fullPage: true }); const download = await Promise.all([page.waitForEvent("download"), page.locator('a[download]').click()]); const downloadPath = await download[0].path(); assert.ok(downloadPath); assert.equal((await fs.readFile(downloadPath)).subarray(0, 4).toString(), "%PDF", "Parent download link returns the real frozen PDF"); } finally { await context.close(); }
