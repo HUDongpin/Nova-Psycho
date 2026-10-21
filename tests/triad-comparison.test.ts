@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { scoreAssessment } from "../src/domain/scoring";
+import { answerVisible, scoreAssessment } from "../src/domain/scoring";
 import { compareTriad, type TriadComparisonSource } from "../src/domain/triad-comparison";
 import { previewAnswers } from "../src/domain/triad-report";
-import { childScale, parentScale, parentScaleV1, teacherScale } from "../src/domain/triad-scales";
+import { childScaleStaffNotes as childScale, parentScaleStaffNotes as parentScale, parentScaleV1, teacherScaleStaffNotes as teacherScale } from "../src/domain/triad-scales";
 import type { ScaleDefinition } from "../src/domain/types";
 
 const priorDate = "2026-06-01T00:00:00.000Z";
@@ -18,6 +18,7 @@ function source(original: ScaleDefinition, submittedAt = currentDate, values: Re
   for (const [key, value] of Object.entries(values)) {
     for (const id of scale.dimensions.find(dimension => dimension.key === key)!.items) answers[id] = value;
   }
+  for (const item of scale.items) if (!answerVisible(answers, item, age)) delete answers[item.id];
   const role = scale.roles[0];
   return { role, respondentId: `private-synthetic-${role}`, scale, score: scoreAssessment(scale, answers, { age, region: "CN", role }), submittedAt };
 }
@@ -105,7 +106,10 @@ describe("triad longitudinal comparison", () => {
   });
 
   it("does not invent a baseline for a dimension that becomes available at age 12", () => {
-    const [result] = compareTriad([source(childScale)], [source(childScale, priorDate, {}, 11)]);
+    const current = source(childScale), previous = source(childScale, priorDate, {}, 11);
+    expect(previous.score.dimensions.find(item => item.key === "c18")).toMatchObject({ raw: null, min: 0, max: 0, totalItems: 0 });
+    expect(current.score.dimensions.find(item => item.key === "c18")).toMatchObject({ raw: 4, min: 1, max: 5, totalItems: 6 });
+    const [result] = compareTriad([current], [previous]);
     expect(result.available).toBe(true);
     expect(result.omitted?.map(item => item.key)).toEqual(["c18"]);
     expect(result.changes!.some(item => item.key === "c18")).toBe(false);

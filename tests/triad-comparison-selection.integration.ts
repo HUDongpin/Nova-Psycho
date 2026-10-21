@@ -5,18 +5,20 @@ import path from "node:path";
 import { demoAdvice, demoTemplate } from "../src/domain/demo";
 import { scoreAssessment } from "../src/domain/scoring";
 import { previewAnswers } from "../src/domain/triad-report";
-import { childScale, parentScale, parentScaleV1, teacherScale } from "../src/domain/triad-scales";
+import { childScaleStaffNotes as childScale, parentScaleStaffNotes as parentScale, parentScaleV1, teacherScaleStaffNotes as teacherScale } from "../src/domain/triad-scales";
 import type { AssessmentSnapshot, Locale, Region, ReportPayload, RespondentRole, ScaleDefinition } from "../src/domain/types";
 import { getConfig } from "../src/lib/config";
 import { closeDatabase, query } from "../src/lib/db";
 import { closePdfBrowser } from "../src/lib/pdf";
 import { readPrivatePdf } from "../src/lib/storage";
 import { processReportJob } from "../src/lib/worker";
+import { noticeVersion } from "../src/lib/privacy";
 
+// Reproducible setup: node scripts/triad-comparison-checks.mjs
 // Dedicated synthetic database only. This script invokes the real PostgreSQL
 // query, worker, HTML renderer, encrypted storage and Chromium PDF renderer.
 // It does not alter existing submissions or run the background queue.
-const OWNER = "nova-triad-selection-20261020-v1";
+const OWNER = "nova-triad-selection-v1";
 const roles: RespondentRole[] = ["student", "parent", "teacher"];
 const definitions = { student: childScale, parent: parentScale, teacher: teacherScale };
 type Family = { id: string; users: Record<RespondentRole, string> };
@@ -39,7 +41,7 @@ async function persist() {
   if (!output) return;
   await fs.writeFile(path.join(output, "results.json"), JSON.stringify({
     completed, passed: completed && !failure, syntheticOnly: true, realPostgreSql: true, queryMocks: false,
-    realWorker: true, realPdf: true, aiEnabled: false, database: "nova_triad_selection",
+    realWorker: true, realPdf: true, aiEnabled: false, database: new URL(getConfig().databaseUrl).pathname.slice(1),
     acceptedSnapshotsModified: false, createdFamilies, reportArtifacts, results, ...(failure ? { failure } : {})
   }, null, 2) + "\n", { mode: 0o600 });
 }
@@ -62,7 +64,7 @@ async function family(existingUsers?: Family["users"]): Promise<Family> {
   const users = existingUsers ?? { student: await user("student"), parent: await user("parent"), teacher: await user("teacher") };
   await query("INSERT INTO families(id,region,family_name,child_name,birth_date,grade,guardian_label) VALUES($1,'CN','合成轮次验证家庭','合成轮次验证孩子','2015-01-01','小学','合成监护人')", [id]);
   for (const role of roles) await query("INSERT INTO memberships(family_id,user_id,role) VALUES($1,$2,$3)", [id, users[role], role]);
-  await query("INSERT INTO consents(id,family_id,actor_id,guardian_name,method,notice_version,scopes) VALUES($1,$2,$3,'合成监护人','synthetic','nova-privacy-2026-10-v4',$4)", [randomUUID(), id, users.parent, JSON.stringify(["assessment", "sensitive_data", "parent_report"])]);
+  for (const scope of ["assessment", "sensitive_data", "parent_report"]) await query("INSERT INTO consents(id,family_id,actor_id,guardian_name,method,reference,notice_version,scopes) VALUES($1,$2,$3,'合成监护人','synthetic','SYNTHETIC-TRIAD-SELECTION',$4,$5)", [randomUUID(), id, users.parent, noticeVersion, JSON.stringify([scope])]);
   createdFamilies.push(id);
   return { id, users };
 }
@@ -75,6 +77,7 @@ async function round(f: Family, createdAt: string, options: Options = {}): Promi
     const preview = structuredClone(scale), age = options.age ?? 12;
     for (const item of preview.items) if (item.id === "c_age" || item.id === "p_age") item.choices = item.choices.filter(choice => choice.value === age);
     const answers = previewAnswers(preview);
+    for (const item of scale.items) if (item.visibleFromAge !== undefined && age < item.visibleFromAge) delete answers[item.id];
     for (const item of scale.items) if (typeof answers[item.id] === "string") answers[item.id] = "合成文字，仅供本地验证";
     for (const itemId of scale.dimensions[0].items) answers[itemId] = options.value ?? 4;
     const submittedAt = new Date(Date.parse(options.submittedAt ?? createdAt) + (index + 1) * 60000).toISOString();
@@ -149,16 +152,21 @@ async function guard() {
   assert.equal(process.env.NODE_OPTIONS, undefined, "Run without a test clock or inherited Node preload");
   const config = getConfig(), url = new URL(config.databaseUrl);
   assert.equal(config.mode, "demo"); assert.equal(config.region, "CN"); assert.equal(config.ai.enabled, false);
-  assert.equal(url.hostname, "127.0.0.1"); assert.equal(url.port, "55518"); assert.equal(url.pathname, "/nova_triad_selection");
-  assert.equal(config.publicUrl, "http://127.0.0.1:3310");
+  assert.ok(["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)); assert.ok(url.port);
+  assert.match(url.pathname, /^\/nova_triad_selection_[a-z0-9_]+$/);
+  const publicUrl = new URL(config.publicUrl);
+  assert.equal(publicUrl.protocol, "http:"); assert.ok(["127.0.0.1", "localhost", "[::1]"].includes(publicUrl.hostname));
   assert.equal(config.reportStorage, "filesystem");
-  assert.equal(config.reportDir, path.resolve("work/triad-comparison-20261020/selection/reports"));
-  const proposed = process.env.NOVA_TRIAD_SELECTION_OUTPUT_DIR;
-  assert.ok(proposed, "Explicit private output directory required");
-  const relative = path.relative(path.resolve("work/triad-comparison-20261020/selection"), path.resolve(proposed));
-  assert.ok(relative && !relative.startsWith("..") && !path.isAbsolute(relative), "Output must remain in owned selection evidence");
+  const selectionRoot = process.env.NOVA_TRIAD_SELECTION_ROOT, proposed = process.env.NOVA_TRIAD_SELECTION_OUTPUT_DIR;
+  assert.ok(selectionRoot && proposed, "Explicit owned root and private output directory required");
+  const rootRelative = path.relative(path.resolve("work"), path.resolve(selectionRoot));
+  assert.ok(rootRelative && !rootRelative.startsWith("..") && !path.isAbsolute(rootRelative), "Selection root must remain in work/");
+  for (const target of [config.reportDir, path.resolve(proposed)]) {
+    const relative = path.relative(path.resolve(selectionRoot), target);
+    assert.ok(relative && !relative.startsWith("..") && !path.isAbsolute(relative), "Reports and evidence must remain under the owned selection root");
+  }
   assert.equal((await query("SELECT owner FROM triad_selection_test_owner WHERE singleton=true"))[0]?.owner, OWNER);
-  assert.equal((await query("SELECT current_database() AS name"))[0]?.name, "nova_triad_selection");
+  assert.equal((await query("SELECT current_database() AS name"))[0]?.name, url.pathname.slice(1));
   output = path.resolve(proposed);
   await fs.mkdir(output, { recursive: true, mode: 0o700 });
   await fs.writeFile(path.join(output, "results.json"), "{}\n", { flag: "wx", mode: 0o600 });
