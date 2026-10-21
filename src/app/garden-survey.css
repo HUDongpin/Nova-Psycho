@@ -1,0 +1,46 @@
+.survey-garden-intro { display: flex; align-items: center; gap: 20px; padding: 24px 30px 18px; background: #faf8ef; border-bottom: 1px solid #e4e6d6; }
+.survey-garden-intro > div { flex: 1; min-width: 0; }
+.survey-garden-eyebrow { display: block; margin: 0 0 5px; color: #526750; font-size: 12px; line-height: 1.5; letter-spacing: .04em; }
+.survey-garden-intro h2 { margin: 0 0 9px; font-family: var(--serif); font-size: 25px; font-weight: 560; color: var(--ink); }
+.survey-garden-intro p:last-child { margin: 0; max-width: 38em; color: var(--muted); font-size: 14px; line-height: 1.8; }
+.survey-garden-intro .garden-illustration { display: block; width: 38%; max-width: 280px; height: auto; flex-shrink: 0; }
+.survey-garden-journey { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; list-style: none; margin: 0; padding: 18px 28px; background: #fafbf6; border-bottom: 1px solid var(--line); }
+.survey-garden-journey li { position: relative; display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 13px; line-height: 1.45; color: var(--muted); }
+.survey-garden-journey li:not(:last-child)::after { content: ""; flex: 1; min-width: 8px; height: 1px; margin-left: 5px; border-top: 2px dotted #cbd5bc; }
+.survey-garden-journey .garden-icon { width: 32px; height: 32px; flex-shrink: 0; opacity: .65; }
+.survey-garden-journey .garden-icon img { display: block; width: 100%; height: 100%; }
+.survey-garden-journey .is-current { color: var(--teal-deep); font-weight: 650; }
+.survey-garden-journey .is-current .garden-icon, .survey-garden-journey .is-done .garden-icon { opacity: 1; }
+.survey-garden-journey .is-current > span:last-child { text-decoration: underline; text-decoration-color: #c4d3ac; text-underline-offset: 5px; text-decoration-thickness: 2px; }
+.survey-garden-progress { padding: 20px 28px 17px; background: #f9faf4; border-bottom: 1px solid var(--line); }
+.survey-garden-chapter { display: flex; align-items: center; gap: 12px; }
+.survey-garden-chapter > .garden-icon { width: 46px; height: 46px; flex-shrink: 0; }
+.survey-garden-chapter > .garden-icon img { display: block; width: 100%; height: 100%; }
+.survey-garden-chapter > div { flex: 1; min-width: 0; }
+.survey-garden-chapter h2 { margin: 0; color: var(--ink); font-size: 16px; font-weight: 600; line-height: 1.6; overflow-wrap: anywhere; }
+.survey-garden-position { align-self: flex-start; color: var(--muted); font-size: 13px; white-space: nowrap; font-variant-numeric: tabular-nums; padding-top: 5px; }
+.survey-garden-count { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin: 15px 0 9px; font-size: 12px; color: var(--muted); }
+.survey-garden-count strong { color: var(--teal-deep); font-weight: 550; font-variant-numeric: tabular-nums; }
+.survey-garden-progress progress { display: block; width: 100%; height: 7px; border: 0; border-radius: 6px; overflow: hidden; background: #e2e9d9; accent-color: #718c66; appearance: none; }
+.survey-garden-progress progress::-webkit-progress-bar { background: #e2e9d9; border-radius: 6px; }
+.survey-garden-progress progress::-webkit-progress-value { background: #718c66; border-radius: 6px; }
+.survey-garden-progress progress::-moz-progress-bar { background: #718c66; border-radius: 6px; }
+.survey-container .survey-save-status { color: var(--muted); }
+.survey-container .survey-save-status[data-status="saved"] { color: var(--ok); }
+.survey-container .survey-save-status[data-status="failed"] { color: var(--danger); background: #fff6f1; }
+.survey-container .survey-save-status[data-status="unsaved"] { color: var(--warn); }
+@media (max-width: 600px) {
+  .survey-garden-intro { padding: 20px; gap: 5px; }
+  .survey-garden-intro h2 { font-size: 21px; }
+  .survey-garden-intro .garden-illustration { width: 31%; }
+  .survey-garden-journey { gap: 7px; padding: 14px 16px; }
+  .survey-garden-journey li { flex-direction: column; align-items: center; gap: 5px; font-size: 12px; text-align: center; }
+  .survey-garden-journey li:not(:last-child)::after { position: absolute; top: 16px; left: calc(50% + 23px); width: calc(100% - 39px); margin: 0; }
+  .survey-garden-progress { padding: 18px 18px 15px; }
+  .survey-garden-chapter { flex-wrap: wrap; gap: 9px; }
+  .survey-garden-chapter h2 { font-size: 15px; }
+  .survey-garden-position { flex-basis: 100%; padding: 0 0 0 55px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .survey-container .survey-advance-track span { animation: none !important; }
+}

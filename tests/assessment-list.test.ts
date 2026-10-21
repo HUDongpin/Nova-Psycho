@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { Assessment, Workspace } from "../src/components/api";
 import { AssessmentList } from "../src/components/workspace-views";
+import { copy } from "../src/components/copy";
 
 function row(over: Partial<Assessment>): Assessment {
   return {
@@ -51,15 +52,41 @@ describe("assessment rows after a triad report exists", () => {
     expect(simplified).not.toContain("<button");
   });
 
-  it("tells a waiting child that the other two people have not finished", () => {
-    const markup = html([
-      row({ id: "child", respondentRole: "student", respondentName: "孩子", status: "queued", phase: "waiting", reportId: null })
-    ], false);
-    expect(markup).toContain("等待另外两方");
-    expect(markup).toContain("孩子、家长和老师都交齐后");
-    expect(markup).not.toContain("无需再次填写");
-    expect(markup).not.toContain("已完成提交");
-    expect(markup).not.toContain("报告生成中");
+  it.each([
+    { status: "queued", phase: "waiting" },
+    { status: "queued", phase: "reporting" },
+    { status: "queued", phase: "consent" },
+    { status: "failed", phase: null },
+    { status: "published", phase: null },
+  ] as const)("confirms only the respondent's submission during $status / $phase", ({ status, phase }) => {
+    for (const locale of ["zh-CN", "zh-HK"] as const) for (const respondentRole of ["student", "teacher"] as const) {
+      const t = copy(locale);
+      const markup = renderToStaticMarkup(createElement(AssessmentList, {
+        assessments: [row({ respondentRole, status, phase })], locale,
+        navigate: () => undefined, adult: false, onRefresh: async () => undefined,
+      }));
+      expect(markup).toContain(t("submitted"));
+      expect(markup).toContain(t("submittedNote"));
+      expect(markup).toContain("badge-sage");
+      expect(markup).not.toContain("badge-danger");
+      expect(markup).not.toContain("badge-peach");
+      for (const key of ["triadWaiting", "triadWaitingNote", "reportNeedsParentConsent", "reportQueued", "reportFailed", "viewReport", "retryReport"] as const) {
+        expect(markup).not.toContain(t(key));
+      }
+    }
+  });
+
+  it("keeps the actual three-party waiting state visible to parents and staff", () => {
+    for (const locale of ["zh-CN", "zh-HK"] as const) {
+      const t = copy(locale);
+      const markup = renderToStaticMarkup(createElement(AssessmentList, {
+        assessments: [row({ status: "queued", phase: "waiting" })], locale,
+        navigate: () => undefined, adult: true,
+      }));
+      expect(markup).toContain(t("triadWaiting"));
+      expect(markup).toContain(t("triadWaitingNote"));
+      expect(markup).not.toContain(t("reportQueued"));
+    }
   });
 
   it("shows a staff age-mismatch note without printing a birth date", () => {
@@ -107,5 +134,15 @@ describe("report retry capability", () => {
   it("offers retry when the server grants the capability in either locale", () => {
     expect(retryMarkup(true)).toContain("重新排队生成报告");
     expect(retryMarkup(true, "zh-HK")).toContain("重新排隊產生報告");
+  });
+  it("does not show report retry in the respondent-only list", () => {
+    for (const respondentRole of ["student", "teacher"] as const) {
+      const markup = renderToStaticMarkup(createElement(AssessmentList, {
+        assessments: [row({ respondentRole, status: "failed", canRetryReport: true })], locale: "zh-CN",
+        navigate: () => undefined, adult: false, onRefresh: async () => undefined,
+      }));
+      expect(markup).toContain("已完成提交");
+      expect(markup).not.toContain("重新排队生成报告");
+    }
   });
 });

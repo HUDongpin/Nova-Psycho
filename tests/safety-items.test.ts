@@ -124,13 +124,13 @@ describe("safety follow-up and risk visibility", () => {
 describe("child safety guidance", () => {
   const panel = (region: "CN" | "HK", locale: "zh-CN" | "zh-HK", phase: "waiting" | "reporting" | null, safetyGuidance: boolean) => renderToStaticMarkup(createElement(SubmissionPanel, {
     locale, region, role: "student", phase, safetyGuidance, reportId: null, onViewReport: () => undefined, onBack: () => undefined
-  }));
+  })).replace(/<[^>]*>/g, "");
 
-  it("uses the waiting note instead of the finished note while other roles are pending", () => {
+  it("confirms the child submission without exposing the parent report pipeline", () => {
     const html = panel("CN", "zh-CN", "waiting", false);
-    expect(html).toContain("等待另外两方");
-    expect(html).toContain("孩子、家长和老师都交齐后");
-    expect(html).not.toContain("无需再次填写");
+    expect(html).toContain("已完成提交");
+    expect(html).toContain("无需再次填写");
+    expect(html).not.toContain("等待三方填写齐全");
     expect(html).not.toContain("110");
   });
 
@@ -176,7 +176,7 @@ describe("child safety guidance", () => {
     expect(cn).toContain("你信任的大人");
     expect(cn).toContain("110");
     expect(cn).toContain("120");
-    expect(cn).toContain("等待另外两方");
+    expect(cn).toContain("已完成提交");
     const hk = panel("HK", "zh-HK", null, true);
     expect(hk).toContain("請先照顧你的安全");
     expect(hk).toContain("你信任的大人");
