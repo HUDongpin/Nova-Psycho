@@ -1,15 +1,16 @@
 import type { Actor, Locale, ReportPayload } from "../domain/types";
 import { text } from "../domain/types";
 import { reportShowsDemo } from "../domain/report-html";
-import { reportNeedsPrivacyRefresh, reportPrivacyNotice } from "../domain/report-privacy";
+import { isTriadReport, reportNeedsPrivacyRefresh, reportPrivacyNotice } from "../domain/report-privacy";
 import { familyFor,iso } from "./access";
 import { ACTIVE_CONSENT_ROWS_SQL, PARENT_REPORT_SCOPE, hasGranted } from "./consent";
 import { query } from "./db";
 import { HttpError,requireRole,validateId } from "./http";
 export function reportSummary(row:Record<string,unknown>,locale:Locale){
   const p=row.payload as ReportPayload;
-  const combined=Boolean(p.triad);
-  return {id:row.id,familyId:row.family_id,childName:p.childName,title:combined?text(p.triad!.title,locale):text(p.template.content.title,locale),respondentRole:p.score.respondentRole,scaleTitle:combined?(locale==="zh-HK"?"孩子、家長與教師":"孩子、家长与教师"):text(p.scale.title,locale),combined,privacyRefreshRequired:reportNeedsPrivacyRefresh(p),createdAt:iso(row.created_at as Date),generationMode:p.generationMode,risk:combined?p.triad!.safety.length>0||p.score.risk:p.score.risk,demo:reportShowsDemo(p),
+  const combined=isTriadReport(p);
+  const title=combined?(p.triad?.title??{"zh-CN":"孩子的成长了解","zh-HK":"孩子的成長了解"}):p.template.content.title;
+  return {id:row.id,familyId:row.family_id,childName:p.childName,title:text(title,locale),respondentRole:p.score.respondentRole,scaleTitle:combined?(locale==="zh-HK"?"孩子、家長與教師":"孩子、家长与教师"):text(p.scale.title,locale),combined,privacyRefreshRequired:reportNeedsPrivacyRefresh(p),createdAt:iso(row.created_at as Date),generationMode:p.generationMode,risk:Boolean(p.triad?.safety?.length)||p.score.risk,demo:reportShowsDemo(p),
     dimensions:p.score.dimensions.map(d=>({key:d.key,label:text(d.label,locale),raw:d.raw,max:d.max,band:d.band?text(d.band.label,locale):locale==="zh-HK"?"資料不足":"资料不足"})),
     assessmentId:row.assessment_id,comparison:{...p.comparison,changes:p.comparison.changes?.map(c=>({...c,label:text(c.label,locale)}))}};
 }

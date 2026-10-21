@@ -14,5 +14,9 @@ export function parentReportWordAllowed(scale: Pick<ScaleDefinition, "id" | "bun
 }
 
 export function reportNeedsPrivacyRefresh(payload: ReportPayload): boolean {
-  return Boolean(payload.triad && payload.triad.parentAudienceVersion !== PARENT_REPORT_AUDIENCE_VERSION);
+  return isTriadReport(payload) && payload.triad?.parentAudienceVersion !== PARENT_REPORT_AUDIENCE_VERSION;
+}
+
+export function isTriadReport(payload: ReportPayload): boolean {
+  return payload.scale?.bundle === "growth-triad" || Boolean(payload.triad);
 }
