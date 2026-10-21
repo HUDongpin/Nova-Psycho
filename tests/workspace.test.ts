@@ -408,27 +408,26 @@ describe("safety alerts on the workbench",()=>{
       const sql=sqls().find(item=>item.includes("FROM staff_alerts a"));
       expect(sql).toContain("a.region=$1");
       expect(sql).toContain("a.resolved_at IS NULL");
-      expect(sql).not.toMatch(/assigned_to|guardian_label|join_code/);
+      expect(sql).not.toMatch(/guardian_label|join_code/);
       expect(sql).toContain("f.child_name");
-      expect(mockQuery.mock.calls.find(([query])=>String(query).includes("FROM staff_alerts a"))?.[1]).toEqual(["CN"]);
+      expect(mockQuery.mock.calls.find(([query])=>String(query).includes("FROM staff_alerts a"))?.[1]).toEqual(role==="admin"?["CN"]:["CN",SELF]);
     }
   });
-  it("lists an assigned family's alert to other regional staff without the record, notes, report or contact info",async()=>{
-    mockQuery.mockImplementation((async(sql:string)=>{
-      const text=String(sql);
-      if(text.includes("FROM staff_alerts a"))return [{id:"alert-assigned",family_id:FAMILY_ID,child_name:"Synthetic child",created_at:new Date("2026-10-06T00:00:00Z")}];
-      return [];
-    }) as never);
+  it("applies the family access rule to alert identities for regional staff",async()=>{
+    mockQuery.mockResolvedValue([]);
     const workspace=await workspaceFor(actor("staff"),"zh-CN");
-    expect(workspace.alerts).toEqual([{id:"alert-assigned",familyId:FAMILY_ID,childName:"Synthetic child",createdAt:"2026-10-06T00:00:00.000Z",viewedAt:null}]);
-    expect(Object.keys(workspace.alerts[0]).sort()).toEqual(["childName","createdAt","familyId","id","viewedAt"]);
+    expect(workspace.alerts).toEqual([]);
     expect(workspace.families).toEqual([]);
     expect(workspace.reports).toEqual([]);
     expect(workspace.observations).toEqual([]);
     expect(workspace.staffNotes).toEqual([]);
     expect(JSON.stringify(workspace.alerts)).not.toMatch(/guardian|joinCode|join_code|Mother/);
     const listed=sqls().find(item=>item.includes("FROM staff_alerts a"));
-    expect(listed).not.toMatch(/assigned_to|guardian_label|join_code/);
+    expect(listed).not.toMatch(/guardian_label|join_code/);
+    expect(listed).toContain("f.assigned_to=$2");
+    expect(listed).toContain("f.assigned_to IS NULL");
+    expect(listed).toContain("sa.resolved_at IS NULL");
+    expect(mockQuery.mock.calls.find(([sql])=>String(sql).includes("FROM staff_alerts a"))?.[1]).toEqual(["CN",SELF]);
     const detail=sqls().find(item=>item.includes("FROM families f WHERE"));
     expect(detail).toContain("f.assigned_to=$2");
     expect(detail).toContain("f.assigned_to IS NULL");

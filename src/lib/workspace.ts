@@ -34,8 +34,7 @@ export async function workspaceFor(actor:Actor,locale:Locale){
     query("SELECT * FROM scales ORDER BY created_at DESC"),
     team?query("SELECT id,name FROM users WHERE region=$1 AND role='staff' AND NOT disabled ORDER BY name",[actor.region]):Promise.resolve([]),
     actor.role==="admin"?query("SELECT id,kind,version,library_key,created_at FROM content_versions ORDER BY created_at DESC"):Promise.resolve([]),
-    // Every regional admin and staff member sees each unresolved alert. The row is only an id, a child name and timestamps — not the family record or contact details.
-    team?query("SELECT a.id,a.family_id,f.child_name,a.created_at,a.viewed_at FROM staff_alerts a JOIN families f ON f.id=a.family_id WHERE a.region=$1 AND a.resolved_at IS NULL ORDER BY a.created_at DESC",[actor.region]):Promise.resolve([]),
+    team?query(`SELECT a.id,a.family_id,f.child_name,a.created_at,a.viewed_at FROM staff_alerts a JOIN families f ON f.id=a.family_id WHERE a.region=$1 AND (${scope.sql}) AND a.resolved_at IS NULL ORDER BY a.created_at DESC`,scope.values):Promise.resolve([]),
     team?query("SELECT a.id,a.family_id,a.answers,s.definition FROM assessments a JOIN scales s ON s.id=a.scale_version_id WHERE a.family_id=ANY($1::uuid[]) AND a.region=$2 AND a.answers IS NOT NULL AND s.definition->>'bundle'=$3",[ids,actor.region,TRIAD_BUNDLE]):Promise.resolve([])
   ]);
   const scopesByFamily=new Map<string,{scopes:unknown}[]>();
