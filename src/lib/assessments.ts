@@ -120,7 +120,7 @@ export async function createAssessment(actor:Actor,input:unknown){
     const pending=parentVersions
       ?await client.query("SELECT a.id,a.triad_round_id,s.definition FROM assessments a JOIN scales s ON s.id=a.scale_version_id WHERE a.family_id=$1 AND a.respondent_id=$2 AND s.scale_id=$3 AND a.status='pending' ORDER BY a.created_at,a.id LIMIT 1",[family.id,d.respondentId,scale.definition.id])
       :await client.query("SELECT id,triad_round_id FROM assessments WHERE family_id=$1 AND respondent_id=$2 AND scale_version_id=$3 AND status='pending'",[family.id,d.respondentId,d.scaleVersionId]);
-    if(pending.rows[0]&&parentStaffWritingWouldLeak(scale.definition,storedScale(pending.rows[0].definition)))throw new HttpError(409,"已有一份旧版家长问卷尚未提交。继续它会把服务团队的文字放进家长报告。请完成已开始的问卷；新版本不会改写它。","PARENT_VERSION_PENDING");
+    if(pending.rows[0]&&parentStaffWritingWouldLeak(scale.definition,storedScale(pending.rows[0].definition)))throw new HttpError(409,"已有一份旧版家长问卷尚未提交，暂时不能分配新版。请联系服务人员核对旧任务；不要为切换版本而继续提交旧问卷。","PARENT_VERSION_PENDING");
     if(pending.rows[0]){
       if(scale.definition.bundle===TRIAD_BUNDLE&&!pending.rows[0].triad_round_id){
         const roundId=await triadRoundFor(client,family.id,role);
