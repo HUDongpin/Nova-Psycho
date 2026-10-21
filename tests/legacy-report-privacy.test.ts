@@ -110,6 +110,21 @@ describe("legacy service-team writing", () => {
     await expect(reportFor(actor, REPORT_ID)).rejects.toMatchObject({ code: "REPORT_PRIVACY_REFRESH_REQUIRED" });
   });
 
+  it.each([undefined, null])("holds a legacy triad source when its composed report is %s", async missing => {
+    row.payload.triad = missing as never;
+    for (const suffix of ["", "/document", "/pdf"]) {
+      const response = await GET(new Request(`http://127.0.0.1:3100/api/reports/${REPORT_ID}${suffix}`), { params: Promise.resolve({ path: ["reports", REPORT_ID, ...suffix.split("/").filter(Boolean)] }) });
+      expect(response.status).toBe(409);
+      expect((await response.json()).code).toBe("REPORT_PRIVACY_REFRESH_REQUIRED");
+    }
+    expect(readPrivatePdf).not.toHaveBeenCalled();
+    for (const locale of ["zh-CN", "zh-HK"] as Locale[]) {
+      const summary = reportSummary(row, locale);
+      expect(summary).toMatchObject({ combined: true, privacyRefreshRequired: true, title: locale === "zh-CN" ? "孩子的成长了解" : "孩子的成長了解" });
+      expect(JSON.stringify(summary).includes(SENTINEL)).toBe(false);
+    }
+  });
+
   it("keeps safe summaries available and indicates why the document is unavailable", () => {
     const summary = reportSummary(row, "zh-CN");
     expect(summary).toHaveProperty("privacyRefreshRequired", true);
