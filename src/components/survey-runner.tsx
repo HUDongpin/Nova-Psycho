@@ -18,6 +18,7 @@ import { createQuestionChapters, createSurveyProgressStore, createSurveySections
 import { surveySectionLabel, SurveyReviewSections, SurveySaveStatus, SurveySectionNavigation } from "./survey-ui";
 import { ErrorNotice, Field, Modal } from "./ui";
 import styles from "./questionnaire.module.css";
+import { bindSurveyViewport } from "./survey-viewport";
 
 export default function SurveyRunner({ record, draft, locale, onSubmitted, onReloadLatest, openPrivacy, privacyOpen = false, leaving = false }: {
   record: SurveyRecord;
@@ -35,6 +36,7 @@ export default function SurveyRunner({ record, draft, locale, onSubmitted, onRel
   const [noticeChecked, setNoticeChecked] = useState(false);
   const [acknowledged, setAcknowledged] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [keyboardOpen, setKeyboardOpen] = useState(false);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
   const [reloading, setReloading] = useState(false);
@@ -42,6 +44,7 @@ export default function SurveyRunner({ record, draft, locale, onSubmitted, onRel
   const completedJump = useRef<{ id: string } | null>(null);
   const [reviewFocus, setReviewFocus] = useState(0);
   const questionsRef = useRef<HTMLFieldSetElement>(null);
+  const viewportRef = useRef<HTMLDivElement>(null);
   const reviewHeadingRef = useRef<HTMLHeadingElement>(null);
   const completionHeadingRef = useRef<HTMLHeadingElement>(null);
   const acknowledgedRef = useRef(false);
@@ -55,6 +58,7 @@ export default function SurveyRunner({ record, draft, locale, onSubmitted, onRel
   const stageRef = useRef(stage);
   stageRef.current = stage;
   const chapters = useMemo(() => createQuestionChapters(record.surveyJson), [record.surveyJson]);
+  useLayoutEffect(() => viewportRef.current ? bindSurveyViewport(viewportRef.current, setKeyboardOpen) : undefined, []);
 
   const { model, completionNavigation, supplementController } = useMemo(() => {
     const survey = new Model(record.surveyJson);
@@ -174,7 +178,7 @@ export default function SurveyRunner({ record, draft, locale, onSubmitted, onRel
   const positionLabel = hk ? `第 ${progress.position} / ${progress.total} 題` : `第 ${progress.position} / ${progress.total} 题`;
   const sectionNavigation = <SurveySectionNavigation sections={sections} currentId={stage === "answering" ? progress.chapter.id : ""} locale={locale} disabled={locked} onJump={jumpTo} />;
 
-  return <div className={`${styles.runner} survey-container`} data-stage={stage}>
+  return <div ref={viewportRef} className={`${styles.runner} survey-container`} data-stage={stage}>
     {stage !== "intro" && <aside className={styles.chapterSidebar}>
       <p className={styles.sidebarLabel}>{hk ? "問卷章節" : "问卷章节"}</p>{sectionNavigation}
       <button type="button" className={styles.reviewLink} disabled={locked} onClick={review}><ListChecks />{hk ? "核對作答" : "核对作答"}</button>
@@ -218,7 +222,8 @@ export default function SurveyRunner({ record, draft, locale, onSubmitted, onRel
         <SurveyReviewSections model={model} sections={sections} supplements={record.supplements ?? []} locale={locale} disabled={locked} onJump={jumpTo} />
       </section>}
       {submitError && <div className={styles.errorPanel}><ErrorNotice locale={locale} message={submitError} /></div>}
-      {stage !== "intro" && <div className={styles.actions}>
+      {stage !== "intro" && <div className={styles.actions} data-survey-actions>
+        {keyboardOpen && <div className={styles.keyboardSave}><SurveySaveStatus snapshot={snapshot} locale={locale} disabled={sessionLocked || leaving} onRetry={() => void draft.save(locale).catch(() => undefined)} /></div>}
         {stage === "answering" ? <>
           <button type="button" className={styles.backButton} data-testid="survey-previous" disabled={locked || model.isFirstElement} onClick={() => move(true)}><ArrowLeft />{t("previousQuestion")}</button>
           <button type="button" className={styles.primaryButton} data-testid="survey-next" disabled={locked} onClick={() => move(false)}>{model.isLastElement ? (hk ? "核對作答" : "核对作答") : t("nextQuestion")}<ArrowRight /></button>

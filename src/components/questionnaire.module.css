@@ -109,6 +109,7 @@
 .runner :global(.survey-supplement textarea) { font-size: 17px; background: #fff; min-height: 120px; }
 .runner :global(.survey-supplement p) { font-size: 14px; }
 .actions { position: sticky; bottom: 0; z-index: 2; display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 24px; padding: 16px 0 max(16px, env(safe-area-inset-bottom)); background: #f6f7f5; border-top: 1px solid #e5eae6; }
+.keyboardSave { grid-column: 1 / -1; }
 .primaryButton { display: inline-flex; align-items: center; justify-content: center; gap: 10px; min-height: 48px; padding: 12px 24px; border: 1px solid #2c6058; border-radius: 12px; background: #2c6058; color: #fff; font-size: 15px; line-height: 1.5; font-weight: 550; transition: background-color 160ms ease; }
 .primaryButton:hover:not(:disabled) { background: #204d46; }
 .primaryButton:disabled, .backButton:disabled, .textButton:disabled, .sectionLink:disabled, .reviewLink:disabled { opacity: .45; cursor: not-allowed; }
@@ -164,6 +165,10 @@
   .review h2 { font-size: 24px; }
   .runner .intro :global(.survey-assent-panel) { padding: 24px; }
   .introActions { padding: 20px 24px; flex-wrap: wrap; }
+  .runner[data-keyboard-open="true"] { padding-bottom: calc(var(--survey-keyboard-inset) + var(--survey-actions-height) + 16px); }
+  .runner[data-keyboard-open="true"] .actions { position: fixed; left: max(20px, calc((100vw - 680px) / 2)); right: max(20px, calc((100vw - 680px) / 2)); bottom: var(--survey-keyboard-inset); display: grid; grid-template-columns: auto auto; gap: 6px 12px; margin-top: 0; padding: 8px 0 12px; }
+  .runner[data-keyboard-open="true"] .progressMeta .saveStatus { visibility: hidden; }
+  .runner[data-keyboard-open="true"] :global(textarea) { min-height: 64px; max-height: max(64px, calc(var(--survey-visual-height) - var(--survey-actions-height) - 32px)); }
 }
 @media (max-width: 420px) {
   .headerInner { padding-inline: 16px; gap: 8px; }
