@@ -7,7 +7,7 @@ import { SubmissionPanel } from "../src/components/documents";
 import { scoreAssessment, ScoringError } from "../src/domain/scoring";
 import { surveyDefinition } from "../src/domain/survey";
 import { previewAnswers } from "../src/domain/triad-report";
-import { childScaleBirthAge, childScaleSafety as childScale, childScaleStaffNotes, currentTriadScaleIds, parentScaleSafety as parentScale, parentScaleStaffNotes, teacherScaleSafety as teacherScale, teacherScaleStaffNotes } from "../src/domain/triad-scales";
+import { childScaleBirthAge, childScaleSafety as childScale, childScaleStaffNotes, currentTriadScaleIds, legacyTriadScaleIds, parentScaleSafety as parentScale, parentScaleStaffNotes, teacherScaleSafety as teacherScale, teacherScaleStaffNotes } from "../src/domain/triad-scales";
 
 const student = { age: 12, region: "CN" as const, role: "student" as const };
 const parent = { age: 12, region: "CN" as const, role: "parent" as const };
@@ -18,13 +18,13 @@ function choice(scale: typeof childScale, itemId: string, label: string) {
 }
 
 describe("safety items stay early and exclusive", () => {
-  it("publishes staff-note revisions for new assignments and keeps the birth-date safety items", () => {
-    expect(currentTriadScaleIds).toEqual({
+  it("preserves staff-note revisions alongside the new unscored defaults and birth-date safety items", () => {
+    expect(legacyTriadScaleIds).toEqual({
       parent: `${parentScaleStaffNotes.id}@${parentScaleStaffNotes.version}`,
       student: `${childScaleStaffNotes.id}@${childScaleStaffNotes.version}`,
       teacher: `${teacherScaleStaffNotes.id}@${teacherScaleStaffNotes.version}`
     });
-    expect(currentTriadScaleIds).toEqual({ parent: "growth-parent@1.3.0", student: "growth-child@1.3.0", teacher: "growth-teacher@1.2.0" });
+    expect(currentTriadScaleIds).toEqual({ parent: "growth-parent@2.0.0", student: "growth-child@2.0.0", teacher: "growth-teacher@2.0.0" });
     expect(childScaleBirthAge.items.find(item => item.id === "c15")?.showIf?.anyOf).toEqual([1, 2, 3, 4, 5, 7, 8]);
     expect(childScaleBirthAge.items.find(item => item.id === "c14")?.noAutoAdvance).toBe(true);
     expect(parentScale.version).toBe("1.2.0");

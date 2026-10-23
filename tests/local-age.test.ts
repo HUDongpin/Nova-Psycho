@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PoolClient } from "pg";
 import type { Actor } from "../src/domain/types";
 import { ageAt } from "../src/lib/access";
-import { childScaleBirthAge as childScale } from "../src/domain/triad-scales";
+import { childScaleBirthAge as childScale, parentScaleStaffNotes } from "../src/domain/triad-scales";
 import { previewAnswers } from "../src/domain/triad-report";
 import { demoAdvice, demoTemplate } from "../src/domain/demo";
 
@@ -102,7 +102,9 @@ describe("eligibility, visibility, score age and mismatch follow that local age"
       if (sql.includes("status='pending'")) return { rows: [] };
       if (sql.includes("SELECT submitted_at")) return { rows: [] };
       if (sql.includes("triad_round_id IS NULL")) return { rows: [] };
-      if (sql.includes("FROM triad_rounds")) return { rows: [] };
+      // Historical age-gated tasks can still join a compatible legacy round.
+      if (sql.includes("FROM triad_rounds")) return { rows: [{ id: "existing-legacy-round" }] };
+      if (sql.includes("respondent_role,submitted_at")) return { rows: [{ respondent_role: "parent", submitted_at: null, definition: parentScaleStaffNotes }] };
       if (sql.startsWith("INSERT INTO triad_rounds")) return { rows: [] };
       if (sql.startsWith("INSERT INTO assessments")) return { rows: [] };
       return { rows: [] };

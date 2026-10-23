@@ -20,15 +20,18 @@ const item=z.object({
 const band=z.object({minimum:z.number().finite(),key,label:localized,explanation:localized,adviceIds:z.array(key).max(12)}).strict();
 export const scaleSchema=z.object({
   id:key,version:z.string().regex(/^\d+\.\d+\.\d+$/),title:localized,description:localized,demo:z.boolean(),source:z.string().trim().min(1).max(1000),
+  resultMode:z.enum(["scored","support-intake"]).optional(),
   rights:z.object({digital:z.boolean(),commercial:z.boolean(),reference:z.string().trim().min(1).max(1000)}).strict(),
   minAge:z.number().int().min(3).max(25),maxAge:z.number().int().min(3).max(25),regions:z.array(regions).min(1).max(2),roles:z.array(roles).min(1).max(3),retakeDays:z.number().int().min(0).max(730),
   norm:z.object({label:localized,source:z.string().trim().min(1).max(1000),regions:z.array(regions).min(1).max(2),minAge:z.number().int().min(3).max(25),maxAge:z.number().int().min(3).max(25),validated:z.boolean()}).strict(),
   items:z.array(item).min(1).max(300),
-  dimensions:z.array(z.object({key,label:localized,items:z.array(key).min(1).max(300),aggregation:z.enum(["sum","mean"]),maxMissing:z.number().int().min(0).max(299),prorate:z.boolean(),higherMeans:z.enum(["more_support","more_strength"]),bands:z.array(band).max(20),optional:z.boolean().optional(),domain:z.string().regex(/^[a-z][a-z0-9_-]{0,40}$/).optional()}).strict()).min(1).max(40),
+  dimensions:z.array(z.object({key,label:localized,items:z.array(key).min(1).max(300),aggregation:z.enum(["sum","mean"]),maxMissing:z.number().int().min(0).max(299),prorate:z.boolean(),higherMeans:z.enum(["more_support","more_strength"]),bands:z.array(band).max(20),optional:z.boolean().optional(),domain:z.string().regex(/^[a-z][a-z0-9_-]{0,40}$/).optional()}).strict()).max(40),
   riskRules:z.array(z.object({itemId:key,values:z.array(z.number().int()).min(1).max(20),message:localized}).strict()).max(30),
   bundle:z.string().regex(/^[a-z][a-z0-9-]{0,40}$/).optional()
 }).strict().superRefine((s,ctx)=>{
   const fail=(message:string)=>ctx.addIssue({code:"custom",message});
+  if(s.resultMode==="support-intake"?s.dimensions.length!==0:s.dimensions.length===0)fail("Only support-intake instruments have no score dimensions");
+  if(s.resultMode==="support-intake"&&s.bundle!=="growth-triad")fail("Support intake requires the growth-triad workflow");
   if(s.minAge>s.maxAge||s.norm.minAge>s.norm.maxAge)fail("Age interval is invalid");
   if(s.norm.minAge>s.minAge||s.norm.maxAge<s.maxAge)fail("Norm age interval must cover the instrument");
   if(s.regions.some(r=>!s.norm.regions.includes(r)))fail("Norm region must cover the instrument");

@@ -1,4 +1,4 @@
-import type { DimensionScore, Locale, RespondentRole, ScaleDefinition, ScaleDimension, ScaleItem, StoredAnswer, TextPair, TriadReport } from "./types";
+import type { DimensionScore, Locale, RespondentRole, ResultMode, ScaleDefinition, ScaleDimension, ScaleItem, StoredAnswer, SupportIntakeObservation, TextPair, TriadReport } from "./types";
 import { answerVisible, scoreAssessment } from "./scoring";
 import { pair } from "./zh-pair";
 import { PARENT_REPORT_AUDIENCE_VERSION, parentReportWordAllowed } from "./report-privacy";
@@ -98,7 +98,55 @@ function choiceLabel(item: ScaleItem, value: number): TextPair | null {
   return item.choices.find(choice => choice.value === value)?.label ?? null;
 }
 
+export function triadResultMode(scales: readonly Pick<ScaleDefinition, "resultMode">[]): ResultMode {
+  const modes = new Set(scales.map(scale => scale.resultMode ?? "scored"));
+  if (modes.size > 1) throw new Error("Mixed triad result modes");
+  return modes.values().next().value ?? "scored";
+}
+
+// Parent-report permission is explicit for this intake version. Item report tags
+// are not permission to expose additional answers, particularly child responses.
+const SUPPORT_REPORT_ITEMS = {
+  concerns: {
+    parent: ["p_focus", "q20_1", "q20_2", "q20_3", "q20_4", "q20_5", "q20_6", "q20_8", "q21_1", "q21_3", "q21_4"],
+    teacher: ["t_focus", "t13_1", "t13_2", "t13_4", "t13_5", "t13_7", "t14_1"]
+  },
+  supports: {
+    parent: ["q16_1", "q18_1", "q18_2", "q19_1", "q19_5"],
+    teacher: ["t11_1", "t12_2"]
+  },
+  actions: { parent: ["q31"], teacher: ["t22", "t21"] }
+} as const;
+
+function supportObservationPeriod(role: "parent" | "teacher", itemId: string): TextPair {
+  if (/^(q20_|q21_)/.test(itemId)) return pair("过去四周");
+  if (/^(t13_|t14_)/.test(itemId)) return pair("过去四周在学校");
+  if (/^(q16_|q18_|q19_)/.test(itemId)) return pair("过去三个月");
+  if (/^(t11_|t12_)/.test(itemId)) return pair("过去三个月在学校的直接观察");
+  if (role === "teacher" && itemId === "t21") return pair("未来四至六周");
+  return pair("本次填写");
+}
+
+function supportObservations(sources: readonly TriadSource[], section: keyof typeof SUPPORT_REPORT_ITEMS): SupportIntakeObservation[] {
+  return sources.flatMap(source => {
+    if (source.role !== "parent" && source.role !== "teacher") return [];
+    const role = source.role;
+    return SUPPORT_REPORT_ITEMS[section][role].flatMap(itemId => {
+      const item = source.scale.items.find(candidate => candidate.id === itemId);
+      if (!item || item.report === "staff" || !answerVisible(source.answers, item, source.score.age)) return [];
+      const value = source.answers[item.id];
+      const selected = typeof value === "number" ? [value] : Array.isArray(value) ? value : [];
+      // Preserve submitted writing verbatim in either script; no AI translation.
+      const responses = item.kind === "text" && typeof value === "string" && value.trim()
+        ? [{ "zh-CN": value.trim(), "zh-HK": value.trim() }]
+        : selected.flatMap(entry => { const label = choiceLabel(item, entry); return label ? [label] : []; });
+      return responses.length ? [{ role, itemId, prompt: item.label, responses, period: supportObservationPeriod(role, itemId) }] : [];
+    });
+  });
+}
+
 export function composeTriad(sources: TriadSource[]): TriadReport {
+  const resultMode = triadResultMode(sources.map(source => source.scale));
   const ordered = [...sources].sort((left, right) => ROLE_ORDER.indexOf(left.role) - ROLE_ORDER.indexOf(right.role));
   const safety: TextPair[] = [];
   const seen = new Set<string>();
@@ -107,6 +155,19 @@ export function composeTriad(sources: TriadSource[]): TriadReport {
     seen.add(message["zh-CN"]);
     safety.push(message);
   }
+  if (resultMode === "support-intake") return {
+    parentAudienceVersion: PARENT_REPORT_AUDIENCE_VERSION,
+    resultMode,
+    title: pair("当前困难与支持建议"),
+    sources: ordered.map(source => ({ role: source.role, submittedAt: source.submittedAt })),
+    safety, domains: [], portrait: [], situations: [], priorities: [], words: [], comparisons: [],
+    supportIntake: {
+      concerns: supportObservations(ordered, "concerns"),
+      supports: supportObservations(ordered, "supports"),
+      actions: supportObservations(ordered, "actions"),
+      nextStep: pair("从上述关注中共同选一项，商定一项具体支持，明确由谁参与，并在四至六周后回顾。")
+    }
+  };
   const domains = DOMAINS.flatMap(([key, label]) => {
     const views = ordered.flatMap(source => source.scale.dimensions.filter(dimension => dimension.domain === key).flatMap(dimension => {
       const dimensionItems = dimension.items.map(id => source.scale.items.find(item => item.id === id)).filter(item => item !== undefined);

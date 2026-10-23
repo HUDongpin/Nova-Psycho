@@ -1,5 +1,6 @@
 import type { Actor,Locale,ScaleDefinition,StoredAnswer } from "../domain/types";
 import { text } from "../domain/types";
+import { answerVisible } from "../domain/scoring";
 import { TRIAD_BUNDLE,staffOnlyText } from "../domain/triad-report";
 import { currentTriadScaleIds } from "../domain/triad-scales";
 import { effectiveDemo, instrumentWriteBlockReason } from "../domain/validation";
@@ -12,6 +13,26 @@ import { query } from "./db";
 import { reportSummary } from "./reports";
 import { syntheticRetakeCapability } from "./synthetic-retake";
 import { isSyntheticTestActorForFamily } from "./synthetic-testing";
+
+function intakeResponseSections(scale:ScaleDefinition,answers:Record<string,StoredAnswer>,locale:Locale,age?:number){
+  const sections:{title:string;items:{itemId:string;label:string;responses:string[]}[]}[]=[];
+  const pages=new Map<string,typeof sections[number]>();
+  for(const item of scale.items){
+    if(!answerVisible(answers,item,age))continue;
+    const value=answers[item.id];
+    const responses=typeof value==="string"?[value]:typeof value==="number"||Array.isArray(value)
+      ?(typeof value==="number"?[value]:value).flatMap(selected=>{
+        const choice=item.choices.find(candidate=>candidate.value===selected);
+        return choice?[text(choice.label,locale)]:[];
+      }):[];
+    if(!responses.length)responses.push(locale==="zh-HK"?(item.required?"未回答":"未填寫（選填）"):(item.required?"未回答":"未填写（选填）"));
+    const key=item.page??"assessment";
+    let section=pages.get(key);
+    if(!section){section={title:item.pageTitle?text(item.pageTitle,locale):text(scale.title,locale),items:[]};pages.set(key,section);sections.push(section);}
+    section.items.push({itemId:item.id,label:text(item.label,locale),responses});
+  }
+  return sections;
+}
 
 export async function workspaceFor(actor:Actor,locale:Locale){
   const scope=familyScope(actor),care=["admin","staff","parent"].includes(actor.role),team=["admin","staff"].includes(actor.role);
@@ -35,7 +56,7 @@ export async function workspaceFor(actor:Actor,locale:Locale){
     team?query("SELECT id,name FROM users WHERE region=$1 AND role='staff' AND NOT disabled ORDER BY name",[actor.region]):Promise.resolve([]),
     actor.role==="admin"?query("SELECT id,kind,version,library_key,created_at FROM content_versions ORDER BY created_at DESC"):Promise.resolve([]),
     team?query(`SELECT a.id,a.family_id,f.child_name,a.created_at,a.viewed_at FROM staff_alerts a JOIN families f ON f.id=a.family_id WHERE a.region=$1 AND (${scope.sql}) AND a.resolved_at IS NULL ORDER BY a.created_at DESC`,scope.values):Promise.resolve([]),
-    team?query("SELECT a.id,a.family_id,a.answers,s.definition FROM assessments a JOIN scales s ON s.id=a.scale_version_id WHERE a.family_id=ANY($1::uuid[]) AND a.region=$2 AND a.answers IS NOT NULL AND s.definition->>'bundle'=$3",[ids,actor.region,TRIAD_BUNDLE]):Promise.resolve([])
+    team?query("SELECT a.id,a.family_id,a.respondent_role,a.submitted_at,a.answers,a.snapshot->'score'->'age' AS age,COALESCE(NULLIF(a.snapshot->'scale','null'::jsonb),s.definition) AS definition FROM assessments a JOIN scales s ON s.id=a.scale_version_id WHERE a.family_id=ANY($1::uuid[]) AND a.region=$2 AND a.answers IS NOT NULL AND a.submitted_at IS NOT NULL AND s.definition->>'bundle'=$3 ORDER BY a.submitted_at DESC,a.id",[ids,actor.region,TRIAD_BUNDLE]):Promise.resolve([])
   ]);
   const scopesByFamily=new Map<string,{scopes:unknown}[]>();
   for(const row of consents as {family_id:string;scopes:unknown}[]){
@@ -83,6 +104,12 @@ export async function workspaceFor(actor:Actor,locale:Locale){
     contentVersions:content.map(c=>({id:c.id,kind:c.kind,version:c.version,libraryKey:typeof c.library_key==="string"?c.library_key:null,createdAt:iso(c.created_at)})),
     alerts:alerts.map(alert=>({id:alert.id,familyId:alert.family_id,childName:alert.child_name,createdAt:iso(alert.created_at),viewedAt:iso(alert.viewed_at??null)})),
     staffNotes:triadAnswers.flatMap(row=>staffOnlyText(row.definition as ScaleDefinition,(row.answers??{}) as Record<string,StoredAnswer>).map(note=>({familyId:row.family_id,assessmentId:typeof row.id==="string"?row.id:"",itemId:note.itemId,label:text(note.label,locale),value:note.value}))),
+    ...(team?{staffIntakeResponses:triadAnswers.flatMap(row=>{
+      const scale=row.definition as ScaleDefinition;
+      const role=row.respondent_role;
+      if(scale.resultMode!=="support-intake"||!row.submitted_at||!familyById.has(row.family_id)||!["parent","student","teacher"].includes(role))return [];
+      return [{familyId:row.family_id as string,assessmentId:row.id as string,role:role as "parent"|"student"|"teacher",submittedAt:iso(row.submitted_at)!,sections:intakeResponseSections(scale,(row.answers??{}) as Record<string,StoredAnswer>,locale,typeof row.age==="number"?row.age:undefined)}];
+    })}:{}),
     summary:{families:families.length,pendingAssessments:assessments.filter(a=>a.status==="pending").length,publishedReports:reports.length,activeGoals:goals.filter(g=>g.status==="active").length,riskReports:scopedReports.filter(r=>r.risk).length}
   };
 }

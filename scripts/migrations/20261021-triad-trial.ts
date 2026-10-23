@@ -2,7 +2,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import pg from "pg";
-import { childScaleStaffNotes, currentTriadScaleIds, parentScaleStaffNotes, teacherScaleStaffNotes } from "../../src/domain/triad-scales";
+import { childScaleStaffNotes, legacyTriadScaleIds, parentScaleStaffNotes, teacherScaleStaffNotes } from "../../src/domain/triad-scales";
 import { ensureAdviceReferences, parseAdvice, parseStoredScale, parseTemplate } from "../../src/domain/validation";
 
 export interface TriadMigrationClient {
@@ -15,7 +15,7 @@ const scalesSql = "SELECT * FROM public.scales ORDER BY id";
 export async function registerTriadTrial(client: TriadMigrationClient, apply = false) {
   const definitions = [childScaleStaffNotes, parentScaleStaffNotes, teacherScaleStaffNotes].map(scale => parseStoredScale(scale));
   const ids = definitions.map(scale => `${scale.id}@${scale.version}`);
-  if (!isDeepStrictEqual(ids, expectedIds) || !isDeepStrictEqual(Object.values(currentTriadScaleIds).sort(), [...expectedIds].sort()) || definitions.some(scale => scale.bundle !== "growth-triad" || scale.norm.validated !== false)) {
+  if (!isDeepStrictEqual(ids, expectedIds) || !isDeepStrictEqual(Object.values(legacyTriadScaleIds).sort(), [...expectedIds].sort()) || definitions.some(scale => scale.bundle !== "growth-triad" || scale.norm.validated !== false)) {
     throw new Error("This migration requires the frozen unvalidated triad trial versions");
   }
   const canonical = definitions.map(scale => JSON.parse(JSON.stringify(scale)));

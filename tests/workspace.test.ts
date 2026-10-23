@@ -569,6 +569,48 @@ describe("child hopes staff notes",()=>{
   });
 });
 
+describe("support intake staff responses",()=>{
+  const definition={...childScaleStaffNotes,version:"2.0.0",resultMode:"support-intake" as const,dimensions:[]};
+  const submittedAt=new Date("2026-10-23T01:02:03Z");
+  function load(){
+    mockQuery.mockImplementation((async(sql:string)=>{
+      if(sql.includes("FROM families f WHERE"))return [familyRow];
+      if(sql.includes("definition->>'bundle'"))return [
+        {id:"short-student",family_id:FAMILY_ID,respondent_role:"student",submitted_at:submittedAt,age:11,definition,answers:{c_assent:1,c14:[6],c_help:[1,4],c8_3:-1,c22:"PRIVATE_STUDENT_GOAL",c15:1,c18_1:5}},
+        {id:"old-student",family_id:FAMILY_ID,respondent_role:"student",submitted_at:submittedAt,definition:childScaleStaffNotes,answers:{c_help:[2]}},
+        {id:"pending-student",family_id:FAMILY_ID,respondent_role:"student",submitted_at:null,definition,answers:{c22:"DRAFT_SENTINEL"}},
+        {id:"foreign-student",family_id:OTHER,respondent_role:"student",submitted_at:submittedAt,definition,answers:{c22:"FOREIGN_SENTINEL"}}
+      ];
+      return [];
+    }) as never);
+  }
+  it("shows submitted short-form responses only inside the staff family scope, grouped and localized",async()=>{
+    load();
+    const result=await workspaceFor(actor("staff"),"zh-HK");
+    expect(result.staffIntakeResponses).toHaveLength(1);
+    expect(result.staffIntakeResponses![0]).toMatchObject({familyId:FAMILY_ID,assessmentId:"short-student",role:"student",submittedAt:submittedAt.toISOString()});
+    const sections=result.staffIntakeResponses![0].sections;
+    expect(sections.every(section=>section.title.length>0)).toBe(true);
+    const items=sections.flatMap(section=>section.items);
+    expect(items.find(item=>item.itemId==="c_help")?.responses).toEqual(["學習更有動力","減少壓力、焦慮或難過"]);
+    expect(items.find(item=>item.itemId==="c8_3")?.responses).toEqual(["不確定或不適用"]);
+    expect(items.find(item=>item.itemId==="c22")?.responses).toEqual(["PRIVATE_STUDENT_GOAL"]);
+    expect(items.map(item=>item.itemId)).not.toContain("c15");
+    expect(items.map(item=>item.itemId)).not.toContain("c18_1");
+    expect(JSON.stringify(result.staffIntakeResponses)).not.toMatch(/DRAFT_SENTINEL|FOREIGN_SENTINEL/);
+    const call=mockQuery.mock.calls.find(([sql])=>String(sql).includes("definition->>'bundle'"))!;
+    expect(call[0]).toContain("a.region=$2");
+    expect(call[1]).toEqual([[FAMILY_ID],"CN","growth-triad"]);
+  });
+  it.each(["parent","student","teacher"] as const)("does not send the intake response field or query private answers for %s",async role=>{
+    load();
+    const result=await workspaceFor(actor(role),"zh-CN");
+    expect(result).not.toHaveProperty("staffIntakeResponses");
+    expect(sqls().some(sql=>sql.includes("definition->>'bundle'"))).toBe(false);
+    expect(JSON.stringify(result)).not.toContain("PRIVATE_STUDENT_GOAL");
+  });
+});
+
 describe("instrument visibility and summary",()=>{
   it("only lists instruments that apply to the caller's region",async()=>{
     const workspace=await workspaceFor(actor("admin"),"zh-CN");

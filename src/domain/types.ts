@@ -2,6 +2,7 @@ export type Region = "CN" | "HK";
 export type Locale = "zh-CN" | "zh-HK";
 export type Role = "admin" | "staff" | "parent" | "student" | "teacher";
 export type RespondentRole = "parent" | "student" | "teacher";
+export type ResultMode = "scored" | "support-intake";
 export const TRIAD_DOMAIN_KEYS = ["cognition", "connection", "guidance", "curriculum", "community", "state", "impact", "autonomy"] as const;
 export type TriadDomainKey = typeof TRIAD_DOMAIN_KEYS[number];
 export type TextPair = Record<Locale, string>;
@@ -54,6 +55,7 @@ export interface ScaleDimension {
 export interface ScaleDefinition {
   id: string;
   version: string;
+  resultMode?: ResultMode;
   title: TextPair;
   description: TextPair;
   demo: boolean;
@@ -76,7 +78,21 @@ export interface TriadView {
   body: TextPair;
   raw: number | null;
 }
+export interface SupportIntakeObservation {
+  role: "parent" | "teacher";
+  itemId: string;
+  prompt: TextPair;
+  responses: TextPair[];
+  period: TextPair;
+}
 export interface TriadReport {
+  resultMode?: ResultMode;
+  supportIntake?: {
+    concerns: SupportIntakeObservation[];
+    supports: SupportIntakeObservation[];
+    actions: SupportIntakeObservation[];
+    nextStep: TextPair;
+  };
   parentAudienceVersion?: number;
   legacyWritingOmitted?: boolean;
   title: TextPair;
@@ -103,6 +119,7 @@ export interface DimensionScore {
   higherMeans: "more_support" | "more_strength";
 }
 export interface ScoreResult {
+  resultMode?: ResultMode;
   status: "valid" | "incomplete" | "ineligible";
   reasons: string[];
   scaleId: string;
@@ -162,7 +179,7 @@ export interface ReportPayload extends AssessmentSnapshot {
 export interface Comparison {
   available: boolean;
   previousDate?: string;
-  reason?: "first_assessment" | "incompatible_version" | "incomplete" | "different_respondent";
+  reason?: "first_assessment" | "incompatible_version" | "incomplete" | "different_respondent" | "not_scored";
   changes?: { key: string; label: TextPair; delta: number; higherMeans: "more_support" | "more_strength" }[];
 }
 export interface TriadRoleComparison {

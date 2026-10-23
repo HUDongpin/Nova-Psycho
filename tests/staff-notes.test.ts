@@ -73,4 +73,27 @@ describe("staff notes", () => {
     const refreshed = [{ familyId: "f", assessmentId: "round-3", itemId: "q40", label: "联系方式", value: "新的工作人员备注" }, ...notes];
     await expect(renderUpdated(notes, refreshed)).resolves.toEqual(["新的工作人员备注", "甲记录", "乙记录"]);
   });
+
+  it("renders submitted intake responses grouped by respondent and period for staff",()=>{
+    const data=workspace([]);
+    data.staffIntakeResponses=[{familyId:"f",assessmentId:"short-1",role:"student",submittedAt:"2026-10-23T01:02:00Z",sections:[{title:"过去两周",items:[{itemId:"c13_1",label:"最近的感受",responses:["不愿回答"]},{itemId:"c22",label:"希望的小变化",responses:["PRIVATE_STUDENT_INTAKE"]}]}]}];
+    const html=renderToStaticMarkup(createElement(FamilyView,{family,workspace:data,locale:"zh-CN",navigate(){},openForm(){},async onRefresh(){},openPrivacy(){}}));
+    expect(html).toContain("问卷答复（仅工作人员可见）");
+    expect(html).toContain("过去两周");
+    expect(html).toContain("PRIVATE_STUDENT_INTAKE");
+    expect(html).toContain("不愿回答");
+    expect(html).toContain("<summary>");
+    expect(html).not.toContain("textarea");
+  });
+
+  it("never renders private intake responses for a parent or a different family",()=>{
+    const data=workspace([]);
+    data.staffIntakeResponses=[{familyId:"other",assessmentId:"other-1",role:"student",submittedAt:"2026-10-23T01:02:00Z",sections:[{title:"Private",items:[{itemId:"c22",label:"Private",responses:["OTHER_FAMILY_INTAKE"]}]}]}];
+    const render=()=>renderToStaticMarkup(createElement(FamilyView,{family,workspace:data,locale:"zh-CN",navigate(){},openForm(){},async onRefresh(){},openPrivacy(){}}));
+    expect(render()).not.toContain("OTHER_FAMILY_INTAKE");
+    data.user.role="parent";
+    data.staffIntakeResponses[0].familyId="f";
+    expect(render()).not.toContain("OTHER_FAMILY_INTAKE");
+    expect(render()).not.toContain("问卷答复（仅工作人员可见）");
+  });
 });

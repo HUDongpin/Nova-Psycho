@@ -5,7 +5,7 @@ import type { Actor } from "../src/domain/types";
 import { scoreAssessment } from "../src/domain/scoring";
 import { surveyDefinition } from "../src/domain/survey";
 import { previewAnswers } from "../src/domain/triad-report";
-import { childScale, childScaleBirthAge, childScaleSafety, childScaleStaffNotes, parentScale, parentScaleSafety, parentScaleStaffNotes, parentScaleV1, teacherScale, teacherScaleSafety, teacherScaleStaffNotes } from "../src/domain/triad-scales";
+import { childScale, childScaleBirthAge, childScaleSafety, childScaleStaffNotes, childScaleSupportIntake, parentScale, parentScaleSafety, parentScaleStaffNotes, parentScaleSupportIntake, parentScaleV1, teacherScale, teacherScaleSafety, teacherScaleStaffNotes, teacherScaleSupportIntake } from "../src/domain/triad-scales";
 import { parseScale, parseStoredScale } from "../src/domain/validation";
 import { demoAdvice, demoTemplate } from "../src/domain/demo";
 import { childScaleAt1_0_0 } from "./fixtures/child-scale-v1";
@@ -147,7 +147,7 @@ describe("new triad assessments use the published definition", () => {
     expect(sql.some(text => text.includes("DO UPDATE SET definition"))).toBe(false);
     expect(sql.some(text => text.includes("UPDATE content_versions"))).toBe(false);
     const inserts = vi.mocked(query).mock.calls.filter(([text]) => String(text).includes("INSERT INTO scales"));
-    const published = [childScale, childScaleSafety, childScaleBirthAge, childScaleStaffNotes, parentScaleV1, parentScale, parentScaleSafety, parentScaleStaffNotes, teacherScale, teacherScaleSafety, teacherScaleStaffNotes];
+    const published = [childScale, childScaleSafety, childScaleBirthAge, childScaleStaffNotes, childScaleSupportIntake, parentScaleV1, parentScale, parentScaleSafety, parentScaleStaffNotes, parentScaleSupportIntake, teacherScale, teacherScaleSafety, teacherScaleStaffNotes, teacherScaleSupportIntake];
     expect(inserts.map(([, values]) => values?.[0])).toEqual(published.map(scale => `${scale.id}@${scale.version}`));
     expect(inserts.every(([text]) => String(text).includes("ON CONFLICT(id) DO NOTHING"))).toBe(true);
     inserts.forEach(([, values], index) => {
@@ -184,9 +184,8 @@ describe("new triad assessments use the published definition", () => {
     expect(storedTeacher.items.find((item: { id: string; report?: string }) => item.id === "t16").report).toBe("staff");
     const retired = vi.mocked(query).mock.calls.filter(([text]) => String(text).includes("UPDATE scales SET status='retired'"));
     expect(retired.map(([, values]) => values)).toEqual([
-      ["growth-child", "growth-child@1.3.0"],
-      ["growth-teacher@1.0.0"],
-      ["growth-teacher", "growth-teacher@1.2.0"]
+      ["growth-child", ["growth-child@1.3.0", "growth-child@2.0.0"]],
+      ["growth-teacher", ["growth-teacher@1.2.0", "growth-teacher@2.0.0"]]
     ]);
     expect(retired.some(([, values]) => String(values?.[0]).startsWith("growth-parent@"))).toBe(false);
   });

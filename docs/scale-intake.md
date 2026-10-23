@@ -59,3 +59,9 @@ Background notes live under `work/scale-intake-20260916/` (no copyrighted item t
 `rights.digital`, `rights.commercial` and `rights.reference` remain required operator-managed metadata; the importer does not independently verify permissions or make the two booleans import blockers. A norm flag likewise records an attestation and does not establish psychometric validity by itself. Structural scoring rules, bilingual text and age/region gates continue to apply.
 
 Setup installs the triad advice/template under its own stable `growth-triad` library key. General administrator-managed content is kept separate. The public content API edits the general library; it is not an endpoint for overwriting seeded triad content. Normal signup and join requests do not run schema migrations.
+
+## Unscored triad support intake
+
+The three bundled `2.0.0` triad definitions use `resultMode: "support-intake"` with `dimensions: []`. Parent/student/teacher ordinary counts are 25/20/15, including assent and one optional writing prompt; existing safety follow-ups raise the maximum to 26/22/16. This mode is supported only inside the `growth-triad` workflow. Ordinary scored instruments still require at least one scoring dimension. Missing required answers, consent gates, eligibility and safety rules remain enforced; unknown/not-applicable selections do not fail a dimension coverage threshold.
+
+The short report uses a fixed adult-item allowlist and deterministic action template, with no AI call, scores, complete profiles or numerical comparison. Its comparison reason is `not_scored`. New versions do not assert psychometric equivalence with the longer forms. Preserve every historical definition and snapshot; the assignment resolver continues unfinished older rounds with the legacy role map and starts new rounds on 2.0.0.

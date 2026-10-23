@@ -3,7 +3,7 @@ import type { PoolClient } from "pg";
 import type { AssessmentSnapshot,Locale,ReportPayload,StoredAnswer } from "../domain/types";
 import { eligibleAdviceIds, selectNarrative } from "../domain/narrative";
 import { buildTriadNarrativeSource,selectTriadNarrative,triadTemplateSelection,type TriadNarrativeSource } from "../domain/triad-narrative";
-import { composeTriad,TRIAD_BUNDLE,triadRolesReady } from "../domain/triad-report";
+import { composeTriad,TRIAD_BUNDLE,triadResultMode,triadRolesReady } from "../domain/triad-report";
 import { compareTriad, type TriadComparisonSource } from "../domain/triad-comparison";
 import { compareResults } from "../domain/scoring";
 import { reportHtml } from "../domain/report-html";
@@ -218,12 +218,13 @@ async function runReportJob(jobId:string|undefined,dependencies:ReportWorkerDepe
       for(const row of siblings)rejectSnapshot(row.snapshot as AssessmentSnapshot);
       if(siblings.some(row=>row.snapshot.score.region!==getConfig().region||row.snapshot.score.respondentRole!==row.respondent_role||!row.snapshot.scale.roles.includes(row.respondent_role)))throw new Error("Invalid triad source snapshot");
       if(siblings.find(row=>row.respondent_role==="parent")?.id!==assessment.id)throw new Error("Invalid triad report owner");
+      const resultMode=triadResultMode(siblings.map(row=>row.snapshot.scale));
       sources.splice(0,sources.length,...siblings.map(row=>row.snapshot as AssessmentSnapshot));
       sourceIdentities=siblings as SyntheticSourceIdentity[];
       // Select one completed round before this round, even when its report failed
       // or this job is retried after newer rounds. Frozen snapshots are the source.
       const firstSubmission=new Date(Math.min(...siblings.map(row=>new Date(row.submitted_at).getTime()))).toISOString();
-      const previous=await query(`WITH prior_round AS (
+      const previous=resultMode==="support-intake"?[]:await query(`WITH prior_round AS (
         SELECT prior.id FROM triad_rounds prior
         JOIN triad_rounds current_round ON current_round.id=$3 AND current_round.family_id=$1 AND current_round.region=$2
         JOIN assessments a ON a.triad_round_id=prior.id AND a.family_id=prior.family_id AND a.region=prior.region
@@ -240,10 +241,15 @@ async function runReportJob(jobId:string|undefined,dependencies:ReportWorkerDepe
         const stored=row.snapshot as AssessmentSnapshot;
         return {role:row.respondent_role,respondentId:row.respondent_id,scale:stored.scale,score:stored.score,submittedAt:new Date(row.submitted_at).toISOString()};
       };
-      const narrativeSources=siblings.map(row=>buildTriadNarrativeSource(row.respondent_role,row.snapshot.scale.dimensions,row.snapshot.score,row.snapshot.aiConsented));
+      const narrativeSources=resultMode==="support-intake"?[]:siblings.map(row=>buildTriadNarrativeSource(row.respondent_role,row.snapshot.scale.dimensions,row.snapshot.score,row.snapshot.aiConsented));
       const composed=await reportStage(job.id,token,assessment.family_id,async({aiConsented,aiConsentIds})=>{
-        const comparisons=compareTriad(siblings.map(comparisonSource),previous.length?previous.map(comparisonSource):null);
         const triad=composeTriad(siblings.map(row=>{const stored=row.snapshot as AssessmentSnapshot;return {role:row.respondent_role,scale:stored.scale,answers:row.answers as Record<string,StoredAnswer>,score:stored.score,submittedAt:new Date(row.submitted_at).toISOString()};}));
+        if(resultMode==="support-intake")return {
+          ...snapshot,selectedAdviceIds:[],generationMode:"template" as const,fallbackReason:"support_intake",aiModel:null,
+          comparison:{available:false,reason:"not_scored" as const},triad,
+          score:{...snapshot.score,resultMode,dimensions:[],risk:triad.safety.length>0,riskMessages:triad.safety}
+        } satisfies ReportPayload;
+        const comparisons=compareTriad(siblings.map(comparisonSource),previous.length?previous.map(comparisonSource):null);
         triad.comparisons=comparisons;
         triadSelection={sources:narrativeSources,consentIds:aiConsentIds};
         const config=getConfig();

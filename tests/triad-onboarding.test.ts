@@ -106,7 +106,7 @@ describe("P27/P36/P42 correct family, role, locale and consent binding", () => {
       expect(params![5]).toBeNull();
       expect(params![6]).toBe(noticeVersion);
     }
-    expect(currentTriadScaleIds.parent).toBe("growth-parent@1.3.0");
+    expect(currentTriadScaleIds.parent).toBe("growth-parent@2.0.0");
     expect(values("INSERT INTO assessments").slice(1, 6)).toEqual([result.familyId, "HK", result.userId, currentTriadScaleIds.parent, "zh-HK"]);
   });
   it("does not record parent-report consent unless that box is checked", async () => {
@@ -119,8 +119,8 @@ describe("P27/P36/P42 correct family, role, locale and consent binding", () => {
     const family = sql.mock.calls.find(([text]) => text.startsWith("SELECT id,birth_date"))!;
     expect(family[0]).toContain("region=$2 FOR UPDATE"); expect(family[1]).toEqual([joining.code, "HK"]);
     const task = sql.mock.calls.find(([text]) => text.startsWith("INSERT INTO assessments"))![1]!;
-    expect(currentTriadScaleIds.student).toBe("growth-child@1.3.0");
-    expect(currentTriadScaleIds.teacher).toBe("growth-teacher@1.2.0");
+    expect(currentTriadScaleIds.student).toBe("growth-child@2.0.0");
+    expect(currentTriadScaleIds.teacher).toBe("growth-teacher@2.0.0");
     expect(task.slice(1, 7)).toEqual(["synthetic-family", "HK", result.userId, role, currentTriadScaleIds[role], "zh-HK"]);
   });
   it("rejects reuse of an occupied role before creating another user or task", async () => {

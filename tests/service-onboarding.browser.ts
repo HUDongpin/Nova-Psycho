@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { chromium, type APIResponse, type BrowserContext, type Page } from "playwright";
-import { childScaleStaffNotes, parentScaleStaffNotes, teacherScaleStaffNotes } from "../src/domain/triad-scales";
+import { childScaleSupportIntake, parentScaleSupportIntake, teacherScaleSupportIntake } from "../src/domain/triad-scales";
 import { previewAnswers } from "../src/domain/triad-report";
 import type { RespondentRole } from "../src/domain/types";
 
@@ -120,7 +120,7 @@ try {
       const overflow = await student.page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
       assert.equal(overflow, false);
       await student.page.goto(`${base}/#assessments`);
-      const definitions = { parent: parentScaleStaffNotes, student: childScaleStaffNotes, teacher: teacherScaleStaffNotes };
+      const definitions = { parent: parentScaleSupportIntake, student: childScaleSupportIntake, teacher: teacherScaleSupportIntake };
       for (const [role, f] of [["parent", parent], ["student", student], ["teacher", teacher]] as const) {
         const definition = structuredClone(definitions[role]);
         for (const item of definition.items) if (item.id === "c_age" || item.id === "p_age") item.choices = item.choices.filter(choice => choice.value === 12);

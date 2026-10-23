@@ -103,6 +103,11 @@ describe("creating an assessment",()=>{
     vi.stubEnv("NOVA_MODE","service");vi.stubEnv("NOVA_PUBLIC_URL","https://nova.example.invalid");
     const approved={...oldChild,demo:true};
     mockGetScale.mockResolvedValueOnce({id:`${approved.id}@${approved.version}`,definition:approved,status:"active"} as never);
+    client.query.mockImplementation(async(sql,values)=>{
+      if(sql.includes("FROM triad_rounds"))return {rows:[{id:"existing-legacy-round"}]};
+      if(sql.includes("respondent_role,submitted_at"))return {rows:[{respondent_role:"parent",submitted_at:null,definition:parentScale}]};
+      return defaultClientQuery(sql,values);
+    });
     const read=mockQuery.getMockImplementation()!;
     mockQuery.mockImplementation((async(sql:string,values:unknown[])=>{
       if(sql.includes("definition->>'demo'"))return [{id:"official"}];

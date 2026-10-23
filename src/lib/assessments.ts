@@ -11,7 +11,7 @@ import { titleEmphasis } from "../domain/survey-presentation";
 import { surveySupplements } from "../domain/survey-supplements";
 import { TRIAD_BUNDLE, triadRolesReady } from "../domain/triad-report";
 import { reportRetryBlocker } from "../domain/report-retry";
-import { lockRegistrationActor,queueTriadReport,requireRegistrationConsent,triadRoundFor } from "./triad";
+import { lockRegistrationActor,queueTriadReport,requireRegistrationConsent,resolveTriadAssignment } from "./triad";
 import { effectiveDemo, ensureAdviceReferences, instrumentWriteBlockReason, isKnownTriadInstrument } from "../domain/validation";
 import { ageAt,canManageFamilyReports,consentFor,familyFor } from "./access";
 import { ACTIVE_CONSENT_ROWS_SQL, PARENT_REPORT_SCOPE, PARTICIPATION_SCOPES, grantedScopes, hasGranted } from "./consent";
@@ -116,25 +116,29 @@ export async function createAssessment(actor:Actor,input:unknown){
     const currentScale=await client.query("SELECT status FROM scales WHERE id=$1",[d.scaleVersionId]);
     if(currentScale.rows[0]?.status!=="active")throw new HttpError(409,"该量表版本已停用。","SCALE_RETIRED");
     if(scale.definition.demo&&!isKnownTriadInstrument(scale.definition))await refuseDemoBesideOfficial(family.id,d.respondentId,actor.region,role,age,client);
-    const parentVersions=scale.definition.bundle===TRIAD_BUNDLE&&scale.definition.id==="growth-parent";
-    const pending=parentVersions
-      ?await client.query("SELECT a.id,a.triad_round_id,s.definition FROM assessments a JOIN scales s ON s.id=a.scale_version_id WHERE a.family_id=$1 AND a.respondent_id=$2 AND s.scale_id=$3 AND a.status='pending' ORDER BY a.created_at,a.id LIMIT 1",[family.id,d.respondentId,scale.definition.id])
+    const triadVersions=scale.definition.bundle===TRIAD_BUNDLE;
+    const pending=triadVersions
+      ?await client.query("SELECT a.id,a.triad_round_id,a.scale_version_id,s.definition FROM assessments a JOIN scales s ON s.id=a.scale_version_id WHERE a.family_id=$1 AND a.respondent_id=$2 AND s.scale_id=$3 AND a.status='pending' ORDER BY a.created_at,a.id LIMIT 1",[family.id,d.respondentId,scale.definition.id])
       :await client.query("SELECT id,triad_round_id FROM assessments WHERE family_id=$1 AND respondent_id=$2 AND scale_version_id=$3 AND status='pending'",[family.id,d.respondentId,d.scaleVersionId]);
     if(pending.rows[0]&&parentStaffWritingWouldLeak(scale.definition,storedScale(pending.rows[0].definition)))throw new HttpError(409,"已有一份旧版家长问卷尚未提交，暂时不能分配新版。请联系服务人员核对旧任务；不要为切换版本而继续提交旧问卷。","PARENT_VERSION_PENDING");
     if(pending.rows[0]){
       if(scale.definition.bundle===TRIAD_BUNDLE&&!pending.rows[0].triad_round_id){
-        const roundId=await triadRoundFor(client,family.id,role);
+        const pendingScale=storedScale(pending.rows[0].definition);
+        if(!pendingScale)throw new HttpError(409,"已有问卷版本尚未核实，请联系服务团队。","TRIAD_LEGACY_REVIEW_REQUIRED");
+        const {roundId}=await resolveTriadAssignment(client,family.id,role,{requestedScale:pendingScale,preserveExisting:true});
         await client.query("UPDATE assessments SET triad_round_id=$1 WHERE id=$2",[roundId,pending.rows[0].id]);
       }
       return {id:pending.rows[0].id};
     }
     // Failed report generation still counts: the child already submitted answers.
-    const last=parentVersions
+    const last=triadVersions
       ?await client.query("SELECT a.submitted_at FROM assessments a JOIN scales s ON s.id=a.scale_version_id WHERE a.family_id=$1 AND a.respondent_id=$2 AND s.scale_id=$3 AND a.submitted_at IS NOT NULL ORDER BY a.submitted_at DESC LIMIT 1",[family.id,d.respondentId,scale.definition.id])
       :await client.query("SELECT submitted_at FROM assessments WHERE family_id=$1 AND respondent_id=$2 AND scale_version_id=$3 AND submitted_at IS NOT NULL ORDER BY submitted_at DESC LIMIT 1",[family.id,d.respondentId,d.scaleVersionId]);
     if(last.rows[0]&&Date.now()-new Date(last.rows[0].submitted_at).getTime()<scale.definition.retakeDays*86400000)throw new HttpError(409,`此量表建议至少间隔 ${scale.definition.retakeDays} 天复测。`,"RETAKE_INTERVAL");
-    const roundId=scale.definition.bundle===TRIAD_BUNDLE?await triadRoundFor(client,family.id,role):null;
-    const id=randomUUID();await client.query("INSERT INTO assessments(id,family_id,region,respondent_id,respondent_role,scale_version_id,locale,triad_round_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8)",[id,family.id,actor.region,d.respondentId,role,d.scaleVersionId,d.locale,roundId]);return {id};
+    const assignment=triadVersions?await resolveTriadAssignment(client,family.id,role,{requestedScale:scale.definition}):null;
+    const roundId=assignment?.roundId??null;
+    const scaleVersionId=assignment?.scaleVersionId??d.scaleVersionId;
+    const id=randomUUID();await client.query("INSERT INTO assessments(id,family_id,region,respondent_id,respondent_role,scale_version_id,locale,triad_round_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8)",[id,family.id,actor.region,d.respondentId,role,scaleVersionId,d.locale,roundId]);return {id};
   });
 }
 async function ownAssessment(actor:Actor,id:string){
@@ -197,7 +201,7 @@ export async function submitAssessment(actor:Actor,id:string,input:unknown){
     const libraryKey=scale.bundle===TRIAD_BUNDLE?TRIAD_LIBRARY_KEY:null;
     const advice=await currentContent<AdviceLibrary>("advice",client,libraryKey),template=await currentContent<ReportTemplate>("template",client,libraryKey);
     try{ensureAdviceReferences(scale,advice.content);}catch{throw new HttpError(409,"量表的报告建议配置需要更新。","ADVICE_MISMATCH");}
-    const roundId=scale.bundle===TRIAD_BUNDLE?(a.triad_round_id??await triadRoundFor(client,a.family_id,a.respondent_role)):null;
+    const roundId=scale.bundle===TRIAD_BUNDLE?(a.triad_round_id??(await resolveTriadAssignment(client,a.family_id,a.respondent_role,{requestedScale:scale,preserveExisting:true})).roundId):null;
     const submittedAt=new Date().toISOString();
     const snapshot:AssessmentSnapshot={scale,advice,template,score,childName:family.child_name,grade:family.grade,submittedAt,aiConsented:!syntheticTest&&scopes.has("ai_processing"),...(syntheticTest?{syntheticTest:true}:{})};
     await client.query("UPDATE assessments SET answers=$1,draft_answers='{}',snapshot=$2,status='queued',submitted_at=$3,acknowledged_at=COALESCE(acknowledged_at,$3),triad_round_id=$5 WHERE id=$4",[JSON.stringify(d.answers),JSON.stringify(snapshot),submittedAt,id,roundId]);

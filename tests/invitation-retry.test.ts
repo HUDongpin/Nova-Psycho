@@ -47,7 +47,7 @@ beforeEach(() => {
     if (sql.startsWith("INSERT INTO memberships")) { members.push({ user_id: String(values[1]), role: values[2] as RespondentRole }); return { rows: [] }; }
     if (sql.startsWith("SELECT id FROM scales")) return { rows: [{ id: "synthetic-scale" }] };
     if (sql.startsWith("SELECT id FROM assessments")) return { rows: tasks };
-    if (sql.startsWith("SELECT a.id FROM assessments")) return { rows: [] };
+    if (sql.startsWith("SELECT a.id FROM assessments") || sql.startsWith("SELECT a.id,s.definition FROM assessments")) return { rows: [] };
     if (sql.includes("FROM triad_rounds")) return { rows: [] };
     if (sql.startsWith("INSERT INTO triad_rounds")) return { rows: [] };
     if (sql.startsWith("INSERT INTO assessments")) { tasks.push({ id: String(values[0]) }); return { rows: [] }; }

@@ -46,7 +46,7 @@ export function scoreAssessment(scale: ScaleDefinition, answers: Record<string, 
     const selected=typeof value==="number"?[value]:Array.isArray(value)?value.filter((entry):entry is number=>typeof entry==="number"):[];
     return selected.some(entry=>rule.values.includes(entry));
   }).map(rule=>rule.message);
-  const base={scaleId:scale.id,scaleVersion:scale.version,respondentRole:context.role,region:context.region,age:context.age,demo:scale.demo,norm:structuredClone(scale.norm),risk:riskMessages.length>0,riskMessages};
+  const base={scaleId:scale.id,scaleVersion:scale.version,respondentRole:context.role,region:context.region,age:context.age,demo:scale.demo,norm:structuredClone(scale.norm),risk:riskMessages.length>0,riskMessages,...(scale.resultMode==="support-intake"?{resultMode:scale.resultMode}:{})};
   if(reasons.length) return {...base,status:"ineligible",reasons,dimensions:[]};
   const dimensions:DimensionScore[]=scale.dimensions.map(d=>{
     const selected=d.items.map(id=>items.get(id)!).filter(item=>answerVisible(answers,item,context.age));
@@ -81,6 +81,7 @@ export function scoreAssessment(scale: ScaleDefinition, answers: Record<string, 
   return {...base,status:reasons.length?"incomplete":"valid",reasons,dimensions};
 }
 export function compareResults(current: ScoreResult, previous: ScoreResult | null, previousDate?:string, sameRespondent = true): Comparison {
+  if(current.resultMode==="support-intake"||previous?.resultMode==="support-intake")return {available:false,reason:"not_scored"};
   if(!previous) return {available:false,reason:"first_assessment"};
   if(!sameRespondent || current.respondentRole!==previous.respondentRole) return {available:false,reason:"different_respondent"};
   if(current.scaleId!==previous.scaleId||current.scaleVersion!==previous.scaleVersion||current.region!==previous.region||JSON.stringify(current.norm)!==JSON.stringify(previous.norm)) return {available:false,reason:"incompatible_version"};

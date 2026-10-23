@@ -114,6 +114,27 @@ beforeEach(()=>{
 afterEach(()=>{vi.unstubAllEnvs();vi.unstubAllGlobals();});
 
 describe("triad AI worker publication",()=>{
+  it("publishes support intake as a template with no model call even when AI and consent are enabled",async()=>{
+    for(const source of sources){
+      source.snapshot.scale={...structuredClone(source.snapshot.scale),version:"2.0.0",resultMode:"support-intake",dimensions:[]};
+      source.snapshot.score={...source.snapshot.score,scaleVersion:"2.0.0",dimensions:[]};
+    }
+    await expect(processReportJob(JOB_ID,{narrativeFetcher:provider})).resolves.toEqual({status:"published"});
+    expect(provider).not.toHaveBeenCalled();expect(nativeFetch).not.toHaveBeenCalled();
+    expect(persisted?.payload).toMatchObject({generationMode:"template",aiModel:null,fallbackReason:"support_intake",selectedAdviceIds:[],comparison:{available:false,reason:"not_scored"},triad:{resultMode:"support-intake",domains:[],portrait:[],comparisons:[]}});
+    expect(persisted?.payload.triad?.supportIntake?.nextStep["zh-CN"]).toContain("四至六周后回顾");
+    expect(vi.mocked(query).mock.calls.some(([sql])=>sql.includes("WITH prior_round AS"))).toBe(false);
+    expect(JSON.stringify(persisted?.payload)).not.toContain('"answers"');
+  });
+
+  it("rejects mixed report modes before rendering or contacting the model",async()=>{
+    sources[0].snapshot.scale={...structuredClone(sources[0].snapshot.scale),resultMode:"support-intake",dimensions:[]};
+    sources[0].snapshot.score={...sources[0].snapshot.score,dimensions:[]};
+    await expect(processReportJob(JOB_ID,{narrativeFetcher:provider})).resolves.toMatchObject({status:"retry_at"});
+    expect(provider).not.toHaveBeenCalled();expect(nativeFetch).not.toHaveBeenCalled();
+    expect(renderPdf).not.toHaveBeenCalled();expect(publicationCount).toBe(0);
+  });
+
   it("uses one injected request to publish approved ordering from the three pinned snapshots",async()=>{
     const original=sources.map(source=>structuredClone(source.snapshot.score));
     await expect(processReportJob(JOB_ID,{narrativeFetcher:provider})).resolves.toEqual({status:"published"});

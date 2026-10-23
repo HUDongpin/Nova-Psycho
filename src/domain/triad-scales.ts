@@ -346,9 +346,81 @@ function staffNotesRevision(original: ScaleDefinition, version: string, itemIds:
 export const childScaleStaffNotes = staffNotesRevision(childScaleBirthAge, CHILD_STAFF_NOTES_VERSION, CHILD_HOPE_IDS);
 export const parentScaleStaffNotes = staffNotesRevision(parentScaleSafety, PARENT_STAFF_NOTES_VERSION, PARENT_SERVICE_IDS);
 export const teacherScaleStaffNotes = staffNotesRevision(teacherScaleSafety, TEACHER_STAFF_NOTES_VERSION, ["t23"]);
-export const triadScales = [childScale, childScaleSafety, childScaleBirthAge, childScaleStaffNotes, parentScaleV1, parentScale, parentScaleSafety, parentScaleStaffNotes, teacherScale, teacherScaleSafety, teacherScaleStaffNotes];
-export const currentTriadScaleIds = {
+
+interface IntakePage { id: string; title: string; items: string[] }
+
+/** A new unscored intake; earlier assigned definitions and answers stay frozen. */
+function supportIntake(original: ScaleDefinition, title: string, description: string, pages: IntakePage[], optionalWishId: string): ScaleDefinition {
+  const revised = structuredClone(original);
+  revised.version = "2.0.0";
+  revised.resultMode = "support-intake";
+  revised.title = pair(title);
+  revised.description = pair(description);
+  revised.source = "2026-10 三方近期困难与支持了解简版。从现有服务了解问题中选取，不计算量表或维度分数，没有临床常模，不用于诊断。";
+  revised.norm.label = pair("支持了解简版，不计分，没有临床常模");
+  revised.norm.source = "Unscored support intake. Individual responses describe current needs and available support; there are no dimension scores, total score or clinical norms.";
+  revised.dimensions = [];
+  const originals = new Map(revised.items.map(item => [item.id, item]));
+  revised.items = pages.flatMap(page => page.items.map(id => {
+    const item = originals.get(id);
+    if (!item) throw new Error(`Missing support-intake item ${original.id} ${id}`);
+    item.page = page.id;
+    item.pageTitle = pair(page.title);
+    delete item.panel;
+    if (id === optionalWishId) item.required = false;
+    if (page.id === "safety") item.noAutoAdvance = true;
+    return item;
+  }));
+  return revised;
+}
+
+export const parentScaleSupportIntake = supportIntake(parentScaleStaffNotes,
+  "家庭近期困难与支持了解（简版）",
+  "这份简版用来了解孩子和家庭近期遇到的困难、已有支持和下一步需要。通常显示 25 题，其中最后一个近期愿望可以不填；安全回答可能增加 1 题跟进。请按每组标明的时间范围作答，不了解时请选择相应选项。结果不计分，不作诊断，也不给家长划分等级。适用于 8 至 17 岁。香港繁体是便于阅读的字形转换，不是另行验证的译本。",
+  [
+    { id: "begin", title: "开始之前", items: ["p_assent"] },
+    { id: "safety", title: "先确认过去四周的安全情况", items: ["q22", "q23"] },
+    { id: "background", title: "家庭近况和这次最想解决的事", items: ["p_together", "p_changes", "p_history", "p_focus", "p_duration"] },
+    { id: "state", title: "过去四周：这些困难出现的频率", items: ["q20_1", "q20_2", "q20_3", "q20_4", "q20_5", "q20_6", "q20_8"] },
+    { id: "impact", title: "过去四周：当前问题的实际影响", items: ["q21_1", "q21_3", "q21_4"] },
+    { id: "support", title: "已有的支持：请按过去三个月大多数情况下的实际表现作答", items: ["q16_1", "q18_1", "q18_2", "q19_1", "q19_5"] },
+    { id: "close", title: "下一步希望得到的支持", items: ["q31", "p_support", "q37"] }
+  ], "q37");
+
+export const childScaleSupportIntake = supportIntake(childScaleStaffNotes,
+  "我的近况与支持需要（简版）",
+  "这份简版想了解你最近的感受、遇到的困难和希望得到的帮助。通常显示 20 题，最后的一个小愿望可以不填；安全回答可能增加 2 题跟进。没有标准答案，结果不计分，也不会给你做诊断或贴标签。建议 8 至 17 岁自己填写，各年龄看到相同的常规问题。香港繁体是便于阅读的字形转换，不是另行验证的译本。",
+  [
+    { id: "begin", title: "开始之前", items: ["c_assent"] },
+    { id: "safety", title: "先确认过去两周的安全情况", items: ["c14", "c15", "c16"] },
+    { id: "background", title: "今天的填写和你想得到的帮助", items: ["c_company", "c_help"] },
+    { id: "learning", title: "学习任务和课程是否适合我", items: ["c8_3", "c8_5", "c11_1"] },
+    { id: "support", title: "关系、日常安排和可以得到的帮助", items: ["c9_1", "c9_6", "c11_2", "c12_1", "c12_2"] },
+    { id: "state", title: "过去两周我的感受和状态", items: ["c13_1", "c13_2", "c13_3", "c13_4", "c13_6", "c13_8"] },
+    { id: "hopes", title: "我的一个小愿望和现在的感受", items: ["c22", "c23"] }
+  ], "c22");
+
+export const teacherScaleSupportIntake = supportIntake(teacherScaleStaffNotes,
+  "学生近况与支持观察（简版）",
+  "这份简版用来了解学生近期在学校的困难、已尝试的支持和下一步协作。通常显示 15 题，其中近期学校目标可以不填；安全回答可能增加 1 题跟进。请只根据直接观察作答，并遵循每组标明的时间范围；无法观察时请选择“不了解或不适用”。结果不计分，不推断家庭原因，也不做临床诊断。香港繁体是便于阅读的字形转换，不是另行验证的译本。",
+  [
+    { id: "begin", title: "开始之前", items: ["t_assent"] },
+    { id: "safety", title: "先确认过去四周在学校需要及时处理的安全情况", items: ["t15", "t16"] },
+    { id: "background", title: "您的观察范围和学校关注的方面", items: ["t_known", "t_focus"] },
+    { id: "state", title: "过去四周在学校出现以下情况的频率", items: ["t13_1", "t13_2", "t13_4", "t13_5", "t13_7"] },
+    { id: "impact", title: "过去四周这些困难对学校功能的影响", items: ["t14_1"] },
+    { id: "support", title: "课程和支持：请只根据过去三个月您直接观察到的情况作答", items: ["t11_1", "t12_2"] },
+    { id: "close", title: "已经做过的支持和下一步建议", items: ["t17", "t21", "t22"] }
+  ], "t21");
+
+export const triadScales = [childScale, childScaleSafety, childScaleBirthAge, childScaleStaffNotes, childScaleSupportIntake, parentScaleV1, parentScale, parentScaleSafety, parentScaleStaffNotes, parentScaleSupportIntake, teacherScale, teacherScaleSafety, teacherScaleStaffNotes, teacherScaleSupportIntake];
+export const legacyTriadScaleIds = {
   parent: `${parentScaleStaffNotes.id}@${parentScaleStaffNotes.version}`,
   student: `${childScaleStaffNotes.id}@${childScaleStaffNotes.version}`,
   teacher: `${teacherScaleStaffNotes.id}@${teacherScaleStaffNotes.version}`
+} as const;
+export const currentTriadScaleIds = {
+  parent: `${parentScaleSupportIntake.id}@${parentScaleSupportIntake.version}`,
+  student: `${childScaleSupportIntake.id}@${childScaleSupportIntake.version}`,
+  teacher: `${teacherScaleSupportIntake.id}@${teacherScaleSupportIntake.version}`
 } as const;

@@ -1,4 +1,4 @@
-import type { Locale,ReportPayload,RespondentRole,TriadReport } from "./types";
+import type { Locale,ReportPayload,RespondentRole,SupportIntakeObservation,TriadReport } from "./types";
 import { text } from "./types";
 import { effectiveDemo } from "./validation";
 import { gardenIconForSection, gardenIconUri, gardenSceneUri, type GardenIconKey } from "./garden-visuals";
@@ -33,6 +33,7 @@ function triadComparisonHtml(report:TriadReport,locale:Locale):string{
   const reasons={
     first_assessment:t("目前没有更早的完整三方记录，可在下一轮填写后查看适用的比较。","目前沒有更早的完整三方紀錄，可在下一輪填寫後查看適用的比較。"),
     incompatible_version:t("两次问卷版本或计分依据不同，本方暂不作分数比较。","兩次問卷版本或計分依據不同，本方暫不作分數比較。"),
+    not_scored:t("简版问卷不计分，不作分数比较。","簡版問卷不計分，不作分數比較。"),
     different_respondent:t("两次填写人不同，本方的观察分别保留，不作分数比较。","兩次填寫人不同，本方的觀察分別保留，不作分數比較。"),
     incomplete:t("两次记录中有不完整或不适用的资料，本方暂不作分数比较。","兩次紀錄中有不完整或不適用的資料，本方暫不作分數比較。")
   };
@@ -47,8 +48,31 @@ function triadComparisonHtml(report:TriadReport,locale:Locale):string{
   }).join("");
   return `<section class="triad-comparison">${reportHeading(t("和上一轮相比","和上一輪相比"),"report-comparison","comparison")}${roles?`<p>${e(t("以本次之前最近一轮完整三方填写为参照，分别比较同一填写人、相同问卷版本及计分依据的结果。不合成三方总分。","以本次之前最近一輪完整三方填寫為參照，分別比較同一填寫人、相同問卷版本及計分依據的結果。不合成三方總分。"))}</p>${roles}<p class="meta">${e(t("表中为原始分。家长处理方式的描述、情境题和文字回答不计算分数变化。变化本身不证明辅导疗效，也不能用来诊断。","表中為原始分。家長處理方式的描述、情境題和文字回答不計算分數變化。變化本身不證明輔導療效，也不能用來診斷。"))}</p>`:`<p>${e(t("这份历史报告未记录前后比较结果。后续新报告会在条件满足时提供比较。","這份歷史報告未記錄前後比較結果。後續新報告會在條件滿足時提供比較。"))}</p>`}</section>`;
 }
+function supportIntakeReportHtml(p:ReportPayload,locale:Locale):string{
+  const report=p.triad as TriadReport;
+  const intake=report.supportIntake;
+  if(!intake)throw new Error("Missing support intake report");
+  const hk=locale==="zh-HK",t=(cn:string,tw=cn)=>hk?tw:cn,e=escapeHtml;
+  const fmt=(iso:string)=>new Intl.DateTimeFormat(locale,{timeZone:"Asia/Hong_Kong",year:"numeric",month:"long",day:"numeric"}).format(new Date(iso));
+  const sourceName=(role:RespondentRole)=>role==="student"?t("孩子","孩子"):role==="parent"?t("家长","家長"):t("教师","教師");
+  const sources=report.sources.map(source=>`${e(sourceName(source.role))} ${e(fmt(source.submittedAt))}`).join(" · ");
+  const sections=([
+    {id:"report-concerns",label:t("当前关注与困难","當前關注與困難"),icon:"words",rows:intake.concerns},
+    {id:"report-supports",label:t("现有支持与日常安排","現有支持與日常安排"),icon:"family",rows:intake.supports},
+    {id:"report-actions",label:t("希望获得的支持与下一步目标","希望獲得的支持與下一步目標"),icon:"compass",rows:intake.actions}
+  ] satisfies {id:string;label:string;icon:GardenIconKey;rows:SupportIntakeObservation[]}[]).filter(section=>section.rows.length>0);
+  const observations=sections.map(section=>`<section class="support-intake-section">${reportHeading(section.label,section.id,section.icon)}${section.rows.map(row=>`<div class="content-note" data-role="${row.role}"><p class="meta">${e(respondentLabel(row.role,locale))} · ${e(text(row.period,locale))}</p><p><strong>${e(text(row.prompt,locale))}</strong></p><p>${row.responses.map(response=>e(text(response,locale))).join("、")}</p></div>`).join("")}</section>`).join("");
+  const safety=report.safety.length?`<section class="risk">${reportHeading(t("请先关注安全","請先關注安全"),"report-safety","shield")}${report.safety.map(message=>`<p>${e(text(message,locale))}</p>`).join("")}<p>${e(t("报告仍然发给家长。工作人员也会同时看到安全提示。如有眼前危险，请联系当地紧急服务。","報告仍然發給家長。工作人員也會同時看到安全提示。如有眼前危險，請聯絡當地緊急服務。"))}</p></section>`:"";
+  const directory:DirectoryEntry[]=[...sections.map(({id,label,icon})=>({id,label,icon})),{id:"report-next-step",label:t("共同商定一项行动","共同商定一項行動"),icon:"compass"}];
+  return `<!DOCTYPE html><html lang="${locale}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${e(text(report.title,locale))} · TopE 心理助手</title><style>${reportGardenStyle}</style></head><body><article class="garden-report support-intake-report" data-report-layout="garden-v1"><header><div class="brand">TopE 心理助手</div>${reportArtwork()}<h1>${e(text(report.title,locale))}</h1><p>${e(p.childName)} · ${e(p.grade)}</p><p class="meta">${sources}</p><p>${e(t("这份报告整理家长和教师对当前困难、已有支持与下一步的观察，帮助共同商定一项具体行动。简版问卷不计分，不形成完整画像，也不用于诊断。","這份報告整理家長和教師對當前困難、已有支持與下一步的觀察，幫助共同商定一項具體行動。簡版問卷不計分，不形成完整畫像，也不用於診斷。"))}</p></header>
+  ${syntheticTestNotice(p,locale)}${reportShowsDemo(p)?`<div class="demo"><strong>${e(t("非临床试用报告 · 尚无经过验证的临床常模","非臨床試用報告 · 尚無經過驗證的臨床常模"))}</strong><br>${e(t("仅供成长支持与沟通参考，不能用于临床诊断，也不能替代专业评估。","僅供成長支持與溝通參考，不能用於臨床診斷，也不能替代專業評估。"))}</div>`:""}
+  ${safety}${reportDirectory(directory,locale)}${observations}
+  <section class="advice">${reportHeading(t("共同商定一项行动","共同商定一項行動"),"report-next-step","compass")}<p>${e(text(intake.nextStep,locale))}</p></section>
+  <p class="limitation">${e(t("观察来自不同情境和时间范围，请结合具体情况沟通。孩子的普通作答及工作人员专用记录不会在这份家长报告中展示。未触发安全提示也不代表没有风险。","觀察來自不同情境和時間範圍，請結合具體情況溝通。孩子的普通作答及工作人員專用紀錄不會在這份家長報告中展示。未觸發安全提示也不代表沒有風險。"))}</p><footer>${e(t("规则模板生成","規則模板產生"))}<br>TopE 心理助手 · ${e(t("三份都交齐后自动生成。家庭私密报告，请妥善保管。","三份都交齊後自動產生。家庭私密報告，請妥善保管。"))}</footer></article></body></html>`;
+}
 function triadReportHtml(p:ReportPayload,locale:Locale):string{
   const report=p.triad as TriadReport;
+  if(report.resultMode==="support-intake")return supportIntakeReportHtml(p,locale);
   const hk=locale==="zh-HK",t=(cn:string,tw=cn)=>hk?tw:cn,e=escapeHtml;
   const fmt=(iso:string)=>new Intl.DateTimeFormat(locale,{timeZone:"Asia/Hong_Kong",year:"numeric",month:"long",day:"numeric"}).format(new Date(iso));
   const roleName=(role:RespondentRole)=>role==="student"?t("孩子","孩子"):role==="parent"?t("家长","家長"):t("老师","老師");

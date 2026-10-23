@@ -15,11 +15,13 @@ const ROLE_ORDER: RespondentRole[] = ["student", "parent", "teacher"];
 export function compareTriad(current: TriadComparisonSource[], previous: TriadComparisonSource[] | null): TriadRoleComparison[] {
   return [...current].sort((a, b) => ROLE_ORDER.indexOf(a.role) - ROLE_ORDER.indexOf(b.role)).map(source => {
     const base = { role: source.role, currentDate: source.submittedAt };
+    if (source.scale.resultMode === "support-intake") return { ...base, available: false, reason: "not_scored" };
     if (previous === null) return { ...base, available: false, reason: "first_assessment" };
     const candidates = previous.filter(candidate => candidate.role === source.role);
     if (candidates.length !== 1) return { ...base, available: false, reason: "incomplete" };
     const prior = candidates[0];
     const dates = { ...base, previousDate: prior.submittedAt };
+    if (prior.scale.resultMode === "support-intake") return { ...dates, available: false, reason: "not_scored" };
     if (!source.respondentId || !prior.respondentId || source.respondentId !== prior.respondentId ||
       source.score.respondentRole !== source.role || prior.score.respondentRole !== prior.role) {
       return { ...dates, available: false, reason: "different_respondent" };

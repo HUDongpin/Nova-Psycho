@@ -1,8 +1,8 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
-import type { Actor, Locale, RespondentRole, Role } from "../domain/types";
+import type { Actor, Locale, RespondentRole, Role, ScaleDefinition } from "../domain/types";
 import { z } from "zod";
-import { childScale, childScaleStaffNotes, currentTriadScaleIds, teacherScale, teacherScaleStaffNotes, triadScales } from "../domain/triad-scales";
+import { childScale, childScaleStaffNotes, currentTriadScaleIds, legacyTriadScaleIds, teacherScale, teacherScaleStaffNotes, triadScales } from "../domain/triad-scales";
 import { TRIAD_BUNDLE, triadRolesReady } from "../domain/triad-report";
 import { pair } from "../domain/zh-pair";
 import { instrumentWriteBlockReason, parseStoredScale, parseTemplate } from "../domain/validation";
@@ -109,12 +109,12 @@ export async function joinTriadFamilyInTransaction(client: PoolClient, actor: Ac
     const existing = await client.query<{ id: string }>("SELECT a.id FROM assessments a JOIN scales s ON s.id=a.scale_version_id WHERE a.family_id=$1 AND a.respondent_id=$2 AND a.respondent_role=$3 AND a.region=$4 AND s.scale_id=$5 ORDER BY a.created_at DESC,a.id DESC LIMIT 1", [family.id, actor.id, role, actor.region, scaleFamily]);
     if (existing.rows[0]) return { userId: actor.id, familyId: family.id, assessmentId: existing.rows[0].id, alreadyMember: true };
   }
-  const scale = await client.query("SELECT id FROM scales WHERE id=$1 AND status='active'", [SCALE_ID[role]]);
+  const { roundId, scaleVersionId } = await resolveTriadAssignment(client, family.id, role);
+  const scale = await client.query("SELECT id FROM scales WHERE id=$1 AND status='active'", [scaleVersionId]);
   if (!scale.rows[0]) throw new HttpError(409, "问卷还没有准备好。", "SCALE_NOT_FOUND");
-  const roundId = await triadRoundFor(client, family.id, role);
   if (!own) await client.query("INSERT INTO memberships(family_id,user_id,role) VALUES($1,$2,$3)", [family.id, actor.id, role]);
   const assessmentId = randomUUID();
-  await client.query("INSERT INTO assessments(id,family_id,region,respondent_id,respondent_role,scale_version_id,locale,triad_round_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8)", [assessmentId, family.id, actor.region, actor.id, role, SCALE_ID[role], locale, roundId]);
+  await client.query("INSERT INTO assessments(id,family_id,region,respondent_id,respondent_role,scale_version_id,locale,triad_round_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8)", [assessmentId, family.id, actor.region, actor.id, role, scaleVersionId, locale, roundId]);
   await client.query("INSERT INTO audit_events(region,actor_id,action,entity_id) VALUES($1,$2,$3,$4)", [actor.region, actor.id, own ? "triad.initial_assessment_created" : "triad.member_joined", family.id]);
   return { userId: actor.id, familyId: family.id, assessmentId, alreadyMember: Boolean(own) };
 }
@@ -171,8 +171,8 @@ export async function createParentFamily(actor: Actor, input: unknown, locale: L
     await client.query("INSERT INTO families(id,region,family_name,child_name,birth_date,grade,guardian_label,join_code,created_by,creation_request_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)", [familyId, current.region, `${data.childName}的家庭`, data.childName, data.birthDate, data.grade, data.relationship, joinCode, current.id, data.requestId]);
     await client.query("INSERT INTO memberships(family_id,user_id,role) VALUES($1,$2,'parent')", [familyId, current.id]);
     await insertConsentRecords(client, { familyId, actorId: current.id, guardianName: current.name, method: "online_guardian", noticeVersion, scopes: recordedScopes(data) });
-    const roundId = await triadRoundFor(client, familyId, "parent");
-    await client.query("INSERT INTO assessments(id,family_id,region,respondent_id,respondent_role,scale_version_id,locale,triad_round_id) VALUES($1,$2,$3,$4,'parent',$5,$6,$7)", [randomUUID(), familyId, current.region, current.id, SCALE_ID.parent, locale, roundId]);
+    const { roundId, scaleVersionId } = await resolveTriadAssignment(client, familyId, "parent");
+    await client.query("INSERT INTO assessments(id,family_id,region,respondent_id,respondent_role,scale_version_id,locale,triad_round_id) VALUES($1,$2,$3,$4,'parent',$5,$6,$7)", [randomUUID(), familyId, current.region, current.id, scaleVersionId, locale, roundId]);
     await client.query("INSERT INTO audit_events(region,actor_id,action,entity_id) VALUES($1,$2,'triad.parent_started',$3)", [current.region, current.id, familyId]);
     return { userId: current.id, familyId, joinCode };
   });
@@ -193,15 +193,13 @@ export async function ensureTriadInstruments(): Promise<void> {
     const id = `${parsed.id}@${parsed.version}`;
     // Insert only. scales_immutable rejects definition rewrites, and an open assessment scores the row it was opened with.
     await query("INSERT INTO scales(id,scale_id,version,definition) VALUES($1,$2,$3,$4) ON CONFLICT(id) DO NOTHING", [id, parsed.id, parsed.version, JSON.stringify(parsed)]);
-    // Teacher 1.0.0 stays stored for open forms. Parent versions remain active so an explicit historical choice is still accepted.
-    // The current child and teacher revisions retire earlier rows for new assignment. Tasks already opened keep their versions.
+    // Keep the latest legacy generation available for late joiners. Earlier child
+    // and teacher rows remain stored for tasks already opened on those versions.
     const currentChildId = `${childScaleStaffNotes.id}@${childScaleStaffNotes.version}`;
     const currentTeacherId = `${teacherScaleStaffNotes.id}@${teacherScaleStaffNotes.version}`;
-    if (parsed.id === "growth-teacher" && parsed.version !== "1.0.0" && id !== currentTeacherId) {
-      await query("UPDATE scales SET status='retired' WHERE id=$1 AND status='active'", [`${parsed.id}@1.0.0`]);
-    }
     if (id === currentChildId || id === currentTeacherId) {
-      await query("UPDATE scales SET status='retired' WHERE scale_id=$1 AND id<>$2 AND status='active'", [parsed.id, id]);
+      const keep = [id, parsed.id === "growth-child" ? SCALE_ID.student : SCALE_ID.teacher];
+      await query("UPDATE scales SET status='retired' WHERE scale_id=$1 AND id<>ALL($2::text[]) AND status='active'", [parsed.id, keep]);
     }
   }
   await query("ALTER TABLE content_versions ADD COLUMN IF NOT EXISTS library_key text");
@@ -227,23 +225,43 @@ async function freshCode(client: PoolClient): Promise<string> {
   throw new HttpError(503, "暂时无法分配家庭编号，请再试一次。", "JOIN_CODE");
 }
 
-// Callers hold the family lock, including when adopting a pre-round pending task.
-export async function triadRoundFor(client: PoolClient, familyId: string, role: RespondentRole): Promise<string> {
+type TriadGeneration = "scored" | "support-intake";
+function triadGeneration(definition: Pick<ScaleDefinition, "resultMode">): TriadGeneration {
+  return definition.resultMode === "support-intake" ? "support-intake" : "scored";
+}
+function generationMismatch(): never {
+  throw new HttpError(409, "同一轮三方问卷需要使用同一代版本，请先完成已有轮次。", "TRIAD_GENERATION_MISMATCH");
+}
+
+// Every caller holds the family lock. Frozen answers/definitions determine the
+// generation; an old pending task may be adopted but is never rewritten.
+export async function resolveTriadAssignment(client: PoolClient, familyId: string, role: RespondentRole, options: { requestedScale?: ScaleDefinition; preserveExisting?: boolean } = {}): Promise<{ roundId: string; scaleVersionId: string }> {
   const region = getConfig().region;
   const legacy = await client.query("SELECT a.id FROM assessments a JOIN scales s ON s.id=a.scale_version_id WHERE a.family_id=$1 AND a.region=$2 AND a.triad_round_id IS NULL AND a.submitted_at IS NOT NULL AND a.status<>'published' AND s.definition->>'bundle'=$3 LIMIT 1", [familyId, region, TRIAD_BUNDLE]);
   if (legacy.rows[0]) throw new HttpError(409, "旧三方问卷的轮次尚未核实，请联系服务团队处理后再开始。", "TRIAD_LEGACY_REVIEW_REQUIRED");
+  const unbound = await client.query("SELECT a.id,s.definition FROM assessments a JOIN scales s ON s.id=a.scale_version_id WHERE a.family_id=$1 AND a.region=$2 AND a.triad_round_id IS NULL AND a.status='pending' AND s.definition->>'bundle'=$3", [familyId, region, TRIAD_BUNDLE]);
+  const unboundGenerations = new Set(unbound.rows.map(row => triadGeneration(row.definition as ScaleDefinition)));
+  if (unboundGenerations.size > 1) generationMismatch();
   const latest = await client.query("SELECT id FROM triad_rounds WHERE family_id=$1 AND region=$2 ORDER BY created_at DESC,id DESC LIMIT 1", [familyId, region]);
   if (latest.rows[0]) {
     const roundId = String(latest.rows[0].id);
-    const members = await client.query("SELECT respondent_role,submitted_at FROM assessments WHERE triad_round_id=$1", [roundId]);
+    const members = await client.query("SELECT respondent_role,submitted_at,a.scale_version_id,COALESCE(a.snapshot->'scale',s.definition) AS definition FROM assessments a JOIN scales s ON s.id=a.scale_version_id WHERE a.triad_round_id=$1", [roundId]);
     if (!triadRolesReady(members.rows.filter(row => row.submitted_at).map(row => String(row.respondent_role)))) {
+      const generations = new Set([...unboundGenerations, ...members.rows.map(row => triadGeneration(row.definition as ScaleDefinition))]);
+      if (generations.size > 1) generationMismatch();
+      const generation = generations.values().next().value ?? "support-intake";
+      if (options.requestedScale && triadGeneration(options.requestedScale) !== generation) generationMismatch();
       if (members.rows.some(row => row.respondent_role === role)) throw new HttpError(409, "本轮仍在等待其他成员完成，请先完成本轮三方问卷。", "TRIAD_ROUND_IN_PROGRESS");
-      return roundId;
+      const scaleVersionId = options.requestedScale ? `${options.requestedScale.id}@${options.requestedScale.version}` : (generation === "support-intake" ? currentTriadScaleIds : legacyTriadScaleIds)[role];
+      return { roundId, scaleVersionId };
     }
   }
+  const generation = unboundGenerations.values().next().value ?? (options.preserveExisting && options.requestedScale ? triadGeneration(options.requestedScale) : "support-intake");
+  if (options.requestedScale && triadGeneration(options.requestedScale) !== generation) generationMismatch();
   const id = randomUUID();
   await client.query("INSERT INTO triad_rounds(id,family_id,region) VALUES($1,$2,$3)", [id, familyId, region]);
-  return id;
+  const scaleVersionId = options.requestedScale ? `${options.requestedScale.id}@${options.requestedScale.version}` : (generation === "support-intake" ? currentTriadScaleIds : legacyTriadScaleIds)[role];
+  return { roundId: id, scaleVersionId };
 }
 
 export async function startParentCase(input: unknown, locale: "zh-CN" | "zh-HK"): Promise<{ userId: string; familyId: string; joinCode: string }> {
@@ -268,8 +286,8 @@ export async function startParentCase(input: unknown, locale: "zh-CN" | "zh-HK")
     await client.query("INSERT INTO families(id,region,family_name,child_name,birth_date,grade,guardian_label,join_code) VALUES($1,$2,$3,$4,$5,$6,$7,$8)", [familyId, getConfig().region, `${data.childName}的家庭`, data.childName, data.birthDate, data.grade, data.relationship, joinCode]);
     await client.query("INSERT INTO memberships(family_id,user_id,role) VALUES($1,$2,'parent')", [familyId, userId]);
     await insertConsentRecords(client, { familyId, actorId: userId, guardianName: data.parentName, method: "online_guardian", noticeVersion, scopes: recordedScopes(data) });
-    const roundId = await triadRoundFor(client, familyId, "parent");
-    await client.query("INSERT INTO assessments(id,family_id,region,respondent_id,respondent_role,scale_version_id,locale,triad_round_id) VALUES($1,$2,$3,$4,'parent',$5,$6,$7)", [randomUUID(), familyId, getConfig().region, userId, SCALE_ID.parent, locale, roundId]);
+    const { roundId, scaleVersionId } = await resolveTriadAssignment(client, familyId, "parent");
+    await client.query("INSERT INTO assessments(id,family_id,region,respondent_id,respondent_role,scale_version_id,locale,triad_round_id) VALUES($1,$2,$3,$4,'parent',$5,$6,$7)", [randomUUID(), familyId, getConfig().region, userId, scaleVersionId, locale, roundId]);
     await client.query("INSERT INTO audit_events(region,actor_id,action,entity_id) VALUES($1,$2,'triad.parent_started',$3)", [getConfig().region, userId, familyId]);
     return { userId, familyId, joinCode: formatJoinCode(joinCode) };
   });
@@ -289,7 +307,7 @@ export async function joinWithCode(input: unknown, locale: "zh-CN" | "zh-HK"): P
     await requireRegistrationConsent(client, family.rows[0].id);
     const taken = await client.query("SELECT 1 FROM memberships WHERE family_id=$1 AND role=$2", [family.rows[0].id, data.role]);
     if (taken.rows[0]) throw new HttpError(409, data.role === "student" ? "这个家庭已经有孩子进入了。" : "这个家庭已经有老师进入了。", "ROLE_TAKEN");
-    const scaleId = SCALE_ID[data.role];
+    const { roundId, scaleVersionId: scaleId } = await resolveTriadAssignment(client, family.rows[0].id, data.role);
     const scale = await client.query("SELECT id FROM scales WHERE id=$1 AND status='active'", [scaleId]);
     if (!scale.rows[0]) throw new HttpError(409, "问卷还没有准备好。", "SCALE_NOT_FOUND");
     const userId = randomUUID();
@@ -300,7 +318,6 @@ export async function joinWithCode(input: unknown, locale: "zh-CN" | "zh-HK"): P
       throw error;
     }
     await client.query("INSERT INTO memberships(family_id,user_id,role) VALUES($1,$2,$3)", [family.rows[0].id, userId, data.role]);
-    const roundId = await triadRoundFor(client, family.rows[0].id, data.role);
     await client.query("INSERT INTO assessments(id,family_id,region,respondent_id,respondent_role,scale_version_id,locale,triad_round_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8)", [randomUUID(), family.rows[0].id, getConfig().region, userId, data.role, scaleId, locale, roundId]);
     await client.query("INSERT INTO audit_events(region,actor_id,action,entity_id) VALUES($1,$2,'triad.member_joined',$3)", [getConfig().region, userId, family.rows[0].id]);
     return { userId };

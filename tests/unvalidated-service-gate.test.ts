@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Actor, ScaleDefinition } from "../src/domain/types";
 import { previewAnswers } from "../src/domain/triad-report";
-import { childScale } from "../src/domain/triad-scales";
+import { childScaleSupportIntake as childScale, parentScaleStaffNotes } from "../src/domain/triad-scales";
 import { demoAdvice, demoTemplate } from "../src/domain/demo";
 import { childScale as oldChild } from "./fixtures/triad-scales-ed66f27";
 
@@ -30,6 +30,7 @@ const familyRow = { id: FAMILY, region: "CN", family_name: "Synthetic family", c
 
 const statements: string[] = [];
 let savedAnswers: unknown = null;
+let legacyRound = false;
 let syntheticMembers: Record<string, unknown>[] = [];
 let taskScale: ScaleDefinition = oldChild;
 
@@ -65,6 +66,10 @@ function rowsFor(sql: string, values: unknown[] = []): Record<string, unknown>[]
   if (sql.includes("SELECT 1 FROM memberships")) return [];
   if (sql.includes("SELECT user_id,role FROM memberships")) return [{ user_id: STUDENT, role: "student" }];
   if (sql.includes("SELECT m.role FROM memberships")) return [{ role: "student" }];
+  if (sql.includes("status='pending'") && sql.includes("s.scale_id=$3")) return [];
+  if (sql.includes("submitted_at IS NOT NULL") && sql.includes("s.scale_id=$3")) return [];
+  if (sql.includes("FROM triad_rounds")) return legacyRound ? [{ id: "legacy-round" }] : [];
+  if (sql.includes("respondent_role,submitted_at")) return legacyRound ? [{ respondent_role: "parent", submitted_at: null, definition: parentScaleStaffNotes }] : [];
   if (sql.includes("FROM assessments a JOIN scales")) return [{ id: TASK, status: "pending", definition: taskScale, draft_answers: {}, draft_revision: 0, family_id: FAMILY, child_name: "Synthetic child", birth_date: "2014-06-01", respondent_role: "student", region: "CN", respondent_id: STUDENT, triad_round_id: null, snapshot: null }];
   if (sql.includes("SELECT a.*,r.id AS report_id")) return [{ id: TASK, status: "pending", draft_revision: 0, family_id: FAMILY, respondent_id: STUDENT, respondent_role: "student", report_id: null, triad_round_id: null, snapshot: null }];
   if (sql.startsWith("UPDATE assessments SET draft_answers")) return [{ id: TASK, draft_revision: 1 }];
@@ -86,6 +91,7 @@ function stub(mode: "demo" | "service") {
 }
 
 beforeEach(() => {
+  legacyRound = false;
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date("2026-10-11T00:00:00Z"));
   statements.length = 0;
@@ -124,6 +130,7 @@ describe("service mode admits the known non-clinical triad", () => {
   it("assigns the known triad without claiming validated norms", async () => {
     const input = { familyId: FAMILY, respondentId: STUDENT, locale: "zh-CN" as const };
     await expect(createAssessment(parentActor, { ...input, scaleVersionId: CURRENT })).resolves.toHaveProperty("id");
+    legacyRound = true;
     await expect(createAssessment(parentActor, { ...input, scaleVersionId: LEGACY })).resolves.toHaveProperty("id");
     expect(oldChild.demo).toBe(false);
     expect(oldChild.norm.validated).toBe(false);
@@ -150,7 +157,8 @@ describe("service mode admits the known non-clinical triad", () => {
 });
 
 describe("service mode still refuses unknown unvalidated instruments", () => {
-  beforeEach(() => { stub("service"); taskScale = unsupportedChild; });
+  beforeEach(() => {
+  legacyRound = false; stub("service"); taskScale = unsupportedChild; });
   it("exposes the blocker and refuses draft, submission and assignment without writing", async () => {
     const refused = { status: 409, code: "UNVALIDATED_INSTRUMENT" };
     await expect(assessmentDetail(studentActor, TASK, "zh-CN")).resolves.toMatchObject({ responseBlockedReason: "UNVALIDATED_INSTRUMENT" });
@@ -181,6 +189,7 @@ describe("demo mode still lets the same unvalidated paths finish", () => {
   it("assigns the current triad and a non-demo unvalidated scale", async () => {
     const input = { familyId: FAMILY, respondentId: STUDENT, locale: "zh-CN" as const };
     await expect(createAssessment(parentActor, { ...input, scaleVersionId: CURRENT })).resolves.toHaveProperty("id");
+    legacyRound = true;
     await expect(createAssessment(parentActor, { ...input, scaleVersionId: LEGACY })).resolves.toHaveProperty("id");
     const inserted = statements.filter(sql => sql.startsWith("INSERT INTO assessments"));
     expect(inserted.length).toBeGreaterThanOrEqual(2);
@@ -200,6 +209,7 @@ describe("demo mode still lets the same unvalidated paths finish", () => {
 describe("designated synthetic production assessment admission", () => {
   const designated = { ...studentActor, sessionMethod: "test" as const };
   beforeEach(() => {
+  legacyRound = false;
     stub("service");
     vi.stubEnv("NOVA_AUTH_PROVIDER", "clerk");
     vi.stubEnv("NOVA_TEST_ACCOUNT_USERNAMES", "synthetic.parent,synthetic.student,synthetic.teacher");

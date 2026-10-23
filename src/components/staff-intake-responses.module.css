@@ -1,0 +1,10 @@
+.panel { min-width: 0; }
+.response { border-top: 1px solid var(--line, #e3e5dc); }
+.response summary { cursor: pointer; padding: 16px 0; font-weight: 600; line-height: 1.6; }
+.response summary:focus-visible { outline: 2px solid var(--accent, #526f53); outline-offset: 3px; }
+.section { margin: 0 0 20px; }
+.section h3 { font-size: 1rem; margin: 0 0 12px; }
+.section dl { margin: 0; }
+.section dl > div { margin: 0 0 14px; }
+.section dt { font-weight: 500; line-height: 1.6; }
+.section dd { margin: 4px 0 0; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }

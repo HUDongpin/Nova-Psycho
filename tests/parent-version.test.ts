@@ -50,11 +50,12 @@ describe("versioned parent questionnaire", () => {
     expect(instruments.parentScaleStaffNotes.version).toBe("1.3.0");
     expect(instruments.teacherScaleStaffNotes.version).toBe("1.2.0");
     expect(instruments.triadScales.map(scale => `${scale.id}@${scale.version}`).sort()).toEqual([
-      "growth-child@1.0.0", "growth-child@1.1.0", "growth-child@1.2.0", "growth-child@1.3.0",
-      "growth-parent@1.0.0", "growth-parent@1.1.0", "growth-parent@1.2.0", "growth-parent@1.3.0",
-      "growth-teacher@1.0.0", "growth-teacher@1.1.0", "growth-teacher@1.2.0"
+      "growth-child@1.0.0", "growth-child@1.1.0", "growth-child@1.2.0", "growth-child@1.3.0", "growth-child@2.0.0",
+      "growth-parent@1.0.0", "growth-parent@1.1.0", "growth-parent@1.2.0", "growth-parent@1.3.0", "growth-parent@2.0.0",
+      "growth-teacher@1.0.0", "growth-teacher@1.1.0", "growth-teacher@1.2.0", "growth-teacher@2.0.0"
     ]);
-    expect(instruments.currentTriadScaleIds).toEqual({ parent: "growth-parent@1.3.0", student: "growth-child@1.3.0", teacher: "growth-teacher@1.2.0" });
+    expect(instruments.legacyTriadScaleIds).toEqual({ parent: "growth-parent@1.3.0", student: "growth-child@1.3.0", teacher: "growth-teacher@1.2.0" });
+    expect(instruments.currentTriadScaleIds).toEqual({ parent: "growth-parent@2.0.0", student: "growth-child@2.0.0", teacher: "growth-teacher@2.0.0" });
   });
 
   it("changes only the approved old-item wording and adds seven independent optional staff fields", () => {

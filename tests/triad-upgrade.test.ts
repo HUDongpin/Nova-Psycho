@@ -76,7 +76,7 @@ function apply(sql: string, values: unknown[] = []): Record<string, unknown>[] {
   }
   if (sql.includes("UPDATE scales SET status='retired'")) {
     if (sql.includes("scale_id=$1")) {
-      for (const row of scales) if (row.scale_id === values[0] && row.id !== values[1] && row.status === "active") row.status = "retired";
+      for (const row of scales) if (row.scale_id === values[0] && !(Array.isArray(values[1]) ? values[1] : [values[1]]).includes(row.id) && row.status === "active") row.status = "retired";
     } else {
       const row = scales.find(item => item.id === values[0] && item.status === "active");
       if (row) row.status = "retired";
@@ -109,7 +109,7 @@ function apply(sql: string, values: unknown[] = []): Record<string, unknown>[] {
   }
   if (sql.includes("triad_round_id IS NULL")) return [];
   if (sql.includes("FROM triad_rounds")) return rounds.filter(item => item.family_id === values[0] && item.region === values[1]).slice(-1);
-  if (sql.includes("respondent_role,submitted_at")) return assessments.filter(item => item.triad_round_id === values[0]).map(item => ({ respondent_role: item.respondent_role, submitted_at: item.submitted_at }));
+  if (sql.includes("respondent_role,submitted_at")) return assessments.filter(item => item.triad_round_id === values[0]).map(item => ({ respondent_role: item.respondent_role, submitted_at: item.submitted_at, definition: scales.find(scale => scale.id === item.scale_version_id)?.definition }));
   if (sql.includes("submitted_at IS NOT NULL") && sql.includes("triad_round_id=$3")) return assessments.filter(item => item.family_id === values[0] && item.region === values[1] && item.triad_round_id === values[2] && item.submitted_at).map(item => ({ id: item.id, respondent_role: item.respondent_role }));
   if (sql.includes("status='pending'") && sql.includes("s.scale_id=$3")) {
     return assessments.filter(item => item.family_id === values[0] && item.respondent_id === values[1] && item.status === "pending" && scales.find(scale => scale.id === item.scale_version_id)?.scale_id === values[2]).map(item => ({ id: item.id, triad_round_id: item.triad_round_id, definition: scales.find(scale => scale.id === item.scale_version_id)?.definition }));
@@ -228,7 +228,9 @@ function routedAsWords(scale: ScaleDefinition, ids: readonly string[]): string {
 describe("ed66f27 triad upgrade", () => {
   it("keeps old tasks and joins, and opens new tasks on the staff-note revisions", async () => {
     const preserved = new Map(scales.map(row => [row.id, JSON.stringify(row.definition)]));
-    const assigned = await createAssessment(admin, { familyId: ASSIGNED, respondentId: ASSIGNED_STUDENT, scaleVersionId: "growth-child@1.0.0", locale: "zh-CN" });
+    // This task was assigned before the upgrade; new rounds now use generation 2.
+    const assigned = { id: "15151515-1515-4515-8515-151515151515" };
+    seedTask(assigned.id, ASSIGNED, ASSIGNED_STUDENT, "student", "growth-child@1.0.0", ROUND);
     expect(assessments.find(row => row.id === assigned.id)?.scale_version_id).toBe("growth-child@1.0.0");
 
     await ensureTriadInstruments();
@@ -303,7 +305,10 @@ describe("ed66f27 triad upgrade", () => {
     await expect(createAssessment(admin, { familyId: FRESH, respondentId: FRESH_STUDENT, scaleVersionId: "growth-child@1.1.0", locale: "zh-CN" })).rejects.toMatchObject({ code: "SCALE_RETIRED" });
     await expect(createAssessment(admin, { familyId: FRESH, respondentId: FRESH_STUDENT, scaleVersionId: "growth-child@1.2.0", locale: "zh-CN" })).rejects.toMatchObject({ code: "SCALE_RETIRED" });
     await expect(createAssessment(admin, { familyId: FRESH, respondentId: FRESH_TEACHER, scaleVersionId: "growth-teacher@1.1.0", locale: "zh-CN" })).rejects.toMatchObject({ code: "SCALE_RETIRED" });
-    const historicalParent = await createAssessment(admin, { familyId: FRESH, respondentId: FRESH_PARENT, scaleVersionId: "growth-parent@1.2.0", locale: "zh-CN" });
+    const historicalParent = { id: "16161616-1616-4616-8616-161616161616" };
+    const historicalRound = "17171717-1717-4717-8717-171717171717";
+    rounds.push({ id: historicalRound, family_id: FRESH, region: "CN" });
+    seedTask(historicalParent.id, FRESH, FRESH_PARENT, "parent", "growth-parent@1.2.0", historicalRound);
     expect(assessments.find(row => row.id === historicalParent.id)?.scale_version_id).toBe("growth-parent@1.2.0");
     const created = {
       student: await createAssessment(admin, { familyId: FRESH, respondentId: FRESH_STUDENT, scaleVersionId: "growth-child@1.3.0", locale: "zh-CN" }),
@@ -381,6 +386,10 @@ describe("ed66f27 triad upgrade", () => {
     for (const id of PARENT_TEAM_WRITING) expect(staffOnlyText(parentScaleSafety, oldParentAnswers).map(note => note.value)).not.toContain(`OLD_REPORT_${id}`);
     expect(staffOnlyText(teacherScaleSafety, oldTeacherAnswers).map(note => note.value)).not.toContain("OLD_REPORT_t23");
 
+    // The staff-note revision remains available to finish an existing legacy round.
+    const staffNotesRound = "19191919-1919-4919-8919-191919191919";
+    rounds.push({ id: staffNotesRound, family_id: FRESH, region: "CN" });
+    seedTask("20202020-2020-4020-8020-202020202020", FRESH, FRESH_STUDENT, "student", "growth-child@1.3.0", staffNotesRound);
     const created = {
       parent: await createAssessment(admin, { familyId: FRESH, respondentId: FRESH_PARENT, scaleVersionId: "growth-parent@1.3.0", locale: "zh-CN" }),
       teacher: await createAssessment(admin, { familyId: FRESH, respondentId: FRESH_TEACHER, scaleVersionId: "growth-teacher@1.2.0", locale: "zh-CN" })
