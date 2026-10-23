@@ -9,7 +9,8 @@ import { FamilyEntry } from "./family-entry";
 import { useIdentityAuth } from "./localized-clerk-provider";
 import { AssessmentView, ReportView } from "./documents";
 import { AccountDraftStore, type DraftOwner } from "./account-drafts";
-import { hasGeneratingReports, nextReportRefreshDelay } from "./report-refresh";
+import { WorkspaceReportUpdates } from "./staged-reports";
+import { hasGeneratingReports, hasOpenStagedFollowup, nextReportRefreshDelay } from "./report-refresh";
 import { AssessmentForm, ConsentForm, DeleteFamilyForm, FamilyAssignmentForm, FamilyForm, GoalForm, InvitationForm, ObservationForm, RecoveryForm, RetireScaleForm, ScaleImportForm } from "./forms";
 import { AssessmentList, AuditView, ContentView, Dashboard, FamiliesView, FamilyView, GoalList, OpsView, ReportCards, ScalesView, type OpenForm, type Route } from "./workspace-views";
 import questionnaireStyles from "./questionnaire.module.css";
@@ -131,7 +132,8 @@ export default function NovaApp() {
   }, [loadSession, cancelRequests, draftSessions]);
   useEffect(() => { if (session?.user && draftSessions.state !== "mismatch" && !isAdult(session.user.role) && route.page !== "assessments" && route.page !== "assessment") navigate({ page: "assessments" }); }, [session, route.page, navigate, draftSessions]);
   useEffect(() => { const target = form?.target; if (workspace && isFamilyTarget(target) && !workspace.families.some(family => family.id === target.id)) setForm(null); }, [workspace, form]);
-  const generatingReport = hasGeneratingReports(workspace?.assessments ?? []);
+  const generatingReport = hasGeneratingReports(workspace?.assessments ?? [], workspace?.reportJobs ?? []);
+  const followingStagedFamily = route.page === "family" && hasOpenStagedFollowup(workspace?.families.find(family => family.id === route.id), workspace?.assessments ?? []);
   const refreshOwner = owner ? `${owner.region}:${owner.id}` : null;
   const reportRefreshWindow = useRef<{ owner: string; startedAt: number; attempts: number } | null>(null);
   const lastForegroundRefresh = useRef<{ owner: string; at: number } | null>(null);
@@ -152,13 +154,14 @@ export default function NovaApp() {
     function schedule() {
       clearTimer();
       const budget = reportRefreshWindow.current;
-      if (stopped || !visible() || !generatingReport || !budget || budget.owner !== refreshOwner) return;
-      const delay = nextReportRefreshDelay(budget.startedAt, budget.attempts, Date.now());
+      if (stopped || !visible() || (!generatingReport && !followingStagedFamily)) return;
+      if (generatingReport && (!budget || budget.owner !== refreshOwner)) return;
+      const delay = generatingReport && budget ? nextReportRefreshDelay(budget.startedAt, budget.attempts, Date.now()) : 15_000;
       if (delay === null) return;
       timer = setTimeout(async () => {
         timer = undefined;
-        if (stopped || !visible() || reportRefreshWindow.current !== budget) return;
-        budget.attempts++;
+        if (stopped || !visible() || (generatingReport && reportRefreshWindow.current !== budget)) return;
+        if (generatingReport && budget) budget.attempts++;
         await readWorkspace();
         schedule();
       }, delay);
@@ -176,7 +179,7 @@ export default function NovaApp() {
     window.addEventListener("focus", refreshOnReturn);
     schedule();
     return () => { stopped = true; clearTimer(); document.removeEventListener("visibilitychange", visibilityChanged); window.removeEventListener("focus", refreshOnReturn); };
-  }, [refreshOwner, generatingReport, loggingOut, loadWorkspace]);
+  }, [refreshOwner, generatingReport, followingStagedFamily, loggingOut, loadWorkspace]);
   useEffect(() => { if (!mobileMenu) return; const previousFocus = document.activeElement as HTMLElement | null; const sidebar = document.querySelector<HTMLElement>(".sidebar"); const focusable = () => Array.from(sidebar?.querySelectorAll<HTMLElement>("a[href],button:not([disabled])") || []).filter(element => element.offsetParent !== null); (sidebar?.querySelector<HTMLElement>("nav a[aria-current=page]") || focusable()[0])?.focus({ preventScroll: true }); const close = (event: KeyboardEvent) => { if (event.key === "Escape") setMobileMenu(false); if (event.key === "Tab") { const items = focusable(); const first = items[0]; const last = items.at(-1); if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); } else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); } } }; window.addEventListener("keydown", close); return () => { window.removeEventListener("keydown", close); if (sidebar?.contains(document.activeElement)) previousFocus?.focus({ preventScroll: true }); }; }, [mobileMenu]);
   async function refresh() {
     const pending = loadWorkspace();
@@ -250,8 +253,8 @@ export default function NovaApp() {
       case "families": return <FamiliesView {...viewProps} />;
       case "family": { const record = workspace.families.find(item => item.id === route.id); return record ? <FamilyView {...viewProps} family={record} authProvider={authProvider} onRefresh={loadWorkspaceAfterMutation} openPrivacy={() => setPrivacy(true)} /> : <Empty title={t("missing")} />; }
       case "assessments": return <><div className="page-title"><div><h1>{t("assessments")}</h1><p>{t(adult ? "taskIntro" : "respondentIntro")}</p></div>{adult && <button className="button primary" disabled={!workspace.families.length} onClick={() => openForm("assessment")}><Plus />{t("newAssessment")}</button>}</div><section className="panel"><AssessmentList assessments={workspace.assessments} locale={locale} navigate={navigate} adult={adult} workspace={workspace} onRefresh={loadWorkspaceAfterMutation} /></section></>;
-      case "assessment": return route.id ? <AssessmentView key={`${activeOwner.region}:${activeOwner.id}:${route.id}`} owner={activeOwner} id={route.id} refreshKey={refreshKey} locale={locale} region={user.region} role={user.role} draftSessions={draftSessions} privacyRefreshRequired={adult && workspace.assessments.some(item => item.id === route.id && item.privacyRefreshRequired)} progress={workspace.assessments.find(item => item.id === route.id)} canRetryReport={workspace.assessments.find(item => item.id === route.id)?.canRetryReport ?? false} reportId={adult ? workspace.assessments.find(item => item.id === route.id && item.status === "published")?.reportId ?? null : null} onViewReport={id => navigate({ page: "report", id })} onBack={() => navigate({ page: "assessments" })} onRefresh={loadWorkspaceAfterMutation} openPrivacy={() => setPrivacy(true)} privacyOpen={privacy} onLocaleChange={setLocale} /> : <Empty title={t("missing")} />;
-      case "reports": return <><div className="page-title"><div><h1>{t("reports")}</h1><p>{t("reportIntro")}</p></div><span className="automation-label"><FlowerLotus weight="regular" />{t("automatic")}</span></div><p className="info-strip"><ShieldCheck />{t("automaticNote")}</p><ReportCards reports={workspace.reports} locale={locale} navigate={navigate} /></>;
+      case "assessment": return route.id ? <AssessmentView key={`${activeOwner.region}:${activeOwner.id}:${route.id}`} owner={activeOwner} id={route.id} refreshKey={refreshKey} locale={locale} region={user.region} role={user.role} draftSessions={draftSessions} privacyRefreshRequired={adult && workspace.assessments.some(item => item.id === route.id && item.privacyRefreshRequired)} progress={workspace.assessments.find(item => item.id === route.id)} reportJob={(workspace.reportJobs ?? []).filter(job => job.roundId === workspace.assessments.find(item => item.id === route.id)?.roundId).sort((a, b) => b.version - a.version)[0]} canRetryReport={workspace.assessments.find(item => item.id === route.id)?.canRetryReport ?? false} reportId={adult ? workspace.assessments.find(item => item.id === route.id && (item.status === "published" || item.status === "submitted"))?.reportId ?? null : null} onViewReport={id => navigate({ page: "report", id })} onBack={() => navigate({ page: "assessments" })} onRefresh={loadWorkspaceAfterMutation} openPrivacy={() => setPrivacy(true)} privacyOpen={privacy} onLocaleChange={setLocale} /> : <Empty title={t("missing")} />;
+      case "reports": return <><div className="page-title"><div><h1>{t("reports")}</h1><p>{t("reportIntro")}</p></div><span className="automation-label"><FlowerLotus weight="regular" />{t("automatic")}</span></div><p className="info-strip"><ShieldCheck />{t("automaticNote")}</p><WorkspaceReportUpdates workspace={workspace} locale={locale} onRefresh={loadWorkspaceAfterMutation} /><ReportCards reports={workspace.reports} locale={locale} navigate={navigate} /></>;
       case "report": return route.id ? <ReportView id={route.id} refreshKey={refreshKey} locale={locale} onBack={() => navigate({ page: "reports" })} /> : <Empty title={t("missing")} />;
       case "care": return <><div className="page-title"><div><h1>{t("care")}</h1><p>{t("careNote")}</p></div><button className="button primary" onClick={() => openForm("goal")} disabled={!workspace.families.length}><Plus />{t("newGoal")}</button></div><section className="panel care-list-panel"><GoalList goals={workspace.goals} workspace={workspace} locale={locale} onChange={loadWorkspaceAfterMutation} /></section></>;
       case "scales": return <ScalesView {...viewProps} />;

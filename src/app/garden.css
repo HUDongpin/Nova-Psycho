@@ -67,3 +67,21 @@
 @media(prefers-reduced-motion: reduce) {
   .garden-submission *, .garden-report-heading *, .garden-report-card * { scroll-behavior: auto; transition: none; animation: none; }
 }
+
+/* Staged report updates use the existing family panels and report cards. */
+.staged-progress-list { list-style: none; padding: 0; margin: 0; }
+.staged-progress-list li { display: flex; justify-content: space-between; align-items: center; gap: 1rem; padding: .9rem 0; border-bottom: 1px solid var(--border, #e1e7e3); }
+.staged-staff-entry, .staged-report-job { margin-top: 1rem; }
+.staged-report-job { padding: 1rem; border-radius: 12px; background: var(--sage-light, #edf4f0); }
+.staged-report-job p { margin: .5rem 0; }
+.staged-report-history { margin-top: 1rem; }
+.staged-report-history summary { cursor: pointer; padding: .8rem 0; font-weight: 600; }
+.report-revision-label { margin: .75rem 0; }
+.report-revision-label p { margin: .35rem 0; }
+@media (max-width: 540px) { .staged-progress-list li { align-items: flex-start; flex-direction: column; gap: .5rem; } }
+
+.student-sharing-preview { border: 1px solid #c8d8cb; background: #f3f7ef; border-radius: 12px; margin: 1rem 0; padding: 1.25rem; }
+.student-sharing-preview h3 { margin-top: 0; }
+.student-sharing-preview li { margin: .5rem 0; }
+
+.staged-report-updates { display: grid; gap: 1rem; margin-bottom: 1.5rem; }

@@ -19,6 +19,11 @@ beforeEach(()=>{
 afterEach(()=>{vi.unstubAllEnvs();vi.useRealTimers();});
 
 describe("report dispatch",()=>{
+  it("dispatches every pending revision containing this submission",async()=>{
+    vi.mocked(query).mockResolvedValue([{id:JOB_ID},{id:ASSESSMENT_ID}]);
+    await dispatchAssessmentReport(ASSESSMENT_ID);
+    expect(send.mock.calls.map(call=>call[1].jobId)).toEqual([JOB_ID,ASSESSMENT_ID]);
+  });
   it("sends only opaque identity in the configured physical queue region",async()=>{
     await dispatchAssessmentReport(ASSESSMENT_ID);
     expect(constructors).toHaveBeenCalledWith({region:"sin1",telemetry:{isEnabled:false}});

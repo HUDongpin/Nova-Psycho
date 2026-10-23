@@ -12,7 +12,7 @@ const PRIVATE_PDF_TEMP_GRACE_MS=24*60*60*1000;
 function location(key:string):string{
   return privatePdfPath(getConfig().reportDir,key);
 }
-export async function writePrivatePdf(key:string,pdf:Buffer,client?:PoolClient):Promise<void>{
+export async function writePrivatePdf(key:string,pdf:Buffer,client?:PoolClient,reportJobId?:string):Promise<void>{
   assertPrivatePdfKey(key);
   const config=getConfig();
   if((config.reportStorage==="database"&&pdf.length>MAX_PRIVATE_PDF_BYTES)||pdf.subarray(0,4).toString()!=="%PDF")throw new Error("Invalid or oversized private PDF");
@@ -21,7 +21,11 @@ export async function writePrivatePdf(key:string,pdf:Buffer,client?:PoolClient):
   const file=Buffer.concat([Buffer.from("NOVA1"),nonce,cipher.getAuthTag(),encrypted]);
   if(config.reportStorage==="database"){
     if(!client)throw new Error("Database PDFs must be stored inside report publication");
-    const inserted=await client.query(`INSERT INTO report_files(file_key,report_id,family_id,region,locale,encrypted_body)
+    if(reportJobId&&key.slice(0,36)!==reportJobId)throw new Error("Private PDF job identity mismatch");
+    const inserted=reportJobId?await client.query(`INSERT INTO report_files(file_key,report_id,family_id,region,locale,encrypted_body)
+      SELECT $1,j.id,a.family_id,a.region,$3,$4 FROM report_jobs j JOIN assessments a ON a.id=j.assessment_id
+      WHERE j.id=$2 AND a.region=$5 AND j.report_version IS NOT NULL RETURNING file_key`,
+      [key,reportJobId,key.endsWith(".zh-CN.pdf.enc")?"zh-CN":"zh-HK",file,config.region]):await client.query(`INSERT INTO report_files(file_key,report_id,family_id,region,locale,encrypted_body)
       SELECT $1,id,family_id,region,$3,$4 FROM assessments WHERE id=$2 AND region=$5 RETURNING file_key`,
     [key,key.slice(0,36),key.endsWith(".zh-CN.pdf.enc")?"zh-CN":"zh-HK",file,config.region]);
     if(inserted.rows.length!==1)throw new Error("Private PDF owner is unavailable");
@@ -66,7 +70,7 @@ export async function cleanAbandonedPrivatePdfTemps():Promise<void>{
     const stats=await fs.lstat(filename).catch(error=>{if((error as NodeJS.ErrnoException).code==="ENOENT")return null;throw error;});
     if(!stats?.isFile()||Date.now()-stats.mtimeMs<PRIVATE_PDF_TEMP_GRACE_MS)continue;
     const running=await query<{claim_token:string|null}>(`SELECT j.claim_token FROM report_jobs j JOIN assessments a ON a.id=j.assessment_id
-      WHERE j.assessment_id=$1 AND a.region=$2 AND j.state='running'`,[matched[1],config.region]);
+      WHERE (j.assessment_id=$1 OR j.id=$1) AND a.region=$2 AND j.state='running'`,[matched[1],config.region]);
     if(running.some(job=>job.claim_token===matched[2]))continue;
     await fs.rm(filename,{force:true});
   }

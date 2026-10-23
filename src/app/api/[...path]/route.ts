@@ -15,6 +15,9 @@ import { startSyntheticRetake } from "@/lib/synthetic-retake";
 import { workspaceFor } from "@/lib/workspace";
 import { acceptClerkInvitation,acceptInvitation,acceptInvitationForActor,assignFamily,createFamily,createInvitation,deleteFamily,invitationInfo,recordConsent } from "@/lib/families";
 import { acknowledgeSafetyAlert,assertPublicTriadOpen,createParentFamily,joinClerkStudent,joinFamily,joinWithCode,resolveSafetyAlert,startParentCase } from "@/lib/triad";
+import { startStaffObservation } from "@/lib/staff-observation";
+import { retryStagedReport } from "@/lib/staged-reports";
+import { enqueueReportJob } from "@/lib/report-dispatch";
 import { assessmentDetail,createAssessment,retryReport,saveDraft,submitAssessment } from "@/lib/assessments";
 import { reportDetail,reportFor } from "@/lib/reports";
 import { readPrivatePdf } from "@/lib/storage";
@@ -113,6 +116,12 @@ async function dispatch(request:Request,context:Context):Promise<Response>{retur
     if(method==="POST"&&path.length===3&&path[2]==="invites")return json(await createInvitation(actor,path[1],await body(request)),201);
     if(method==="DELETE"&&path.length===2)return json(await deleteFamily(actor,path[1],await body(request)));
   }
+  if(method==="POST"&&path[0]==="families"&&path[1]&&path.length===3&&path[2]==="staff-observation")return json(await startStaffObservation(actor,path[1],locale),201);
+  if(method==="POST"&&path[0]==="report-jobs"&&path[1]&&path.length===3&&path[2]==="retry"){
+    const result=await retryStagedReport(actor,path[1]);
+    if(getConfig().workerMode==="queue")after(async()=>{try{await enqueueReportJob(result.id);}catch{console.error("nova_report_dispatch_pending",{region:actor.region});}});
+    return json(result);
+  }
   if(method==="POST"&&route==="assessments")return json(await createAssessment(actor,await body(request)),201);
   if(method==="POST"&&path[0]==="users"&&path[1]&&path.length===3&&path[2]==="recovery")return json(await createRecovery(actor,path[1]),201);
   if(path[0]==="assessments"&&path[1]){
@@ -120,7 +129,7 @@ async function dispatch(request:Request,context:Context):Promise<Response>{retur
     if(method==="PATCH"&&path.length===2)return json(await saveDraft(actor,path[1],await body(request)));
     if(method==="POST"&&path.length===3&&path[2]==="submit"){
       const result=await submitAssessment(actor,path[1],await body(request));
-      if(result.status==="queued")await dispatchAssessmentReport(path[1],after);
+      if(result.status==="queued"||result.status==="submitted")await dispatchAssessmentReport(path[1],after);
       return json(result);
     }
     if(method==="POST"&&path.length===3&&path[2]==="retry-report"){

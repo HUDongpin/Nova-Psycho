@@ -16,7 +16,7 @@ import { query, transaction } from "../src/lib/db";
 import { getScale } from "../src/lib/content";
 import { joinFamily, joinWithCode } from "../src/lib/triad";
 import { createAssessment } from "../src/lib/assessments";
-import { childScaleStaffNotes, parentScaleStaffNotes, teacherScaleStaffNotes } from "../src/domain/triad-scales";
+import { childScaleStaffNotes, parentScaleStaffNotes, teacherScaleStaffNotes, stagedChildScale } from "../src/domain/triad-scales";
 
 const familyId = "11111111-1111-4111-8111-111111111111";
 const respondentId = "22222222-2222-4222-8222-222222222222";
@@ -26,7 +26,7 @@ const admin: Actor = { id: "55555555-5555-4555-8555-555555555555", name: "Synthe
 const student: Actor = { id: respondentId, name: "Synthetic student", role: "student", region: "CN" };
 const family = { id: familyId, region: "CN", birth_date: "2014-06-01", join_code: "TOPE-A2B3C4D5", child_name: "Synthetic child", grade: "初中", assigned_to: null };
 const short = (scale: ScaleDefinition) => ({ ...scale, version: "2.0.0", resultMode: "support-intake" } as ScaleDefinition);
-const definitions = [childScaleStaffNotes, parentScaleStaffNotes, teacherScaleStaffNotes, ...[childScaleStaffNotes, parentScaleStaffNotes, teacherScaleStaffNotes].map(short)];
+const definitions = [childScaleStaffNotes, parentScaleStaffNotes, teacherScaleStaffNotes, stagedChildScale, ...[childScaleStaffNotes, parentScaleStaffNotes, teacherScaleStaffNotes].map(short)];
 type Task = { id: string; respondent_role: string; submitted_at: string | null; scale_version_id: string; definition: ScaleDefinition; triad_round_id: string | null };
 let tasks: Task[], unbound: Task[], latest: boolean, own: boolean, pending: Task | undefined, unresolved: boolean;
 const writes: { sql: string; values: unknown[] }[] = [];
@@ -60,6 +60,16 @@ const assign = (scaleVersionId = "growth-child@2.0.0") => createAssessment(admin
 const assigned = () => writes.find(write => write.sql.startsWith("INSERT INTO assessments"))?.values;
 
 describe("support intake generation routing", () => {
+  it("refuses a staged sharing questionnaire inside a legacy support-intake round",async()=>{
+    latest=true;tasks=[task("parent",short(parentScaleStaffNotes),true)];
+    await expect(assign("growth-child@2.1.0")).rejects.toMatchObject({code:"TRIAD_GENERATION_MISMATCH"});
+    expect(writes).toEqual([]);
+  });
+  it("refuses a staged sharing questionnaire when unbound legacy drafts determine the new round",async()=>{
+    unbound=[{...task("parent",short(parentScaleStaffNotes)),triad_round_id:null}];
+    await expect(assign("growth-child@2.1.0")).rejects.toMatchObject({code:"TRIAD_GENERATION_MISMATCH"});
+    expect(writes).toEqual([]);
+  });
   it("routes a signed-in late join to the frozen legacy generation", async () => {
     latest = true; tasks = [task("parent", parentScaleStaffNotes, true)];
     await join();
@@ -104,7 +114,7 @@ describe("support intake generation routing", () => {
   it("adopts an unbound old task without rewriting its questionnaire", async () => {
     pending = { ...task("student", childScaleStaffNotes), triad_round_id: null };
     await expect(assign()).resolves.toEqual({ id: existingId });
-    expect(writes.map(write => write.sql)).toEqual(["INSERT INTO triad_rounds(id,family_id,region) VALUES($1,$2,$3)", "UPDATE assessments SET triad_round_id=$1 WHERE id=$2"]);
+    expect(writes.map(write => write.sql)).toEqual(["INSERT INTO triad_rounds(id,family_id,region,report_workflow) VALUES($1,$2,$3,$4)", "UPDATE assessments SET triad_round_id=$1 WHERE id=$2"]);
   });
   it("does not adopt an old task into a new-generation round", async () => {
     latest = true; tasks = [task("parent", short(parentScaleStaffNotes), true)];

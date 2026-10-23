@@ -1,7 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { hasGeneratingReports, nextReportRefreshDelay, REPORT_REFRESH_WINDOW_MS } from "../src/components/report-refresh";
+import { hasGeneratingReports, hasOpenStagedFollowup, nextReportRefreshDelay, REPORT_REFRESH_WINDOW_MS } from "../src/components/report-refresh";
 
 describe("report refresh eligibility", () => {
+  it("watches a visible parent-first family for another actor's supplement until all roles submit", () => {
+    const family={reportWorkflow:"parent_first_v1" as const,activeRoundId:"round"};
+    const parent={roundId:"round",respondentRole:"parent" as const,status:"submitted" as const};
+    expect(hasOpenStagedFollowup(family,[parent])).toBe(true);
+    expect(hasOpenStagedFollowup(family,[parent,{...parent,respondentRole:"student"}])).toBe(true);
+    expect(hasOpenStagedFollowup(family,[parent,{...parent,respondentRole:"student"},{...parent,respondentRole:"teacher"}])).toBe(false);
+    expect(hasOpenStagedFollowup({...family,reportWorkflow:"legacy_triad"},[parent])).toBe(false);
+    expect(hasOpenStagedFollowup(family,[{...parent,status:"pending"}])).toBe(false);
+  });
   it("does not poll while waiting for another respondent or after completion", () => {
     expect(hasGeneratingReports([])).toBe(false);
     expect(hasGeneratingReports([{ status: "queued", phase: "waiting" }, { status: "pending" }, { status: "published" }, { status: "failed" }])).toBe(false);

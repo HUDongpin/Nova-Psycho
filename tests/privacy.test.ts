@@ -16,7 +16,7 @@ const flatten=(region:Region,locale:Locale)=>{
 
 describe("privacy notice",()=>{
   it("pins the notice version",()=>{
-    expect(noticeVersion).toBe("nova-privacy-2026-10-v4");
+    expect(noticeVersion).toBe("nova-privacy-2026-10-v5");
   });
 
   it.each(combinations)("returns a complete bilingual notice for %s + %s",(region,locale)=>{
@@ -89,8 +89,18 @@ describe("privacy notice",()=>{
     }
   });
 
+  it.each(["zh-CN","zh-HK"] as const)("explains parent-first versions and optional explicit student sharing in %s",locale=>{
+    const notice=flatten("HK",locale);
+    expect(notice).toMatch(/家长提交后|家長提交後/);
+    expect(notice).toMatch(/新版本|新版本/);
+    expect(notice).toMatch(/最多三句|最多三句/);
+    expect(notice).toMatch(/预览并确认|預覽並確認/);
+    expect(notice).toMatch(/不分享仍可提交|不分享仍可提交/);
+    expect(notice).toContain("TOPE");
+  });
+
   it("does not invent English when switching locale",()=>{
-    const withoutBrand=(text:string)=>text.replaceAll("Nova","").replaceAll("AI","");
+    const withoutBrand=(text:string)=>text.replaceAll("Nova","").replaceAll("TOPE","").replaceAll("AI","");
     for(const region of ["CN","HK"] as const){
       expect(withoutBrand(flatten(region,"zh-CN"))).not.toMatch(/[A-Za-z]{3,}/);
       expect(withoutBrand(flatten(region,"zh-HK"))).not.toMatch(/[A-Za-z]{3,}/);

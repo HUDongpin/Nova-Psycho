@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { AdviceLibrary, ReportTemplate, ScaleDefinition } from "./types";
 import { TRIAD_DOMAIN_KEYS } from "./types";
-import { triadScales } from "./triad-scales";
+import { stagedTriadScaleIds, triadScales } from "./triad-scales";
 const key=z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/).refine(v=>!["constructor","prototype"].includes(v));
 const localized=z.object({"zh-CN":z.string().trim().min(1).max(4000),"zh-HK":z.string().trim().min(1).max(4000)}).strict();
 const roles=z.enum(["student","parent","teacher"]);
@@ -101,10 +101,12 @@ export const adviceSchema=z.object({title:localized,blocks:z.array(z.object({id:
 export const templateSchema=z.object({title:localized,introduction:localized,limitation:localized,nextStep:localized}).strict();
 export function normValidated(norm:{validated?:boolean}|null|undefined):boolean{return norm?.validated===true;}
 export type InstrumentWriteBlockReason = "UNVALIDATED_INSTRUMENT" | "DEMO_INSTRUMENT";
-type InstrumentIdentity = {id?:string;version?:string;bundle?:string};
+type InstrumentIdentity = {id?:string;version?:string;bundle?:string;resultMode?:string;dimensions?:unknown[]};
 const knownTriadVersions=new Set(triadScales.map(scale=>`${scale.id}@${scale.version}`));
+const stagedVersions=new Set<string>(Object.values(stagedTriadScaleIds));
 export function isKnownTriadInstrument(scale:InstrumentIdentity):boolean{
-  return scale.bundle==="growth-triad"&&knownTriadVersions.has(`${scale.id}@${scale.version}`);
+  const identity=`${scale.id}@${scale.version}`;
+  return scale.bundle==="growth-triad"&&knownTriadVersions.has(identity)&&(!stagedVersions.has(identity)||(scale.resultMode==="support-intake"&&Array.isArray(scale.dimensions)&&scale.dimensions.length===0));
 }
 export function instrumentWriteBlockReason(scale:InstrumentIdentity&{demo?:boolean;norm?:{validated?:boolean}|null},mode:"demo"|"service"):InstrumentWriteBlockReason|null{
   if(mode==="demo"||isKnownTriadInstrument(scale))return null;

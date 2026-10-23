@@ -143,6 +143,17 @@ describe("eligibleScales",()=>{
     const teacherFamily=family({members:[{id:"u2",name:"T",role:"teacher"}]});
     expect(eligibleScales(all,teacherFamily,"u2").map(s=>s.id)).toEqual(["teacher_only"]);
   });
+  it("keeps the TOPE staff form out of a family member assignment",()=>{
+    const teacherFamily=family({members:[{id:"u2",name:"T",role:"teacher"}]});
+    const observation=scale({id:"growth-tope-observation@1.0.0",scaleId:"growth-tope-observation",roles:["teacher"]});
+    expect(eligibleScales([...all,observation],teacherFamily,"u2").map(s=>s.id)).toEqual(["teacher_only"]);
+  });
+  it("restricts an open round to its questionnaire workflow and allows a later new round",()=>{
+    const legacy=scale({id:"legacy",reportWorkflow:"legacy_triad"}),staged=scale({id:"staged",reportWorkflow:"parent_first_v1",isDefaultVersion:true});
+    expect(eligibleScales([legacy,staged],family({reportWorkflow:"legacy_triad",activeRoundOpen:true}),"u1").map(s=>s.id)).toEqual(["legacy"]);
+    expect(eligibleScales([legacy,staged],family({reportWorkflow:"parent_first_v1",activeRoundOpen:true}),"u1").map(s=>s.id)).toEqual(["staged"]);
+    expect(eligibleScales([legacy,staged],family({reportWorkflow:"legacy_triad",activeRoundOpen:false}),"u1").map(s=>s.id)).toEqual(["staged","legacy"]);
+  });
   it("hides the 9-item demo instrument when an official questionnaire matches the same person",()=>{
     const listed=[
       scale({id:"demo9",roles:["student","parent","teacher"]}),

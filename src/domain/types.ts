@@ -84,19 +84,22 @@ export interface SupportIntakeObservation {
   prompt: TextPair;
   responses: TextPair[];
   period: TextPair;
+  informationSource?: TextPair;
 }
 export interface TriadReport {
   resultMode?: ResultMode;
+  staged?: boolean;
   supportIntake?: {
     concerns: SupportIntakeObservation[];
     supports: SupportIntakeObservation[];
     actions: SupportIntakeObservation[];
+    studentShared?: { selectedIds: string[]; sentences: TextPair[] };
     nextStep: TextPair;
   };
   parentAudienceVersion?: number;
   legacyWritingOmitted?: boolean;
   title: TextPair;
-  sources: { role: RespondentRole; submittedAt: string }[];
+  sources: { role: RespondentRole; submittedAt: string; label?: TextPair; visitDate?: string }[];
   comparisons?: TriadRoleComparison[];
   safety: TextPair[];
   domains: { key: string; label: TextPair; note: TextPair | null; views: TriadView[] }[];
@@ -157,6 +160,20 @@ export interface ReportTemplate {
   nextStep: TextPair;
 }
 export interface ContentSnapshot<T> { id: string; version: string; content: T }
+export interface StudentSharingSnapshot {
+  noticeVersion: string;
+  selectedIds: string[];
+  confirmed: boolean;
+  confirmedAt: string;
+}
+export interface ReportRevision {
+  roundCreatedAt?: string;
+  roundId: string;
+  version: number;
+  sourceAssessmentIds: string[];
+  sourceRoles: RespondentRole[];
+  generatedAt: string;
+}
 export interface AssessmentSnapshot {
   scale: ScaleDefinition;
   advice: ContentSnapshot<AdviceLibrary>;
@@ -167,8 +184,10 @@ export interface AssessmentSnapshot {
   submittedAt: string;
   aiConsented: boolean;
   syntheticTest?: boolean;
+  studentSharing?: StudentSharingSnapshot;
 }
 export interface ReportPayload extends AssessmentSnapshot {
+  revision?: ReportRevision;
   selectedAdviceIds: string[];
   generationMode: "template" | "ai";
   fallbackReason: string | null;

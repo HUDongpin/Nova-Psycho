@@ -38,7 +38,7 @@ beforeEach(() => {
   const next = structuredClone(instruments.parentScale); next.version = "1.1.0";
   const previous = structuredClone(instruments.parentScaleSafety);
   const current = structuredClone(instruments.parentScaleStaffNotes);
-  definitions = { "growth-parent@1.0.0": legacy, "growth-parent@1.1.0": next, "growth-parent@1.2.0": previous, "growth-parent@1.3.0": current, "growth-parent@2.0.0": structuredClone(instruments.parentScaleSupportIntake) };
+  definitions = { "growth-parent@1.0.0": legacy, "growth-parent@1.1.0": next, "growth-parent@1.2.0": previous, "growth-parent@1.3.0": current, "growth-parent@2.0.0": structuredClone(instruments.parentScaleSupportIntake), "growth-parent@2.1.0": structuredClone(instruments.stagedParentScale) };
   vi.mocked(getScale).mockImplementation(async id => ({ id, status: "active", definition: definitions[id] }));
   vi.mocked(query).mockImplementation(async sql => {
     if (sql.includes("FROM assessments a JOIN scales s")) return [{ id: familyId, family_id: familyId, definition: definitions[detailScaleId], respondent_role: "parent", status: "pending", draft_answers: {}, draft_revision: 0, child_name: "Synthetic" }];
@@ -144,7 +144,7 @@ describe("new defaults without replacing historical records", () => {
   it("initial registration and authenticated new-family creation both select the current parent revision", async () => {
     await startParentCase({ parentName: "Synthetic", username: "synthetic.parent", password: "synthetic-password", relationship: "母亲", childName: "Synthetic", birthDate: "2014-01-01", grade: "初中", assessment: true, sensitiveData: true, parentReport: true }, "zh-CN");
     await createParentFamily(actor, { requestId: "33333333-4444-4555-8666-777777777777", relationship: "母亲", childName: "Synthetic", birthDate: "2014-01-01", grade: "初中", assessment: true, sensitiveData: true, parentReport: true }, "zh-CN");
-    expect(tasks.map(task => task.version)).toEqual(["growth-parent@2.0.0", "growth-parent@2.0.0"]);
+    expect(tasks.map(task => task.version)).toEqual(["growth-parent@2.1.0", "growth-parent@2.1.0"]);
   });
 
   it("replays an existing family before looking up the new default or creating a task", async () => {
@@ -166,15 +166,15 @@ describe("new defaults without replacing historical records", () => {
     await ensureTriadInstruments();
     const inserts = vi.mocked(query).mock.calls.filter(([sql]) => sql.startsWith("INSERT INTO scales"));
     expect(inserts.map(([, values]) => values?.[0]).sort()).toEqual([
-      "growth-child@1.0.0", "growth-child@1.1.0", "growth-child@1.2.0", "growth-child@1.3.0", "growth-child@2.0.0",
-      "growth-parent@1.0.0", "growth-parent@1.1.0", "growth-parent@1.2.0", "growth-parent@1.3.0", "growth-parent@2.0.0",
-      "growth-teacher@1.0.0", "growth-teacher@1.1.0", "growth-teacher@1.2.0", "growth-teacher@2.0.0"
+      "growth-child@1.0.0", "growth-child@1.1.0", "growth-child@1.2.0", "growth-child@1.3.0", "growth-child@2.0.0", "growth-child@2.1.0",
+      "growth-parent@1.0.0", "growth-parent@1.1.0", "growth-parent@1.2.0", "growth-parent@1.3.0", "growth-parent@2.0.0", "growth-parent@2.1.0",
+      "growth-teacher@1.0.0", "growth-teacher@1.1.0", "growth-teacher@1.2.0", "growth-teacher@2.0.0", "growth-tope-observation@1.0.0"
     ]);
     expect(inserts.every(([sql]) => sql.includes("ON CONFLICT(id) DO NOTHING"))).toBe(true);
     expect(vi.mocked(query).mock.calls.some(([sql]) => sql.includes("DO UPDATE SET definition"))).toBe(false);
     const retired = vi.mocked(query).mock.calls.filter(([sql]) => sql.startsWith("UPDATE scales"));
     expect(retired.map(([, values]) => values)).toEqual([
-      ["growth-child", ["growth-child@1.3.0", "growth-child@2.0.0"]],
+      ["growth-child", ["growth-child@1.3.0", "growth-child@2.0.0", "growth-child@2.1.0"]],
       ["growth-teacher", ["growth-teacher@1.2.0", "growth-teacher@2.0.0"]]
     ]);
     expect(retired.every(([sql]) => sql.includes("status='retired'"))).toBe(true);
@@ -182,7 +182,7 @@ describe("new defaults without replacing historical records", () => {
 
   it("projects defaults from the canonical role map and preserves explicit historical choices", async () => {
     const workspace = await workspaceFor(actor, "zh-CN");
-    expect(workspace.scales.find(scale => scale.id === "growth-parent@2.0.0")).toMatchObject({ isDefaultVersion: true, status: "active" });
+    expect(workspace.scales.find(scale => scale.id === "growth-parent@2.1.0")).toMatchObject({ isDefaultVersion: true, status: "active" });
     expect(workspace.scales.find(scale => scale.id === "growth-parent@1.3.0")?.isDefaultVersion).not.toBe(true);
     expect(workspace.scales.find(scale => scale.id === "growth-parent@1.2.0")?.isDefaultVersion).not.toBe(true);
     expect(workspace.scales.find(scale => scale.id === "growth-parent@1.1.0")?.isDefaultVersion).not.toBe(true);
@@ -190,8 +190,8 @@ describe("new defaults without replacing historical records", () => {
     const uiFamily: Family = { id: familyId, familyName: "Synthetic", childName: "Synthetic", age: 12, birthDate: "2014-01-01", grade: "S1", region: "CN", guardianLabel: "Parent", assignedTo: null, createdAt: "2026-01-01", consent: true, canInviteMembers: false, members: [{ ...actor }] };
     const scales = workspace.scales as Scale[];
     const custom = { ...scales[0], id: "custom@1.0.0", scaleId: "custom", isDefaultVersion: undefined };
-    const ordered = eligibleScales([scales[0], custom, scales[1], scales[2], scales[3], scales[4]], uiFamily, actor.id);
-    expect(ordered.map(scale => scale.id)).toEqual(["growth-parent@2.0.0", "growth-parent@1.0.0", "custom@1.0.0", "growth-parent@1.1.0", "growth-parent@1.2.0", "growth-parent@1.3.0"]);
+    const ordered = eligibleScales([scales[0], custom, scales[1], scales[2], scales[3], scales[4], scales[5]], uiFamily, actor.id);
+    expect(ordered.map(scale => scale.id)).toEqual(["growth-parent@2.1.0", "growth-parent@1.0.0", "custom@1.0.0", "growth-parent@1.1.0", "growth-parent@1.2.0", "growth-parent@1.3.0", "growth-parent@2.0.0"]);
     expect(eligibleScales([{ ...scales[1], minAge: 16 }, scales[0]], uiFamily, actor.id).map(scale => scale.id)).toEqual(["growth-parent@1.0.0"]);
     expect(eligibleScales([{ ...scales[1], status: "retired" }, scales[0]], uiFamily, actor.id).map(scale => scale.id)).toEqual(["growth-parent@1.0.0"]);
   });

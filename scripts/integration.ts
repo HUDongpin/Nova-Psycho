@@ -101,15 +101,28 @@ function triadAnswers(scale:ScaleDefinition,role:RespondentRole):Record<string,S
   return answers;
 }
 async function registerTriad(base:string,locale:Locale):Promise<Triad>{
-  const region=locale==="zh-CN"?"cn":"hk",visitor={base,cookie:""};
-  const response=await request(visitor,`/api/triad/parent?locale=${locale}`,"POST",{parentName:"合成三方家长",username:`qa_triad_${region}_parent_${nonce}`,password:randomBytes(18).toString("base64url"),relationship:"母亲",childName:"合成三方孩子",birthDate:birthDateForAge(12),grade:"初中",assessment:true,sensitiveData:true,parentReport:true});assert.equal(response.status,201);
-  const created=await response.json() as {familyId:string;userId:string;joinCode:string};fixtures.push({familyId:created.familyId,scenario:`triad-age-12-${region}`,deleted:false});
-  const clients={parent:sessionClient(base,response)} as Record<RespondentRole,Client>;
-  for(const role of ["student","teacher"] as const){const joined=await request(visitor,`/api/triad/join?locale=${locale}`,"POST",{code:created.joinCode,role,name:`合成三方${role}`,username:`qa_triad_${region}_${role}_${nonce}`,password:randomBytes(18).toString("base64url")});assert.equal(joined.status,201);clients[role]=sessionClient(base,joined);}
-  const w=await workspace(clients.parent,locale);assert.equal(w.families.find(f=>f.id===created.familyId)?.age,12);
+  // Explicitly construct a legacy 2.0.0 round. New public registrations are
+  // exercised by parent-first.browser.ts; historical rounds retain this gate.
+  const region=locale==="zh-CN"?"cn":"hk",visitor={base,cookie:""},admin=await login(base,"admin");
+  const created=await ok<{id:string}>(admin,"/api/families","POST",{familyName:"合成三方家庭",childName:"合成三方孩子",birthDate:birthDateForAge(12),grade:"初中",guardianLabel:"母亲"});
+  const familyId=created.id;
+  fixtures.push({familyId,scenario:`legacy-triad-age-12-${region}`,deleted:false});
+  const clients={} as Record<RespondentRole,Client>;
+  for(const role of roles){
+    const invitation=await ok<{url:string}>(admin,`/api/families/${familyId}/invites`,"POST",{role});
+    const token=new URLSearchParams(new URL(invitation.url).hash.slice(1)).get("token");assert.ok(token);
+    const response=await request(visitor,"/api/invite","POST",{token,name:`合成三方${role}`,username:`qa_triad_${region}_${role}_${nonce}`,password:randomBytes(18).toString("base64url")});assert.equal(response.status,200);
+    clients[role]=sessionClient(base,response);
+    if(role==="parent")for(const scope of ["assessment","sensitive_data","parent_report"])await ok(clients.parent,`/api/families/${familyId}/consent`,"POST",{action:"grant",scope,guardianName:"合成三方家长"});
+  }
+  for(const role of roles){
+    const member=(await ok<Session>(clients[role],"/api/session")).user!;
+    await ok(admin,"/api/assessments","POST",{familyId,respondentId:member.id,scaleVersionId:`${definitions[role].id}@${definitions[role].version}`,locale});
+  }
+  const w=await workspace(clients.parent,locale);assert.equal(w.families.find(f=>f.id===familyId)?.age,12);
   const tasks={} as Record<RespondentRole,Assessment>;
-  for(const role of roles){tasks[role]=familyTask(w,created.familyId,role,`${definitions[role].id}@${definitions[role].version}`);assert.equal(tasks[role].status,"pending");assert.equal(tasks[role].canRetryReport,false);assert.equal((await ok<SurveyRecord>(clients[role],`/api/assessments/${tasks[role].id}`)).demo,true);}
-  return {familyId:created.familyId,clients,tasks};
+  for(const role of roles){tasks[role]=familyTask(w,familyId,role,`${definitions[role].id}@${definitions[role].version}`);assert.equal(tasks[role].status,"pending");assert.equal(tasks[role].canRetryReport,false);assert.equal((await ok<SurveyRecord>(clients[role],`/api/assessments/${tasks[role].id}`)).demo,true);}
+  return {familyId:familyId,clients,tasks};
 }
 
 async function main(){
@@ -244,7 +257,7 @@ async function main(){
     assert.equal((await workspace(guardian)).reports.filter(r=>r.assessmentId===task.id).length,1);
   });
 
-  const triad=await check("independent three-party registration creates fixed role instruments",()=>registerTriad(cn,"zh-CN"));
+  const triad=await check("legacy three-party invitations retain their fixed role instruments",()=>registerTriad(cn,"zh-CN"));
   await check("official role/age gates reject inappropriate assignments and demo fallback",async()=>{
     await rejected(admin,"/api/assessments","POST",{familyId:triad.familyId,respondentId:triad.tasks.student.respondentId,scaleVersionId:`${definitions.parent.id}@${definitions.parent.version}`,locale:"zh-CN"},422,"INELIGIBLE");
     await rejected(admin,"/api/assessments","POST",{familyId:demoFamily.id,respondentId:acceptedIds.student,scaleVersionId:`${definitions.student.id}@${definitions.student.version}`,locale:"zh-CN"},422,"INELIGIBLE");

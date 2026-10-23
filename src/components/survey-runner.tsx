@@ -18,6 +18,8 @@ import { createQuestionChapters, createSurveyProgressStore, createSurveySections
 import { surveySectionLabel, SurveyReviewSections, SurveySaveStatus, SurveySectionNavigation } from "./survey-ui";
 import { ErrorNotice, Field, Modal } from "./ui";
 import styles from "./questionnaire.module.css";
+import { STUDENT_SHARING_CONFIRM_ID, STUDENT_SHARING_ITEM_ID } from "../domain/student-sharing";
+import { selectedStudentSupport, StudentSharingPreview } from "./student-sharing-preview";
 import { bindSurveyViewport } from "./survey-viewport";
 
 export default function SurveyRunner({ record, draft, locale, onSubmitted, onReloadLatest, openPrivacy, privacyOpen = false, leaving = false }: {
@@ -43,6 +45,7 @@ export default function SurveyRunner({ record, draft, locale, onSubmitted, onRel
   const [jumpRequest, setJumpRequest] = useState<{ id: string } | null>(null);
   const completedJump = useRef<{ id: string } | null>(null);
   const [reviewFocus, setReviewFocus] = useState(0);
+  const [reviewedSharing, setReviewedSharing] = useState<string | null>(null);
   const questionsRef = useRef<HTMLFieldSetElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const reviewHeadingRef = useRef<HTMLHeadingElement>(null);
@@ -97,6 +100,17 @@ export default function SurveyRunner({ record, draft, locale, onSubmitted, onRel
   const progress = useSyncExternalStore(progressStore.subscribe, progressStore.getSnapshot, progressStore.getSnapshot);
   const sections = useSyncExternalStore(sectionStore.subscribe, sectionStore.getSnapshot, sectionStore.getSnapshot);
 
+  // A confirmation belongs to the selected sentences, never to a later selection.
+  useLayoutEffect(() => {
+    if (!record.studentSharing) return;
+    const changed = (_sender: Model, options: { name: string }) => {
+      if (options.name !== STUDENT_SHARING_ITEM_ID) return;
+      model.clearValue(STUDENT_SHARING_CONFIRM_ID); setReviewedSharing(null);
+    };
+    model.onValueChanged.add(changed);
+    return () => model.onValueChanged.remove(changed);
+  }, [model, record.studentSharing]);
+
   // Clear hidden detail before draft listeners observe a parent answer change.
   useLayoutEffect(() => { supplementController.connect(questionsRef.current); return () => supplementController.dispose(); }, [supplementController]);
   useEffect(() => { model.mode = locked ? "display" : "edit"; }, [model, locked]);
@@ -139,7 +153,7 @@ export default function SurveyRunner({ record, draft, locale, onSubmitted, onRel
     if (locked || privacyOpen) return;
     completionNavigation.cancel();
     draft.update(supplementController.readAnswers(), locale); draft.markCompletionAttempted();
-    setDrawerOpen(false); setError(""); setStage("review"); setReviewFocus(value => value + 1);
+    setDrawerOpen(false); setError(""); setReviewedSharing(null); setStage("review"); setReviewFocus(value => value + 1);
   }
   function move(previous: boolean) {
     if (locked || privacyOpen) return;
@@ -154,6 +168,10 @@ export default function SurveyRunner({ record, draft, locale, onSubmitted, onRel
     if (record.consentRequired) { setError(t("consentNeeded")); return; }
     if (!acknowledged) { setError(t("acknowledgeNeeded")); return; }
     if (current.conflict) return;
+    const selection = selectedStudentSupport(model.getValue(STUDENT_SHARING_ITEM_ID));
+    if (record.studentSharing && (!selection.valid || (selection.options.length > 0 && (reviewedSharing !== selection.signature || model.getValue(STUDENT_SHARING_CONFIRM_ID) !== 1)))) {
+      setError(hk ? "請先核對並確認要分享的句子，或返回選擇這次不分享。" : "请先核对并确认要分享的句子，或返回选择这次不分享。"); return;
+    }
     draft.update(supplementController.readAnswers(), locale); draft.markCompletionAttempted();
     const issues = surveyCompletionIssues(model, record.completionRules, draft.getSnapshot().completionIssues);
     if (issues.length) { completionHeadingRef.current?.focus(); return; }
@@ -172,6 +190,9 @@ export default function SurveyRunner({ record, draft, locale, onSubmitted, onRel
       else if (!(err instanceof ApiError && err.code === "DRAFT_CONFLICT")) setError(errorMessage(err));
     }
   }
+  const sharing = selectedStudentSupport(snapshot.answers[STUDENT_SHARING_ITEM_ID]);
+  const sharingConfirmed = reviewedSharing === sharing.signature && snapshot.answers[STUDENT_SHARING_CONFIRM_ID] === 1;
+  const sharingBlocked = record.studentSharing === true && (!sharing.valid || (sharing.options.length > 0 && !sharingConfirmed));
   const issues = stage === "review" ? surveyCompletionIssues(model, record.completionRules, snapshot.completionIssues) : [];
   const submitError = error || (!snapshot.conflict && snapshot.status === "failed" ? snapshot.error : "") || "";
   const answeredLabel = hk ? `已回答 ${progress.answered} / ${progress.total} 題` : `已回答 ${progress.answered} / ${progress.total} 题`;
@@ -185,7 +206,7 @@ export default function SurveyRunner({ record, draft, locale, onSubmitted, onRel
     </aside>}
     <div className={styles.main}>
       {stage === "intro" && <section className={styles.intro}>
-        <SurveyNotice locale={locale} acknowledged={noticeChecked} disabled={snapshot.submitting || snapshot.conflict || sessionLocked || record.consentRequired || leaving} consentRequired={record.consentRequired} onAcknowledged={setNoticeChecked} onOpen={openPrivacy} />
+        <SurveyNotice studentSharing={record.studentSharing} locale={locale} acknowledged={noticeChecked} disabled={snapshot.submitting || snapshot.conflict || sessionLocked || record.consentRequired || leaving} consentRequired={record.consentRequired} onAcknowledged={setNoticeChecked} onOpen={openPrivacy} />
         <div className={styles.introActions}><p>{hk ? "按自己的步調，可以隨時暫停。" : "按自己的步调，可以随时暂停。"}</p>
           <button type="button" className={styles.primaryButton} data-testid="survey-start" disabled={!noticeChecked || record.consentRequired || snapshot.conflict || sessionLocked || leaving} onClick={start}>{hk ? "開始填寫" : "开始填写"}<ArrowRight /></button>
         </div>
@@ -210,6 +231,7 @@ export default function SurveyRunner({ record, draft, locale, onSubmitted, onRel
       </>}
       <div hidden={stage !== "answering"}>
         {progress.chapter.title && <p className={styles.questionContext}>{progress.chapter.title}</p>}
+        {record.studentSharing && stage === "answering" && model.currentSingleQuestion?.name === STUDENT_SHARING_CONFIRM_ID && <StudentSharingPreview value={snapshot.answers[STUDENT_SHARING_ITEM_ID]} locale={locale} />}
         <fieldset ref={questionsRef} className="survey-questions" disabled={locked}>
           <Survey model={model} /><SurveySupplements controller={supplementController} locale={locale} locked={locked} />
         </fieldset>
@@ -219,6 +241,11 @@ export default function SurveyRunner({ record, draft, locale, onSubmitted, onRel
         <p>{hk ? "展開章節查看回答，也可以返回修改。已回答題數不代表有效資料已足夠。" : "展开章节查看回答，也可以返回修改。已回答题数不代表有效信息已足够。"}</p>
         <CompletionSummary model={model} rules={record.completionRules} issues={issues} locale={locale} disabled={locked} headingRef={completionHeadingRef} onJump={jumpTo} />
         {!issues.length && <p className={styles.reviewReady}><Check />{hk ? "已符合目前問卷的提交要求。" : "已符合当前问卷的提交要求。"}</p>}
+        {record.studentSharing && <StudentSharingPreview value={snapshot.answers[STUDENT_SHARING_ITEM_ID]} locale={locale} confirmed={sharingConfirmed} disabled={locked} onConfirm={confirmed => {
+          setReviewedSharing(confirmed ? sharing.signature : null);
+          model.setValue(STUDENT_SHARING_CONFIRM_ID, confirmed ? 1 : 0);
+          draft.update(supplementController.readAnswers(), locale);
+        }} />}
         <SurveyReviewSections model={model} sections={sections} supplements={record.supplements ?? []} locale={locale} disabled={locked} onJump={jumpTo} />
       </section>}
       {submitError && <div className={styles.errorPanel}><ErrorNotice locale={locale} message={submitError} /></div>}
@@ -229,7 +256,7 @@ export default function SurveyRunner({ record, draft, locale, onSubmitted, onRel
           <button type="button" className={styles.primaryButton} data-testid="survey-next" disabled={locked} onClick={() => move(false)}>{model.isLastElement ? (hk ? "核對作答" : "核对作答") : t("nextQuestion")}<ArrowRight /></button>
         </> : <>
           <button type="button" className={styles.backButton} disabled={locked} onClick={() => { const id = model.currentSingleQuestion?.name; if (id) jumpTo(id); }}><ArrowLeft />{hk ? "返回填寫" : "返回填写"}</button>
-          <button type="button" className={styles.primaryButton} data-testid="survey-submit" disabled={locked || reloading || issues.length > 0} onClick={() => void submit()}><Check />{t(snapshot.submitting ? "submitting" : "submit")}</button>
+          <button type="button" className={styles.primaryButton} data-testid="survey-submit" disabled={locked || reloading || issues.length > 0 || sharingBlocked} onClick={() => void submit()}><Check />{t(snapshot.submitting ? "submitting" : "submit")}</button>
         </>}
       </div>}
     </div>

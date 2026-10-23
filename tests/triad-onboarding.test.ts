@@ -8,7 +8,7 @@ import { hashPassword, limitLogin } from "../src/lib/auth";
 import { startParentCase, joinWithCode } from "../src/lib/triad";
 import { handle } from "../src/lib/http";
 import { noticeVersion } from "../src/lib/privacy";
-import { currentTriadScaleIds } from "../src/domain/triad-scales";
+import { currentTriadScaleIds, stagedTriadScaleIds } from "../src/domain/triad-scales";
 
 const parent = { parentName: "Synthetic parent", username: "synthetic.parent", password: "synthetic-password", relationship: "母亲", childName: "Synthetic child", birthDate: "2014-10-08", grade: "小学四至六年级", assessment: true as const, sensitiveData: true as const, parentReport: true };
 const joining = { code: "TOPE-A2B3C4D5", role: "student", name: "Synthetic student", username: "synthetic.student", password: "synthetic-password" };
@@ -107,7 +107,7 @@ describe("P27/P36/P42 correct family, role, locale and consent binding", () => {
       expect(params![6]).toBe(noticeVersion);
     }
     expect(currentTriadScaleIds.parent).toBe("growth-parent@2.0.0");
-    expect(values("INSERT INTO assessments").slice(1, 6)).toEqual([result.familyId, "HK", result.userId, currentTriadScaleIds.parent, "zh-HK"]);
+    expect(values("INSERT INTO assessments").slice(1, 6)).toEqual([result.familyId, "HK", result.userId, stagedTriadScaleIds.parent, "zh-HK"]);
   });
   it("does not record parent-report consent unless that box is checked", async () => {
     await startParentCase({ ...parent, parentReport: false }, "zh-HK");

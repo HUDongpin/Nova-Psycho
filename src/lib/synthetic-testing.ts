@@ -4,11 +4,12 @@ import { getTestAccountUsernames, hasTestAccountLogin } from "./auth-provider";
 import { getConfig } from "./config";
 import { query } from "./db";
 
-export interface SyntheticTestMember { id: string; role: RespondentRole }
+export interface SyntheticTestMember { id: string; role: RespondentRole; context?: "tope_staff" }
 interface MemberRow {
   id: string; role: RespondentRole; user_role: string; username: string | null;
   region: Region; family_region: Region; disabled: boolean; demo: boolean; has_password: boolean;
 }
+interface ObservationAuthorRow extends Omit<MemberRow, "role"> { assigned_to: string | null }
 
 function configuredFamilies(): string[] {
   const ids = (process.env.NOVA_SYNTHETIC_TEST_FAMILY_IDS ?? "").split(",").map(value => value.trim().toLowerCase()).filter(Boolean);
@@ -40,8 +41,25 @@ export async function isSyntheticTestFamily(familyId: string, region: Region, cl
   return (await getSyntheticTestFamilyMembers(familyId, region, client)) !== null;
 }
 
+// Staff observations are teacher sources outside family membership. Keep the
+// strict family gate and independently validate its current assigned test staff.
+export async function getSyntheticTestObservationAuthor(familyId: string, region: Region, client?: PoolClient): Promise<SyntheticTestMember | null> {
+  if (!(await getSyntheticTestFamilyMembers(familyId, region, client))) return null;
+  const sql = `SELECT u.id,f.assigned_to,u.role AS user_role,u.username,u.region,f.region AS family_region,
+      u.disabled,u.demo,(u.password_hash IS NOT NULL) AS has_password
+    FROM families f JOIN users u ON u.id=f.assigned_to
+    WHERE f.id=$1 AND f.region=$2${client ? " FOR SHARE OF f,u" : ""}`;
+  const rows = client ? (await client.query<ObservationAuthorRow>(sql, [familyId, region])).rows : await query<ObservationAuthorRow>(sql, [familyId, region]);
+  const author = rows[0];
+  if (rows.length !== 1 || !author || author.assigned_to !== author.id || author.user_role !== "staff" ||
+    author.region !== region || author.family_region !== region || author.disabled !== false || author.demo !== false ||
+    author.has_password !== true || !author.username || !getTestAccountUsernames().includes(author.username)) return null;
+  return { id: author.id, role: "teacher", context: "tope_staff" };
+}
+
 export async function isSyntheticTestActorForFamily(actor: Actor, familyId: string, client?: PoolClient): Promise<boolean> {
   if (actor.sessionMethod !== "test") return false;
+  if (actor.role === "staff") return (await getSyntheticTestObservationAuthor(familyId, actor.region, client))?.id === actor.id;
   const members = await getSyntheticTestFamilyMembers(familyId, actor.region, client);
   return members?.some(member => member.id === actor.id && member.role === actor.role) === true;
 }

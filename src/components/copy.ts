@@ -70,6 +70,18 @@ export const dictionary = {
   authWelcome: ["欢迎来到 TopE", "歡迎來到 TopE"], authEyebrow: ["家庭成长支持", "家庭成長支援"], authIntro: ["从了解开始，让关怀持续发生。", "從了解開始，讓關懷持續發生。"], authStudentNote: ["学生加入时，需要家长提供的家庭邀请。", "學生加入時，需要家長提供的家庭邀請。"], authNoAccount: ["还没有账号？", "還沒有帳號？"], authCardLabel: ["注册与登录", "註冊與登入"], emailRegisterLoading: ["正在加载邮箱注册…", "正在載入電郵註冊…"],
   testAccountLogin: ["测试账号登录", "測試帳號登入"], testAccountLoginNote: ["使用已有测试账号的用户名和密码登录。", "使用現有測試帳號的用戶名稱及密碼登入。"],
   registerAccount: ["创建账号", "建立帳號"], accountReadyLater: ["账号创建后可以稍后加入家庭。", "帳號建立後可以稍後加入家庭。"], emailRegister: ["使用邮箱注册", "使用電郵註冊"], emailLogin: ["使用邮箱登录", "使用電郵登入"], emailAuthIntro: ["先验证邮箱，再选择你的身份。学生还需要家长提供的家庭邀请。", "先驗證電郵，再選擇你的身分。學生還需要家長提供的家庭邀請。"], completeProfile: ["完成账号设置", "完成帳號設定"], profileRoleNote: ["请选择实际参与身份。家庭和问卷权限由家庭邀请决定。", "請選擇實際參與身分。家庭和問卷權限由家庭邀請決定。"], emailVerifyNeeded: ["请先完成邮箱验证，再继续设置账号。", "請先完成電郵驗證，再繼續設定帳號。"], verifyAgain: ["我已验证，继续", "我已驗證，繼續"], switchAccount: ["退出并更换账号", "登出並更換帳號"], linkLegacy: ["关联原有账号", "關聯原有帳號"], linkLegacyNote: ["如果你已有账号，请验证原账号密码，以保留原有家庭和问卷。仅姓名相同不会自动关联。", "如果你已有帳號，請驗證原帳號密碼，以保留原有家庭和問卷。僅姓名相同不會自動關聯。"], oldUsername: ["原账号用户名", "原帳號用戶名稱"], oldPassword: ["原账号密码", "原帳號密碼"], noFamilyYet: ["尚未加入家庭", "尚未加入家庭"], teacherFamilyNote: ["你的教师账号已准备好。收到家长提供的完整家庭编号后，就可以加入并填写问卷。", "你的教師帳號已準備好。收到家長提供的完整家庭編號後，就可以加入並填寫問卷。"], joinFamily: ["加入家庭", "加入家庭"], joinAnotherFamily: ["加入另一个家庭", "加入另一個家庭"], createFirstFamily: ["填写家庭情况", "填寫家庭情況"], parentFamilyNote: ["请填写孩子的资料并确认监护人授权，之后会生成家庭编号。", "請填寫孩子的資料並確認監護人授權，之後會產生家庭編號。"], familyJoined: ["已加入家庭，问卷已更新。", "已加入家庭，問卷已更新。"], alreadyJoined: ["你已加入这个家庭，可以继续原有问卷。", "你已加入這個家庭，可以繼續原有問卷。"], invalidCodeFormat: ["请输入完整家庭编号：TOPE- 后接 8 位字母或数字。", "請輸入完整家庭編號：TOPE- 後接 8 位字母或數字。"], existingAccountHint: ["已有账号？请登录后加入家庭，无需重新注册。", "已有帳號？請登入後加入家庭，毋須重新註冊。"], invitationLoginNote: ["已有账号可直接登录并接受邀请。新用户请先注册。", "已有帳號可直接登入並接受邀請。新用戶請先註冊。"], acceptFamilyInvite: ["接受家庭邀请", "接受家庭邀請"], localSignIn: ["登录原有账号", "登入原有帳號"], returnInvite: ["返回家庭邀请", "返回家庭邀請"], authUnavailable: ["此服务当前使用本地账号，请返回登录入口。", "此服務目前使用本地帳號，請返回登入入口。"], emailLoading: ["正在加载邮箱登录…", "正在載入電郵登入…"], registrationPrivacyNote: ["账号验证完成后，再填写家庭和问卷资料。", "帳號驗證完成後，再填寫家庭和問卷資料。"],
+  stagedJoinCodeReady: ["保存家庭编号，稍后邀请学生", "儲存家庭編號，稍後邀請學生"],
+  stagedJoinCodeNote: ["家长提交后即可生成首版报告。家庭编号用于稍后邀请学生；TOPE 工作人员会从自己的账号补充观察。无需现在完成所有问卷。", "家長提交後即可產生首版報告。家庭編號用於稍後邀請學生；TOPE 工作人員會從自己的帳號補充觀察。無需現在完成所有問卷。"],
+  stagedFamilyNote: ["先填写家庭资料并确认监护人授权，再完成家长问卷，即可开始生成报告。学生补充与 TOPE 观察可以稍后进行。", "先填寫家庭資料並確認監護人授權，再完成家長問卷，即可開始產生報告。學生補充與 TOPE 觀察可以稍後進行。"],
+  familyProgress: ["家庭进度", "家庭進度"], stagedProgressNote: ["家长先提交，报告先生成；每次补充会产生独立的新版本，原有报告保留。无需现在完成所有问卷。", "家長先提交，報告先產生；每次補充會產生獨立的新版本，原有報告保留。無需現在完成所有問卷。"],
+  parentResponse: ["家长问卷", "家長問卷"], studentSupplement: ["学生补充", "學生補充"], topeObservation: ["TOPE 工作人员观察", "TOPE 工作人員觀察"],
+  optionalLater: ["可稍后补充", "可稍後補充"], optionalPending: ["已安排，可稍后填写", "已安排，可稍後填寫"], parentPending: ["等待家长提交", "等候家長提交"],
+  startStaffObservation: ["填写 TOPE 观察", "填寫 TOPE 觀察"], resumeStaffObservation: ["继续 TOPE 观察", "繼續 TOPE 觀察"], staffObservationNote: ["使用当前工作人员账号填写，无需创建教师账号。", "使用目前工作人員帳號填寫，無需建立教師帳號。"],
+  reportVersion: ["第 {version} 版", "第 {version} 版"], latestReport: ["最新报告", "最新報告"], reportHistory: ["历史版本", "歷史版本"], reportTimeline: ["阶段报告记录", "階段報告記錄"],
+  reportSources: ["来源：{sources}", "來源：{sources}"], sourceParent: ["家长", "家長"], sourceStudent: ["学生", "學生"], sourceTope: ["TOPE 观察", "TOPE 觀察"],
+  updateGenerating: ["第 {version} 版报告正在生成", "第 {version} 版報告正在產生"], updateFailed: ["第 {version} 版报告生成失败", "第 {version} 版報告產生失敗"], updatePaused: ["第 {version} 版报告已暂停", "第 {version} 版報告已暫停"],
+  previousReportAvailable: ["上一版报告仍可查看。新版本完成后会显示在这里。", "上一版報告仍可查看。新版本完成後會顯示在這裏。"],
+  stagedSubmittedNote: ["这份回答已完成提交。报告更新进度会单独显示，无需再次填写。", "這份回答已完成提交。報告更新進度會分開顯示，無需再次填寫。"],
 } as const;
 export type CopyKey = keyof typeof dictionary;
 export const copy = (locale: Locale) => (key: CopyKey): string => dictionary[key][locale === "zh-HK" ? 1 : 0];
@@ -88,5 +100,5 @@ export function safetyGuidanceText(region: "CN" | "HK", locale: Locale): string 
   return safetyGuidanceByRegion[region][locale === "zh-HK" ? 1 : 0];
 }
 export const roleName = (role: Role, locale: Locale) => ({ admin: ["管理员", "管理員"], staff: ["工作人员", "工作人員"], parent: ["家长", "家長"], student: ["学生", "學生"], teacher: ["教师", "教師"] }[role][locale === "zh-HK" ? 1 : 0]);
-export const statusName = (status: AssessmentStatus, locale: Locale) => ({ pending: ["待作答", "待作答"], queued: ["报告生成中", "報告產生中"], published: ["已完成", "已完成"], failed: ["生成失败", "產生失敗"] }[status][locale === "zh-HK" ? 1 : 0]);
+export const statusName = (status: AssessmentStatus, locale: Locale) => ({ submitted: ["已完成提交", "已完成提交"], pending: ["待作答", "待作答"], queued: ["报告生成中", "報告產生中"], published: ["已完成", "已完成"], failed: ["生成失败", "產生失敗"] }[status][locale === "zh-HK" ? 1 : 0]);
 export function formatDate(value: string, locale: Locale, withTime = false): string { const date = new Date(value); return Number.isNaN(date.getTime()) ? value : new Intl.DateTimeFormat(locale, { year: "numeric", month: "short", day: "numeric", ...(withTime ? { hour: "2-digit", minute: "2-digit" } as const : {}) }).format(date); }

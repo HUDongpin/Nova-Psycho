@@ -1,7 +1,7 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import type { AssessmentSnapshot, ReportPayload, RespondentRole } from "../src/domain/types";
 import { demoAdvice, demoScale, demoTemplate } from "../src/domain/demo";
-import { childScale, parentScale, teacherScale } from "../src/domain/triad-scales";
+import { childScale, parentScale, teacherScale, stagedChildScale, stagedParentScale, topeStaffScale } from "../src/domain/triad-scales";
 import { previewAnswers } from "../src/domain/triad-report";
 import { scoreAssessment } from "../src/domain/scoring";
 
@@ -21,7 +21,7 @@ const roundId = "22222222-2222-4222-8222-222222222222";
 const jobId = "33333333-3333-4333-8333-333333333333";
 const roles = ["student", "parent", "teacher"] as const;
 const userIds = roles.map((_, i) => `44444444-4444-4444-8444-44444444444${i}`);
-type Source = { id: string; family_id: string; region: string; triad_round_id: string | null; respondent_role: RespondentRole; respondent_id: string; snapshot: AssessmentSnapshot; answers: Record<string, unknown>; submitted_at: string; scale_version_id: string };
+type Source = { id: string; family_id: string; region: string; triad_round_id: string | null; respondent_role: RespondentRole; respondent_id: string; respondent_context?:string; snapshot: AssessmentSnapshot; answers: Record<string, unknown>; submitted_at: string; scale_version_id: string };
 let sources: Source[];
 let members: Record<string, unknown>[];
 let published: ReportPayload | undefined;
@@ -29,6 +29,8 @@ let failureCode: string | undefined;
 let publicationCalls: string[];
 let membershipChangedAtPublish: boolean;
 let sourceChangedAtPublish: boolean;
+let observationAuthor:Record<string,unknown>|undefined;
+let observationRevokedAtPublish:boolean;
 
 function snapshotFor(scale: typeof childScale, role: RespondentRole): AssessmentSnapshot {
   const answers = previewAnswers(scale);
@@ -41,23 +43,26 @@ function sourceRows() {
     snapshot: snapshotFor(scale, roles[index]), answers: previewAnswers(scale), submitted_at: "2026-10-20T00:00:00.000Z", scale_version_id: `${scale.id}@${scale.version}`,
   }));
 }
-function configure(single = false) {
+function configure(single = false, staged = false) {
   vi.mocked(query).mockImplementation((async (sql: string) => {
-    if (sql.includes("WITH candidate AS")) return [{ id: jobId, assessment_id: sources[1].id, attempts: 1, source_assessment_ids: single ? null : sources.map(row => row.id) }];
+    if (sql.includes("WITH candidate AS")) return [{ id: jobId, assessment_id: sources[1].id, attempts: 1, source_assessment_ids: single ? null : sources.map(row => row.id),...(staged?{report_version:3,triad_round_id:roundId}:{}) }];
     if (sql.includes("SELECT * FROM assessments WHERE id=")) return [sources[1]];
     if (sql.includes("FROM families f JOIN memberships")) return members;
+    if (sql.includes("FROM families f JOIN users")) return observationAuthor?[observationAuthor]:[];
+    if (sql.startsWith("SELECT report_workflow")) return [{report_workflow:"parent_first_v1",created_at:"2026-10-20T00:00:00.000Z"}];
     if (sql.includes("SELECT id,respondent_role,answers")) return sources;
     return [];
   }) as never);
   vi.mocked(transaction).mockImplementation((async (fn: (client: unknown) => Promise<unknown>) => fn({ query: async (sql: string, values: unknown[]) => {
     publicationCalls.push(sql);
     if (sql.includes("FROM families f JOIN memberships")) return { rows: membershipChangedAtPublish ? members.slice(0, 2) : members };
+    if (sql.includes("FROM families f JOIN users")) return {rows:observationAuthor&&!observationRevokedAtPublish?[observationAuthor]:[]};
     if (sql.includes("FROM assessments") && sql.includes("FOR SHARE")) {
       const current = single ? [sources[1]] : sources;
       return { rows: sourceChangedAtPublish ? current.map((row, index) => index === 0 ? { ...row, respondent_id: "ordinary" } : row) : current };
     }
     if (sql.includes("AS scopes FROM consents")) return { rows: [{ scopes: ["parent_report"] }] };
-    if (sql.includes("INSERT INTO reports")) published = JSON.parse(String(values[3]));
+    if (sql.includes("INSERT INTO reports")) published = JSON.parse(String(values[staged?4:3]));
     if (sql.includes("UPDATE report_jobs SET state=$1")) failureCode = String(values[3]);
     return { rows: [{ id: "locked", assessment_id: sources[1].id }] };
   } })) as never);
@@ -76,12 +81,35 @@ beforeEach(() => {
   sources = sourceRows();
   members = roles.map((role, index) => ({ id: userIds[index], role, user_role: role, username: `test.${role}`, region: "HK", family_region: "HK", disabled: false, demo: false, has_password: true }));
   published = undefined; failureCode = undefined; publicationCalls = []; membershipChangedAtPublish = false; sourceChangedAtPublish = false;
+  observationAuthor=undefined;observationRevokedAtPublish=false;
   vi.mocked(query).mockReset(); vi.mocked(transaction).mockReset(); vi.mocked(renderPdf).mockReset().mockResolvedValue(Buffer.from("%PDF synthetic")); vi.mocked(writePrivatePdf).mockClear(); vi.mocked(selectNarrative).mockReset();
   configure();
 });
 afterEach(() => vi.unstubAllEnvs());
 
 describe("designated synthetic family worker", () => {
+  function stagedSources(){
+    vi.stubEnv("NOVA_TEST_ACCOUNT_USERNAMES","test.student,test.parent,test.teacher,test.staff");
+    sources=[stagedChildScale,stagedParentScale,topeStaffScale].map((scale,index)=>({...sources[index],snapshot:{...snapshotFor(scale,roles[index]),syntheticTest:true},scale_version_id:`${scale.id}@${scale.version}`,answers:previewAnswers(scale),...(index===2?{respondent_id:"test-staff-id",respondent_context:"tope_staff"}:{})}));
+    observationAuthor={id:"test-staff-id",assigned_to:"test-staff-id",user_role:"staff",username:"test.staff",region:"HK",family_region:"HK",disabled:false,demo:false,has_password:true};
+    configure(false,true);
+  }
+  it("publishes a staged synthetic report with an explicitly allowlisted assigned staff observer",async()=>{
+    stagedSources();
+    await expect(processReportJob(jobId)).resolves.toEqual({status:"published"});
+    expect(published).toMatchObject({syntheticTest:true,revision:{version:3},generationMode:"template"});
+    expect(selectNarrative).not.toHaveBeenCalled();
+  });
+  it("rechecks synthetic observer eligibility under the publication lock",async()=>{
+    stagedSources();observationRevokedAtPublish=true;
+    await expect(processReportJob(jobId)).resolves.toEqual({status:"terminal"});
+    expect(renderPdf).toHaveBeenCalledTimes(2);expect(published).toBeUndefined();expect(failureCode).toBe("SYNTHETIC_TEST_SCOPE_REQUIRED");
+  });
+  it("does not treat an ordinary assigned staff account as a synthetic source",async()=>{
+    stagedSources();observationAuthor!.username="ordinary.staff";
+    await expect(processReportJob(jobId)).resolves.toEqual({status:"terminal"});
+    expect(renderPdf).not.toHaveBeenCalled();expect(published).toBeUndefined();
+  });
   it("publishes the pinned legacy triad without changing norms or invoking AI", async () => {
     await expect(processReportJob(jobId)).resolves.toEqual({ status: "published" });
     expect(published).toMatchObject({ syntheticTest: true, aiConsented: false, generationMode: "template", aiModel: null, score: { demo: true } });

@@ -205,4 +205,46 @@ DROP TRIGGER IF EXISTS assessments_immutable ON assessments;
 CREATE TRIGGER assessments_immutable BEFORE UPDATE ON assessments FOR EACH ROW EXECUTE FUNCTION nova_no_version_update();
 DROP TRIGGER IF EXISTS report_sources_immutable ON report_jobs;
 CREATE TRIGGER report_sources_immutable BEFORE UPDATE ON report_jobs FOR EACH ROW EXECUTE FUNCTION nova_no_version_update();
+-- BEGIN PARENT-FIRST V1 MIGRATION
+-- Existing rounds retain their original workflow. Only the application opts a new round in.
+ALTER TABLE triad_rounds ADD COLUMN IF NOT EXISTS report_workflow text NOT NULL DEFAULT 'legacy_triad' CHECK(report_workflow IN ('legacy_triad','parent_first_v1'));
+ALTER TABLE assessments ADD COLUMN IF NOT EXISTS respondent_context text NOT NULL DEFAULT 'family_member' CHECK(respondent_context IN ('family_member','tope_staff'));
+ALTER TABLE assessments DROP CONSTRAINT IF EXISTS assessments_status_check;
+ALTER TABLE assessments ADD CONSTRAINT assessments_status_check CHECK(status IN ('pending','queued','published','failed','submitted'));
+ALTER TABLE report_jobs ADD COLUMN IF NOT EXISTS triad_round_id uuid REFERENCES triad_rounds(id) ON DELETE CASCADE;
+ALTER TABLE report_jobs ADD COLUMN IF NOT EXISTS report_version integer CHECK(report_version>0);
+ALTER TABLE report_jobs ADD COLUMN IF NOT EXISTS source_key text;
+ALTER TABLE report_jobs DROP CONSTRAINT IF EXISTS report_jobs_source_assessment_ids_check;
+ALTER TABLE report_jobs ADD CONSTRAINT report_jobs_source_assessment_ids_check CHECK(
+ (report_version IS NULL AND triad_round_id IS NULL AND source_key IS NULL AND (source_assessment_ids IS NULL OR cardinality(source_assessment_ids)=3)) OR
+ (report_version IS NOT NULL AND triad_round_id IS NOT NULL AND source_key IS NOT NULL AND source_assessment_ids IS NOT NULL AND cardinality(source_assessment_ids) BETWEEN 1 AND 3));
+ALTER TABLE report_jobs DROP CONSTRAINT IF EXISTS report_jobs_assessment_id_key;
+CREATE UNIQUE INDEX IF NOT EXISTS report_jobs_legacy_assessment ON report_jobs(assessment_id) WHERE report_version IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS report_jobs_round_sources ON report_jobs(triad_round_id,source_key) WHERE report_version IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS report_jobs_round_version ON report_jobs(triad_round_id,report_version) WHERE report_version IS NOT NULL;
+ALTER TABLE reports ADD COLUMN IF NOT EXISTS triad_round_id uuid REFERENCES triad_rounds(id) ON DELETE CASCADE;
+ALTER TABLE reports ADD COLUMN IF NOT EXISTS report_version integer CHECK(report_version>0);
+ALTER TABLE reports ADD COLUMN IF NOT EXISTS job_id uuid REFERENCES report_jobs(id) ON DELETE CASCADE;
+ALTER TABLE reports DROP CONSTRAINT IF EXISTS reports_assessment_id_key;
+CREATE UNIQUE INDEX IF NOT EXISTS reports_legacy_assessment ON reports(assessment_id) WHERE report_version IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS reports_job ON reports(job_id) WHERE job_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS reports_round_version ON reports(triad_round_id,report_version) WHERE report_version IS NOT NULL;
+CREATE OR REPLACE FUNCTION public.nova_parent_first_immutable() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+ IF TG_TABLE_NAME='triad_rounds' THEN
+  IF NEW.report_workflow IS DISTINCT FROM OLD.report_workflow THEN RAISE EXCEPTION 'Round workflow is immutable'; END IF;
+ ELSIF TG_TABLE_NAME='report_jobs' THEN
+  IF NEW.assessment_id IS DISTINCT FROM OLD.assessment_id OR NEW.report_version IS DISTINCT FROM OLD.report_version OR NEW.triad_round_id IS DISTINCT FROM OLD.triad_round_id OR NEW.source_key IS DISTINCT FROM OLD.source_key THEN RAISE EXCEPTION 'Report revision is immutable'; END IF;
+ ELSIF TG_TABLE_NAME='assessments' THEN
+  IF NEW.respondent_context IS DISTINCT FROM OLD.respondent_context THEN RAISE EXCEPTION 'Respondent context is immutable'; END IF;
+ END IF;
+ RETURN NEW;
+END; $$;
+DROP TRIGGER IF EXISTS report_revision_immutable ON report_jobs;
+CREATE TRIGGER report_revision_immutable BEFORE UPDATE ON report_jobs FOR EACH ROW EXECUTE FUNCTION public.nova_parent_first_immutable();
+DROP TRIGGER IF EXISTS round_workflow_immutable ON triad_rounds;
+CREATE TRIGGER round_workflow_immutable BEFORE UPDATE ON triad_rounds FOR EACH ROW EXECUTE FUNCTION public.nova_parent_first_immutable();
+DROP TRIGGER IF EXISTS respondent_context_immutable ON assessments;
+CREATE TRIGGER respondent_context_immutable BEFORE UPDATE ON assessments FOR EACH ROW EXECUTE FUNCTION public.nova_parent_first_immutable();
+-- END PARENT-FIRST V1 MIGRATION
 COMMIT;

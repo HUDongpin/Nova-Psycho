@@ -9,6 +9,7 @@ const parentTeamItems = new Set(["q32", "q33", "q34", "q35", "q36", "q37", "q38"
 
 export function parentReportWordAllowed(scale: Pick<ScaleDefinition, "id" | "bundle">, item: Pick<ScaleItem, "id" | "report">): boolean {
   if (item.report !== "words") return false;
+  if (scale.id === "growth-tope-observation") return false;
   if (scale.bundle !== "growth-triad") return true;
   return !(scale.id === "growth-parent" && parentTeamItems.has(item.id)) && !(scale.id === "growth-teacher" && item.id === "t23");
 }

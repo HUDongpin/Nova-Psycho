@@ -497,7 +497,7 @@ describe("triad reports with fixed round sources",()=>{
     const workspace=await load(["student","parent","teacher"].map(role=>row({id:role,respondent_role:role,report_id:"r1",triad_job_id:"job1"})));
     for(const item of workspace.assessments)expect(item).toMatchObject({status:"published",reportId:"r1",phase:null});
     const sql=sqls().find(value=>value.includes("FROM assessments a JOIN families f"));
-    expect(sql).toContain("a.id=ANY(j.source_assessment_ids)");
+    expect(sql).toContain("a.id=ANY(source_assessment_ids)");
   });
   it("shows generating for a student's own source without exposing peers or report id",async()=>{
     const workspace=await load([row({id:"child",respondent_id:SELF,respondent_role:"student",status:"queued",triad_job_id:"job1"})],"student");

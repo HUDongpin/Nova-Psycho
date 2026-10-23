@@ -4,10 +4,11 @@ import { AssessmentDraftSession, type DraftSnapshot } from "./draft-session";
 import { AccountDraftStore, type DraftOwner } from "./account-drafts";
 import dynamic from "next/dynamic";
 import { ArrowClockwise, ArrowLeft, CircleNotch, DownloadSimple, FileText } from "@phosphor-icons/react";
-import { api, ApiError, apiUrl, errorMessage, isAdult, retryAssessmentReport, type Assessment, type AssessmentStatus, type Locale, type Region, type Report, type Role, type SubmissionPhase, type SurveyRecord } from "./api";
+import { api, ApiError, apiUrl, errorMessage, isAdult, retryAssessmentReport, type Assessment, type AssessmentStatus, type Locale, type Region, type Report, type ReportJob, type Role, type SubmissionPhase, type SurveyRecord } from "./api";
 import { copy, formatDate, safetyGuidanceText } from "./copy";
 import { Badge, ErrorNotice, Loading, LocaleSwitch, useMutation } from "./ui";
 import { GardenIcon, GardenIllustration } from "./garden";
+import { ReportJobNotice, ReportRevisionLabel } from "./staged-reports";
 import { submissionDisplayState, type SubmissionDisplayState } from "./submission-presentation";
 import type { GardenIconKey, GardenScene } from "../domain/garden-visuals";
 import questionnaireStyles from "./questionnaire.module.css";
@@ -24,7 +25,7 @@ const submissionPresentation: Record<SubmissionDisplayState, { icon: GardenIconK
   ready: { icon: "book", scene: "report", title: "gardenReportReady", note: "gardenReportReadyNote" },
 };
 
-export function SubmissionPanel({ locale, region, role, phase, status, safetyGuidance = false, reportId, reportHeld = false, privacyRefreshRequired = false, retryBusy = false, onRetry, onViewReport, onBack }: { locale: Locale; region: Region; role: Role; phase: SubmissionPhase; status?: AssessmentStatus; safetyGuidance?: boolean; reportId: string | null; reportHeld?: boolean; privacyRefreshRequired?: boolean; retryBusy?: boolean; onRetry?: () => void; onViewReport: (id: string) => void; onBack: () => void }) {
+export function SubmissionPanel({ locale, region, role, phase, status, safetyGuidance = false, reportId, reportHeld = false, privacyRefreshRequired = false, retryBusy = false, onRetry, onViewReport, onBack, reportJob, onRefresh }: { locale: Locale; region: Region; role: Role; phase: SubmissionPhase; status?: AssessmentStatus; safetyGuidance?: boolean; reportId: string | null; reportJob?: ReportJob; onRefresh?: () => Promise<void>; reportHeld?: boolean; privacyRefreshRequired?: boolean; retryBusy?: boolean; onRetry?: () => void; onViewReport: (id: string) => void; onBack: () => void }) {
   const t = copy(locale);
   const state = submissionDisplayState({ role, phase, status, reportId, reportHeld, privacyRefreshRequired });
   const presentation = submissionPresentation[state];
@@ -39,6 +40,7 @@ export function SubmissionPanel({ locale, region, role, phase, status, safetyGui
       </div>
     </div>
     {isAdult(role) && ["submitted", "waiting", "reporting"].includes(state) && <p className="garden-submission-footnote">{t("automaticNote")}</p>}
+    {isAdult(role) && reportJob && onRefresh && !privacyRefreshRequired && phase !== "consent" && <ReportJobNotice job={reportJob} role={role} locale={locale} hasPublishedReport={!!reportId} onRefresh={onRefresh} />}
     <div className="garden-submission-actions">
       {state === "ready" && reportId && <button className="button primary" onClick={() => onViewReport(reportId)}><FileText />{t("viewReport")}</button>}
       {state === "failed" && onRetry && <button className="button primary" disabled={retryBusy} aria-busy={retryBusy} onClick={onRetry}><ArrowClockwise className={retryBusy ? "spin" : ""} />{t(retryBusy ? "retrying" : "retryReport")}</button>}
@@ -46,7 +48,7 @@ export function SubmissionPanel({ locale, region, role, phase, status, safetyGui
     </div>
   </section>;
 }
-export function AssessmentView({ owner, id, refreshKey, locale, region, role, draftSessions, reportId, privacyRefreshRequired = false, progress, canRetryReport = false, onViewReport, onBack, onRefresh, openPrivacy, privacyOpen = false, onLocaleChange }: { owner: DraftOwner; id: string; refreshKey: number; locale: Locale; region: Region; role: Role; draftSessions: AccountDraftStore; reportId: string | null; privacyRefreshRequired?: boolean; progress?: Pick<Assessment, "id" | "status" | "phase">; canRetryReport?: boolean; onViewReport: (id: string) => void; onBack: () => void; onRefresh: () => Promise<void>; openPrivacy: () => void; privacyOpen?: boolean; onLocaleChange?: (locale: Locale) => void }) {
+export function AssessmentView({ owner, id, refreshKey, locale, region, role, draftSessions, reportId, reportJob, privacyRefreshRequired = false, progress, canRetryReport = false, onViewReport, onBack, onRefresh, openPrivacy, privacyOpen = false, onLocaleChange }: { owner: DraftOwner; id: string; refreshKey: number; locale: Locale; region: Region; role: Role; draftSessions: AccountDraftStore; reportId: string | null; reportJob?: ReportJob; privacyRefreshRequired?: boolean; progress?: Pick<Assessment, "id" | "status" | "phase">; canRetryReport?: boolean; onViewReport: (id: string) => void; onBack: () => void; onRefresh: () => Promise<void>; openPrivacy: () => void; privacyOpen?: boolean; onLocaleChange?: (locale: Locale) => void }) {
   const t = copy(locale);
   const [loaded, setLoaded] = useState<{ record: SurveyRecord; locale: Locale; token: number; epoch: number } | null>(null);
   const [error, setError] = useState("");
@@ -146,7 +148,7 @@ export function AssessmentView({ owner, id, refreshKey, locale, region, role, dr
       {record.demo && <p className={`warning-note ${questionnaireStyles.introNote}`} role="note">{t("trialNotice")}</p>}
       {record.syntheticTest && <p className={`warning-note ${questionnaireStyles.introNote}`} role="status">{t("syntheticTestNotice")}</p>}
       {retry.error && <ErrorNotice message={retry.error} locale={locale} />}
-      {submitted || (record.status !== "pending" && !draft.getSnapshot().conflict) ? <SubmissionPanel locale={locale} region={region} role={role} phase={pipeline ? pipeline.phase ?? null : outcome?.phase ?? record.phase ?? null} status={pipeline?.status ?? record.status} safetyGuidance={outcome?.safetyGuidance ?? record.safetyGuidance === true} reportId={reportId} reportHeld={(pipeline?.status ?? record.status) === "published"} privacyRefreshRequired={privacyRefreshRequired} onViewReport={onViewReport} onBack={onBack} retryBusy={retry.busy} onRetry={canRetryReport && isAdult(role) ? () => { if (!retry.busy) void retry.run(async () => { await retryAssessmentReport(id, locale); await onRefresh(); }); } : undefined} /> : <>
+      {submitted || (record.status !== "pending" && !draft.getSnapshot().conflict) ? <SubmissionPanel reportJob={reportJob} onRefresh={onRefresh} locale={locale} region={region} role={role} phase={pipeline ? pipeline.phase ?? null : outcome?.phase ?? record.phase ?? null} status={pipeline?.status ?? record.status} safetyGuidance={outcome?.safetyGuidance ?? record.safetyGuidance === true} reportId={reportId} reportHeld={(pipeline?.status ?? record.status) === "published"} privacyRefreshRequired={privacyRefreshRequired} onViewReport={onViewReport} onBack={onBack} retryBusy={retry.busy} onRetry={canRetryReport && isAdult(role) ? () => { if (!retry.busy) void retry.run(async () => { await retryAssessmentReport(id, locale); await onRefresh(); }); } : undefined} /> : <>
         <SurveyRunner key={`${id}:${loaded.locale}:${loaded.token}`} record={record} draft={draft} locale={loaded.locale} onReloadLatest={reloadLatest} openPrivacy={openPrivacy} privacyOpen={privacyOpen} leaving={leaving} onSubmitted={async result => { if (!draftSessions.isCurrent(owner, loaded.epoch)) return; setOutcome(result); setSubmitted(true); await onRefresh(); }} />
       </>}
     </>}
@@ -171,7 +173,7 @@ export function ReportView({ id, refreshKey, locale, onBack }: { id: string; ref
         <div className="garden-report-heading-copy"><GardenIcon kind="book" /><div><span className="eyebrow">{report.childName} / {t("reports")}</span><h1>{report.title}</h1><p>{t("generated")} {formatDate(report.createdAt, locale, true)}</p></div></div>
         <a className="button primary" href={apiUrl(`/api/reports/${encodeURIComponent(id)}/pdf`, locale)} download><DownloadSimple />{t("downloadPdf")}</a>
       </div>
-      <div className="report-labels garden-report-labels"><Badge tone="sage"><FileText />{t(report.generationMode === "ai" ? "aiReport" : "templateReport")}</Badge>{report.demo && <Badge tone="peach">{t("nonclinicalTrial")}</Badge>}{report.risk && <Badge tone="danger">{t("risk")}</Badge>}<span className="muted small-text">{t("resultReference")}</span></div>
+      <ReportRevisionLabel report={report} locale={locale} /><div className="report-labels garden-report-labels"><Badge tone="sage"><FileText />{t(report.generationMode === "ai" ? "aiReport" : "templateReport")}</Badge>{report.demo && <Badge tone="peach">{t("nonclinicalTrial")}</Badge>}{report.risk && <Badge tone="danger">{t("risk")}</Badge>}<span className="muted small-text">{t("resultReference")}</span></div>
       <iframe className="report-frame garden-report-frame" title={t("reportDocument")} src={apiUrl(`/api/reports/${encodeURIComponent(id)}/document`, locale)} sandbox="allow-same-origin allow-downloads" />
     </>}
   </>;

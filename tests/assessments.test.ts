@@ -315,7 +315,7 @@ describe("submitting",()=>{
         if(sql.includes("SELECT id FROM families"))return {rows:[{id:FAMILY_ID}]};
         if(sql.includes("SELECT a.*,r.id AS report_id"))return {rows:[{id:ASSESSMENT_ID,status:"pending",draft_revision:0,family_id:FAMILY_ID,respondent_id:USER_ID,respondent_role:"student"}]};
         if(sql.includes("AS scopes FROM consents WHERE family_id=$1"))return {rows};
-        if(sql.includes("SELECT id FROM report_jobs"))return {rows:[{id:"job"}]};
+        if(sql.includes("SELECT id,state FROM report_jobs"))return {rows:[{id:"job"}]};
         return {rows:[]};
       });
       await expect(submitAssessment(actor("student"),ASSESSMENT_ID,submission)).resolves.toMatchObject({status:"queued",phase:"reporting"});
@@ -440,7 +440,7 @@ describe("submission phase follows parent-report consent",()=>{
       if(text.includes("FROM assessments a JOIN scales"))return [row];
       if(text.includes("FROM families f WHERE"))return [{id:FAMILY_ID,region:"CN",family_name:"Synthetic",child_name:"Synthetic child",birth_date:"2013-04-12",grade:"S2",guardian_label:"Mother",assigned_to:null,created_at:new Date()}];
       if(text===ACTIVE_CONSENT_ROWS_SQL)return scopes;
-      if(text.includes("SELECT id FROM report_jobs"))return options.job?[{id:"job"}]:[];
+      if(text.includes("SELECT id,state FROM report_jobs"))return options.job?[{id:"job"}]:[];
       if(text.includes("submitted_at IS NOT NULL")&&text.includes("triad_round_id=$3"))return roles.map((role,index)=>({id:`source-${index}`,respondent_role:role}));
       return [];
     }) as never);
@@ -450,7 +450,7 @@ describe("submission phase follows parent-report consent",()=>{
       if(text.includes("SELECT id FROM families"))return {rows:[{id:FAMILY_ID}]};
       if(text.includes("SELECT a.*,r.id AS report_id"))return {rows:[row]};
       if(text===ACTIVE_CONSENT_ROWS_SQL)return {rows:scopes};
-      if(text.includes("SELECT id FROM report_jobs"))return {rows:options.job?[{id:"job"}]:[]};
+      if(text.includes("SELECT id,state FROM report_jobs"))return {rows:options.job?[{id:"job"}]:[]};
       if(text.includes("submitted_at IS NOT NULL")&&text.includes("triad_round_id=$3"))return {rows:roles.map((role,index)=>({id:`source-${index}`,respondent_role:role}))};
       return {rows:[]};
     });

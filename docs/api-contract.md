@@ -2,6 +2,8 @@
 
 The authoritative public handlers are in `src/app/api/[...path]/route.ts`; response types used by the client are in `src/components/api.ts`. This contract covers the individual-instrument and growth-triad workflows.
 
+New rounds use the parent-first revision workflow described in [parent-first reports](parent-first-reports.md). An accepted new-round assessment remains `submitted`; generation progress lives in `workspace.reportJobs`. Reports add optional `revision` metadata (`roundId`, `version`, immutable source IDs/roles and `generatedAt`). Existing rounds retain the legacy status and completion rules below. `POST /api/families/:id/staff-observation` starts/resumes the assigned staff member's observation; `POST /api/report-jobs/:jobId/retry` retries a specific failed revision. Both enforce current family and regional authorization.
+
 JSON mutations use `Content-Type: application/json` and an `Origin` exactly matching `NOVA_PUBLIC_URL`. Cookie sessions are HTTP-only. Errors are `{error: string, code: string, field?: string}`. Use `?locale=zh-CN` or `?locale=zh-HK` for text; locale does not change the server's `CN`/`HK` region or a user's role. Roles are `admin | staff | parent | student | teacher`.
 
 ## Session and account entry
@@ -59,7 +61,7 @@ The first two purposes are required to participate. `parentReport` is an explici
 | POST `/api/triad/family` | Signed-in parent. Parent family input plus `{requestId:uuid}` → 201 `{userId,familyId,joinCode}`. An identical request replay returns the same family; changing family details gives 409 `REQUEST_ID_CONFLICT`, and changing consent choices gives 409 `CONSENT_CHOICE_CONFLICT`. |
 | POST `/api/triad/join` | Signed-in student/teacher: `{code}`. New local participant: `{code,role:'student'\|'teacher',name,username,password}`. Verified Clerk student without a profile: `{code,name,role:'student'}`. A signed-in participant or Clerk student receives `{userId,familyId,assessmentId,alreadyMember}`: 201 for a new membership, or 200 with `alreadyMember:true` for an existing signed-in membership. A new local participant receives 201 `{userId}` and a cookie. |
 
-Joining creates or reuses the task for that role and round. An existing account's identity/role cannot be reassigned through this endpoint. Role-specific tasks keep their assigned immutable scale version, including legacy drafts. New triad rounds use the 2.0.0 support-intake role map; unfinished 1.x rounds use the legacy map (parent/child 1.3.0, teacher 1.2.0) for missing roles. Existing assigned tasks keep their exact version. A family-locked transaction resolves both round and version; explicit cross-generation requests receive 409 `TRIAD_GENERATION_MISMATCH`. A later eligible retake uses a new round and new source IDs. The synthetic replay endpoint continues to reproduce the prior versions.
+Joining creates or reuses the task for that role and round. An existing account's identity/role cannot be reassigned through this endpoint. Role-specific tasks keep their assigned immutable scale version, including legacy drafts. New public parent registrations use the parent-first map (parent/child 2.1.0 and TOPE observation 1.0.0). Existing 2.0.0 and 1.x rounds keep their original workflow and missing-role maps. The family-code teacher entry is for legacy rounds; new rounds require the assigned TOPE staff observation endpoint. Existing assigned tasks keep their exact version. A family-locked transaction resolves both round and version; explicit cross-generation requests receive 409 `TRIAD_GENERATION_MISMATCH`. A later eligible retake uses a new round and new source IDs. The synthetic replay endpoint continues to reproduce the prior versions.
 
 ## Workspace and access
 
@@ -76,9 +78,9 @@ GET `/api/workspace?locale=...` returns `{user,region,mode,families,assessments,
 | goal / observation | Goals have `{id,familyId,title,detail,status,createdAt}`. Observations have `{id,familyId,body,createdAt,authorName}` and are staff/admin-only. |
 | staff / contentVersions | `{id,name}[]` and `{id,kind,version,libraryKey?,createdAt}[]`; administrator fields are not exposed to other roles. |
 
-`consent` means participation purposes are active. `consents`, when exposed, contains `{assessment,sensitiveData,parentReport,aiProcessing}`. It does not bundle those permissions. `age` is calculated from the family birth date on the deployment region's local date. `age_mismatch` is a staff review flag, not a diagnosis or automatic safety escalation. `demo` on a scale is `effectiveDemo`: the stored `demo` flag or a norm that is not `validated`. `isDefaultVersion` marks the current assignment ids (`growth-child@2.0.0`, `growth-parent@2.0.0`, `growth-teacher@2.0.0`). Earlier `scale_id@version` rows stay byte-identical.
+`consent` means participation purposes are active. `consents`, when exposed, contains `{assessment,sensitiveData,parentReport,aiProcessing}`. It does not bundle those permissions. `age` is calculated from the family birth date on the deployment region's local date. `age_mismatch` is a staff review flag, not a diagnosis or automatic safety escalation. `demo` on a scale is `effectiveDemo`: the stored `demo` flag or a norm that is not `validated`. `isDefaultVersion` marks the current assignment ids (`growth-child@2.1.0`, `growth-parent@2.1.0`, `growth-tope-observation@1.0.0`). Earlier `scale_id@version` rows stay byte-identical.
 
-For authorised staff/admin only, the workspace also includes `staffIntakeResponses: {familyId,assessmentId,role,submittedAt,sections:[{title,items:[{itemId,label,responses:string[]}]}]}[]`. It contains submitted 2.0.0 answers from families within the existing regional/assignment scope, using the frozen submitted definition and age. Hidden items and drafts are excluded. Parent, student and teacher responses omit this field entirely. This data is neither report content nor AI input.
+For authorised staff/admin only, the workspace also includes `staffIntakeResponses: {familyId,assessmentId,role,submittedAt,sections:[{title,items:[{itemId,label,responses:string[]}]}]}[]`. It contains submitted support-intake answers from families within the existing regional/assignment scope, using the frozen submitted definition and age. Hidden items and drafts are excluded. Parent, student and teacher responses omit this field entirely. This data is neither report content nor AI input.
 
 Unscored short reports carry `resultMode: "support-intake"`, `dimensions: []`, and `comparison: {available:false,reason:"not_scored"}`. Their triad payload adds `supportIntake` with adult-only `concerns`, `supports`, `actions` and the fixed `nextStep`; observations contain `{role,itemId,prompt,responses,period}` in both languages. The existing scored arrays stay empty on these reports, and HTML/PDF omit score/profile/comparison sections. No route is added. The form counts include assent and one optional text question: 25/20/15 ordinarily, at most 26/22/16 with safety follow-ups.
 
@@ -122,7 +124,7 @@ An answer map contains item IDs and `number | number[] | string` values for sing
 | POST `/api/assessments/:id/submit` | `{answers,acknowledged:true,revision:number}` → `{id,status,reportId,phase,safetyGuidance}`. Pending submissions freeze server scores/snapshot; replay returns the existing submitted result. An incomplete triad returns 422 `INCOMPLETE_TRIAD` with `completionIssues` and does not publish. |
 | POST `/api/assessments/:id/retry-report` | `{}` → `{id,status:'queued'}`. Admin/assigned staff only, with current authority and a retryable failed job. Does not reopen or rescore answers. Use `canRetryReport` from workspace. |
 
-Assessment status is `pending | queued | published | failed`. Phase adds reporting context:
+Assessment status is `pending | queued | published | failed | submitted`. New parent-first submissions stay `submitted` while each report job has its own lifecycle. Phase adds reporting context:
 
 | `phase` | Meaning |
 |---|---|
@@ -133,7 +135,7 @@ Assessment status is `pending | queued | published | failed`. Phase adds reporti
 
 Participation consent and parent-report consent are different. A report-consent hold must not be presented as missing answers or active generation. Parents/staff can see the hold reason; students/teachers receive a neutral submitted confirmation. A submission may raise a safety alert before a combined report exists. The child's age-restricted items use family birth-date age, not the stated questionnaire age.
 
-The triad requires three valid role-specific submissions from one pinned round. It publishes one shared parent report automatically; it does not combine different rounds or produce a clinical total score. Terminal report failure marks the associated source assessments failed. Raw-score longitudinal comparison is supported for the same respondent and version in individual-instrument reports; a triad report does not claim that comparison.
+The legacy triad workflow requires three valid role-specific submissions from one pinned round. It publishes one shared parent report automatically; it does not combine different rounds or produce a clinical total score. Terminal report failure marks the associated source assessments failed. Raw-score longitudinal comparison is supported for the same respondent and version in individual-instrument reports; a triad report does not claim that comparison.
 
 ## Reports, safety and care
 

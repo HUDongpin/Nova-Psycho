@@ -55,20 +55,35 @@ function supportIntakeReportHtml(p:ReportPayload,locale:Locale):string{
   const hk=locale==="zh-HK",t=(cn:string,tw=cn)=>hk?tw:cn,e=escapeHtml;
   const fmt=(iso:string)=>new Intl.DateTimeFormat(locale,{timeZone:"Asia/Hong_Kong",year:"numeric",month:"long",day:"numeric"}).format(new Date(iso));
   const sourceName=(role:RespondentRole)=>role==="student"?t("孩子","孩子"):role==="parent"?t("家长","家長"):t("教师","教師");
-  const sources=report.sources.map(source=>`${e(sourceName(source.role))} ${e(fmt(source.submittedAt))}`).join(" · ");
+  const sources=report.sources.map(source=>report.staged?`${e(source.label?text(source.label,locale):sourceName(source.role))} · ${e(t("提交","提交"))} ${e(fmt(source.submittedAt))}${source.visitDate?` · ${e(t("到访","到訪"))} ${e(source.visitDate)}`:""}`:`${e(sourceName(source.role))} ${e(fmt(source.submittedAt))}`).join(" · ");
+  const observationLabel=(role:RespondentRole)=>{
+    const source=report.sources.find(source=>source.role===role);
+    return source?.label?text(source.label,locale):respondentLabel(role,locale);
+  };
+  const hasStudent=report.sources.some(source=>source.role==="student"),hasObservation=report.sources.some(source=>source.role==="teacher");
+  const sourceScope=!hasStudent&&!hasObservation?t("当前资料仅来自家长。尚未收到学生资料和 TOPE 现场观察。","目前資料僅來自家長。尚未收到學生資料和 TOPE 現場觀察。")
+    :!hasObservation?t("本版已新增学生资料，尚未收到 TOPE 现场观察。","本版已新增學生資料，尚未收到 TOPE 現場觀察。")
+      :!hasStudent?t("本版已新增观察资料，尚未收到学生资料。","本版已新增觀察資料，尚未收到學生資料。")
+        :t("本版已收录列明的各方资料；各来源只代表所注明的情境与时间。","本版已收錄列明的各方資料；各來源只代表所註明的情境與時間。");
+  const intro=report.staged?t("这份报告按当前已经提交的来源整理困难、已有支持和下一步。学生普通答案不会展示；只有学生明确选择并确认的支持句子可以分享。不同来源追加时不计算分数或变化，也不代表完成全面评估。","這份報告按目前已經提交的來源整理困難、已有支持和下一步。學生普通答案不會展示；只有學生明確選擇並確認的支持句子可以分享。不同來源追加時不計算分數或變化，也不代表完成全面評估。")
+    :t("这份报告整理家长和教师对当前困难、已有支持与下一步的观察，帮助共同商定一项具体行动。简版问卷不计分，不形成完整画像，也不用于诊断。","這份報告整理家長和教師對當前困難、已有支持與下一步的觀察，幫助共同商定一項具體行動。簡版問卷不計分，不形成完整畫像，也不用於診斷。");
+  const revision=report.staged&&p.revision?`<p class="meta report-revision">${e(t("报告版本","報告版本"))} ${e(p.revision.version)} · ${e(t("生成日期","產生日期"))} ${e(fmt(p.revision.generatedAt))}</p>`:"";
   const sections=([
     {id:"report-concerns",label:t("当前关注与困难","當前關注與困難"),icon:"words",rows:intake.concerns},
     {id:"report-supports",label:t("现有支持与日常安排","現有支持與日常安排"),icon:"family",rows:intake.supports},
     {id:"report-actions",label:t("希望获得的支持与下一步目标","希望獲得的支持與下一步目標"),icon:"compass",rows:intake.actions}
   ] satisfies {id:string;label:string;icon:GardenIconKey;rows:SupportIntakeObservation[]}[]).filter(section=>section.rows.length>0);
-  const observations=sections.map(section=>`<section class="support-intake-section">${reportHeading(section.label,section.id,section.icon)}${section.rows.map(row=>`<div class="content-note" data-role="${row.role}"><p class="meta">${e(respondentLabel(row.role,locale))} · ${e(text(row.period,locale))}</p><p><strong>${e(text(row.prompt,locale))}</strong></p><p>${row.responses.map(response=>e(text(response,locale))).join("、")}</p></div>`).join("")}</section>`).join("");
+  const observations=sections.map(section=>`<section class="support-intake-section">${reportHeading(section.label,section.id,section.icon)}${section.rows.map(row=>`<div class="content-note" data-role="${row.role}"><p class="meta">${e(observationLabel(row.role))} · ${e(text(row.period,locale))}${row.informationSource?` · ${e(t("信息来源","資料來源"))}：${e(text(row.informationSource,locale))}`:""}</p><p><strong>${e(text(row.prompt,locale))}</strong></p><p>${row.responses.map(response=>e(text(response,locale))).join("、")}</p></div>`).join("")}</section>`).join("");
+  const shared=intake.studentShared?.sentences.length?`<section class="student-shared-support">${reportHeading(t("学生愿意分享的支持需要","學生願意分享的支持需要"),"report-student-sharing","words")}<p class="meta">${e(t("以下仅为学生主动选择并确认分享的句子，不概括其他答案。","以下僅為學生主動選擇並確認分享的句子，不概括其他答案。"))}</p><ul>${intake.studentShared.sentences.map(sentence=>`<li>${e(text(sentence,locale))}</li>`).join("")}</ul></section>`:"";
   const safety=report.safety.length?`<section class="risk">${reportHeading(t("请先关注安全","請先關注安全"),"report-safety","shield")}${report.safety.map(message=>`<p>${e(text(message,locale))}</p>`).join("")}<p>${e(t("报告仍然发给家长。工作人员也会同时看到安全提示。如有眼前危险，请联系当地紧急服务。","報告仍然發給家長。工作人員也會同時看到安全提示。如有眼前危險，請聯絡當地緊急服務。"))}</p></section>`:"";
-  const directory:DirectoryEntry[]=[...sections.map(({id,label,icon})=>({id,label,icon})),{id:"report-next-step",label:t("共同商定一项行动","共同商定一項行動"),icon:"compass"}];
-  return `<!DOCTYPE html><html lang="${locale}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${e(text(report.title,locale))} · TopE 心理助手</title><style>${reportGardenStyle}</style></head><body><article class="garden-report support-intake-report" data-report-layout="garden-v1"><header><div class="brand">TopE 心理助手</div>${reportArtwork()}<h1>${e(text(report.title,locale))}</h1><p>${e(p.childName)} · ${e(p.grade)}</p><p class="meta">${sources}</p><p>${e(t("这份报告整理家长和教师对当前困难、已有支持与下一步的观察，帮助共同商定一项具体行动。简版问卷不计分，不形成完整画像，也不用于诊断。","這份報告整理家長和教師對當前困難、已有支持與下一步的觀察，幫助共同商定一項具體行動。簡版問卷不計分，不形成完整畫像，也不用於診斷。"))}</p></header>
+  const directory:DirectoryEntry[]=[...sections.map(({id,label,icon})=>({id,label,icon})),...(shared?[{id:"report-student-sharing",label:t("学生愿意分享的支持需要","學生願意分享的支持需要"),icon:"words" as const}]:[]),{id:"report-next-step",label:t("共同商定一项行动","共同商定一項行動"),icon:"compass"}];
+  const footer=report.staged?t("根据本版列出的已提交资料自动生成；后续新增来源会生成新版本，既有版本保留。家庭私密报告，请妥善保管。","根據本版列出的已提交資料自動產生；後續新增來源會產生新版本，既有版本保留。家庭私密報告，請妥善保管。")
+    :t("三份都交齐后自动生成。家庭私密报告，请妥善保管。","三份都交齊後自動產生。家庭私密報告，請妥善保管。");
+  return `<!DOCTYPE html><html lang="${locale}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${e(text(report.title,locale))} · TopE 心理助手</title><style>${reportGardenStyle}${report.staged?"@media print{.support-intake-report .content-note{padding:8px 12px;margin:6px 0}.support-intake-report .report-close{break-inside:avoid;page-break-inside:avoid}}":""}</style></head><body><article class="garden-report support-intake-report" data-report-layout="garden-v1"><header><div class="brand">TopE 心理助手</div>${reportArtwork()}<h1>${e(text(report.title,locale))}</h1><p>${e(p.childName)} · ${e(p.grade)}</p>${revision}<p class="meta">${sources}</p><p>${e(intro)}</p>${report.staged?`<p class="source-scope">${e(sourceScope)}</p>`:""}</header>
   ${syntheticTestNotice(p,locale)}${reportShowsDemo(p)?`<div class="demo"><strong>${e(t("非临床试用报告 · 尚无经过验证的临床常模","非臨床試用報告 · 尚無經過驗證的臨床常模"))}</strong><br>${e(t("仅供成长支持与沟通参考，不能用于临床诊断，也不能替代专业评估。","僅供成長支持與溝通參考，不能用於臨床診斷，也不能替代專業評估。"))}</div>`:""}
-  ${safety}${reportDirectory(directory,locale)}${observations}
-  <section class="advice">${reportHeading(t("共同商定一项行动","共同商定一項行動"),"report-next-step","compass")}<p>${e(text(intake.nextStep,locale))}</p></section>
-  <p class="limitation">${e(t("观察来自不同情境和时间范围，请结合具体情况沟通。孩子的普通作答及工作人员专用记录不会在这份家长报告中展示。未触发安全提示也不代表没有风险。","觀察來自不同情境和時間範圍，請結合具體情況溝通。孩子的普通作答及工作人員專用紀錄不會在這份家長報告中展示。未觸發安全提示也不代表沒有風險。"))}</p><footer>${e(t("规则模板生成","規則模板產生"))}<br>TopE 心理助手 · ${e(t("三份都交齐后自动生成。家庭私密报告，请妥善保管。","三份都交齊後自動產生。家庭私密報告，請妥善保管。"))}</footer></article></body></html>`;
+  ${safety}${reportDirectory(directory,locale)}${observations}${shared}
+  <div class="report-close"><section class="advice">${reportHeading(t("共同商定一项行动","共同商定一項行動"),"report-next-step","compass")}<p>${e(text(intake.nextStep,locale))}</p></section>
+  <p class="limitation">${e(t("观察来自不同情境和时间范围，请结合具体情况沟通。孩子的普通作答及工作人员专用记录不会在这份家长报告中展示。未触发安全提示也不代表没有风险。","觀察來自不同情境和時間範圍，請結合具體情況溝通。孩子的普通作答及工作人員專用紀錄不會在這份家長報告中展示。未觸發安全提示也不代表沒有風險。"))}</p><footer>${e(t("规则模板生成","規則模板產生"))}<br>TopE 心理助手 · ${e(footer)}</footer></div></article></body></html>`;
 }
 function triadReportHtml(p:ReportPayload,locale:Locale):string{
   const report=p.triad as TriadReport;

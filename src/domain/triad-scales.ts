@@ -1,5 +1,6 @@
 import type { RespondentRole, ScaleDefinition, ScaleDimension, ScaleItem } from "./types";
 import { pair } from "./zh-pair";
+import { STUDENT_SHARING_CONFIRM_ID, STUDENT_SHARING_ITEM_ID, STUDENT_SUPPORT_OPTIONS } from "./student-sharing";
 
 type Opt = [number, string][];
 const RESOURCE: Opt = [[1, "完全不符合"], [2, "较不符合"], [3, "有时符合"], [4, "比较符合"], [5, "非常符合"], [-1, "不确定或不适用"]];
@@ -413,7 +414,70 @@ export const teacherScaleSupportIntake = supportIntake(teacherScaleStaffNotes,
     { id: "close", title: "已经做过的支持和下一步建议", items: ["t17", "t21", "t22"] }
   ], "t21");
 
-export const triadScales = [childScale, childScaleSafety, childScaleBirthAge, childScaleStaffNotes, childScaleSupportIntake, parentScaleV1, parentScale, parentScaleSafety, parentScaleStaffNotes, parentScaleSupportIntake, teacherScale, teacherScaleSafety, teacherScaleStaffNotes, teacherScaleSupportIntake];
+function stagedParent(original: ScaleDefinition): ScaleDefinition {
+  const revised = structuredClone(original);
+  revised.version = "2.1.0";
+  revised.description = pair("这份简版先了解家长看到的近期困难、已有支持和下一步需要。家长提交后即可生成首次家长报告；之后新增学生资料或 TOPE 现场观察时，会生成保留既有来源的新版本。不同来源按实际情境和日期分别呈现，不计分、不作诊断。适用于 8 至 17 岁。香港繁体为字形转换，未另行验证。");
+  return revised;
+}
+
+function stagedChild(original: ScaleDefinition): ScaleDefinition {
+  const revised = structuredClone(original);
+  revised.version = "2.1.0";
+  revised.description = pair("这份简版了解你最近的感受和希望得到的帮助，不计分、不做诊断。普通答案和自由文字只给服务团队；最后你可以自愿选择最多三句支持需要，查看预览并确认后分享给家长，也可以选择这次不分享，仍然完成提交。遇到安全问题，工作人员会按保护流程寻求帮助。适用于 8 至 17 岁。香港繁体为字形转换，未另行验证。");
+  revised.items.push({
+    id: STUDENT_SHARING_ITEM_ID, kind: "multi", page: "sharing", pageTitle: pair("由你决定要不要分享"),
+    label: pair("你愿意把哪些支持需要放进家长报告？最多选择三句，也可以选择这次不分享。"),
+    choices: [{ value: 0, label: pair("这次不分享"), exclusive: true }, ...STUDENT_SUPPORT_OPTIONS.map(option => ({ value: option.value, label: { ...option.label } }))],
+    reverse: false, required: false, maxChoices: 3, report: "omit", noAutoAdvance: true
+  }, {
+    id: STUDENT_SHARING_CONFIRM_ID, kind: "single", page: "sharing", pageTitle: pair("确认你愿意分享的句子"),
+    label: pair("请先看清分享预览。只有你选择并在这里确认的句子，才会写入家长报告。"),
+    choices: [{ value: 1, label: pair("我已看过预览，同意把这些句子放进家长报告") }, { value: 0, label: pair("暂不确认，我要返回修改或选择不分享") }],
+    reverse: false, required: true, report: "omit", noAutoAdvance: true,
+    showIf: { itemId: STUDENT_SHARING_ITEM_ID, anyOf: STUDENT_SUPPORT_OPTIONS.map(option => option.value) }
+  });
+  return revised;
+}
+
+function topeObservation(): ScaleDefinition {
+  const built = bag();
+  const sources: Opt = [[1, "本次直接观察"], [2, "家长转述"], [3, "学生自述"], [0, "尚不了解或没有相关资料"]];
+  choose(built, "o_assent", "begin", "记录范围与分享边界", "我了解：只有标明可分享的封闭选项及其信息来源进入家长报告；工作人员文字记录不进入报告。本次记录不作临床推断。", [[1, "了解并继续"], [0, "暂不填写"]], { gate: 1 });
+  writing(built, "o_visit_date", "visit", "本次 TOPE 到访", "本次到访日期（YYYY-MM-DD）", "staff");
+  choose(built, "o_task_source", "visit", "任务参与（可分享）", "以下任务参与资料来自哪里？", sources);
+  choose(built, "o_task", "visit", "任务参与（可分享）", "本次了解的任务参与需要（可分享）", [[1, "可以从一个清楚的小步骤开始"], [2, "需要先拆小任务或示范"], [3, "需要休息后再尝试"], [0, "尚不了解或未涉及"]]);
+  choose(built, "o_communication_source", "visit", "沟通（可分享）", "以下沟通资料来自哪里？", sources);
+  choose(built, "o_communication", "visit", "沟通（可分享）", "本次了解的沟通需要（可分享）", [[1, "愿意表达想法或需要"], [2, "需要较慢节奏和等待时间"], [3, "希望可信任的人陪伴沟通"], [0, "尚不了解或未涉及"]]);
+  choose(built, "o_support_source", "support", "支持需要（可分享）", "以下支持需要资料来自哪里？", sources);
+  checks(built, "o_support_needs", "support", "支持需要（可分享）", "本次明确提及的支持需要（可分享）", ["把任务分成小步骤", "平衡学习、休息和活动", "耐心倾听", "明确可以求助的人", "应对近期压力的支持", "尚不了解或未涉及"], "priorities", 3);
+  checks(built, "o_tried_supports", "support", "已尝试的支持（可分享）", "本次 TOPE 现场已尝试哪些支持（可分享）", ["拆小任务或提供示范", "安排短暂休息", "解释安排并询问学生意愿", "放慢节奏并耐心倾听", "确认可以求助的人", "本次尚未尝试"], "priorities");
+  checks(built, "o_next_step", "close", "下一步（可分享）", "接下来建议共同商定的行动（可分享）", ["选择一个具体的小目标", "安排与学生进一步沟通", "与家长协调一项支持", "安排 TOPE 后续了解", "了解是否需要其他专业支持", "暂未商定下一步"], "priorities", 3);
+  checks(built, "o_safety", "safety", "需要及时跟进的安全情况", "本次是否发现需要工作人员及时核实或处理的安全情况？", ["发现可能需要立即保护的情况", "情况尚不清楚，需要工作人员及时核实", "本次未发现需要及时处理的情况"]);
+  risk(built, "o_safety", [1], "TOPE 现场记录提示可能需要立即保护。请工作人员优先核实并按保护流程处理；如有眼前危险，请联系当地紧急服务。");
+  risk(built, "o_safety", [2], "TOPE 现场记录有尚待澄清的安全情况。请工作人员及时核实，不要仅等待后续报告。");
+  writing(built, "o_private_notes", "close", "仅供工作人员查看", "补充事实、转述来源、未确定之处或后续工作记录（不会进入家长报告，选填）", "staff", false);
+  const scale = define("teacher", "growth-tope-observation", "TOPE 现场了解与支持记录", "由被分配的 TOPE 工作人员填写本次到访情况。请区分直接观察、家长转述、学生自述和未知；一次现场了解不能代表学校或日常表现。不计分，不推断原因或临床结论。标明可分享的封闭选项进入家长报告，文字记录只给工作人员。适用于 8 至 17 岁。", built);
+  scale.resultMode = "support-intake";
+  scale.source = "TOPE 现场支持了解记录，2026-10。非学校教师问卷；不计分，无临床常模。";
+  scale.norm.label = pair("现场支持了解，不计分，没有临床常模");
+  scale.norm.source = "Unscored TOPE visit support intake. Direct observations and reported information are explicitly separated. No clinical norms or school-level inference.";
+  for (const id of ["o_support_needs", "o_tried_supports", "o_next_step"]) scale.items.find(item => item.id === id)!.choices.at(-1)!.exclusive = true;
+  scale.items.find(item => item.id === "o_safety")!.choices.at(-1)!.exclusive = true;
+  scale.items.find(item => item.id === "o_safety")!.noAutoAdvance = true;
+  return scale;
+}
+
+export const stagedParentScale = stagedParent(parentScaleSupportIntake);
+export const stagedChildScale = stagedChild(childScaleSupportIntake);
+export const topeStaffScale = topeObservation();
+export const stagedTriadScaleIds = {
+  parent: `${stagedParentScale.id}@${stagedParentScale.version}`,
+  student: `${stagedChildScale.id}@${stagedChildScale.version}`,
+  teacher: `${topeStaffScale.id}@${topeStaffScale.version}`
+} as const;
+
+export const triadScales = [childScale, childScaleSafety, childScaleBirthAge, childScaleStaffNotes, childScaleSupportIntake, parentScaleV1, parentScale, parentScaleSafety, parentScaleStaffNotes, parentScaleSupportIntake, teacherScale, teacherScaleSafety, teacherScaleStaffNotes, teacherScaleSupportIntake, stagedParentScale, stagedChildScale, topeStaffScale];
 export const legacyTriadScaleIds = {
   parent: `${parentScaleStaffNotes.id}@${parentScaleStaffNotes.version}`,
   student: `${childScaleStaffNotes.id}@${childScaleStaffNotes.version}`,

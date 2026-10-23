@@ -2,7 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
 import type { Actor, Locale, RespondentRole, Role, ScaleDefinition } from "../domain/types";
 import { z } from "zod";
-import { childScale, childScaleStaffNotes, currentTriadScaleIds, legacyTriadScaleIds, teacherScale, teacherScaleStaffNotes, triadScales } from "../domain/triad-scales";
+import { childScale, childScaleStaffNotes, currentTriadScaleIds, stagedTriadScaleIds, legacyTriadScaleIds, teacherScale, teacherScaleStaffNotes, triadScales } from "../domain/triad-scales";
 import { TRIAD_BUNDLE, triadRolesReady } from "../domain/triad-report";
 import { pair } from "../domain/zh-pair";
 import { instrumentWriteBlockReason, parseStoredScale, parseTemplate } from "../domain/validation";
@@ -15,12 +15,13 @@ import { getConfig, isDemoMode } from "./config";
 import { query, transaction } from "./db";
 import { HttpError, requireRole, validateId } from "./http";
 import { noticeVersion } from "./privacy";
+import { PARENT_FIRST_WORKFLOW, queueStagedReport } from "./staged-reports";
 import type { VerifiedClerkIdentity } from "./clerk-auth";
 import { formatJoinCode, joinCodeFormatMessage, parseJoinCode, registrationName, registrationPassword, registrationUsername } from "../domain/registration";
 export { formatJoinCode } from "../domain/registration";
 export { triadAdvice } from "../domain/triad-advice";
 
-const SCALE_ID = currentTriadScaleIds;
+const SCALE_ID = stagedTriadScaleIds;
 const short = registrationName;
 const username = registrationUsername;
 const password = registrationPassword;
@@ -41,7 +42,7 @@ function makeCode(): string {
 function assertChildAge(birthDate: string): number {
   if (!Number.isFinite(Date.parse(birthDate)) || new Date(birthDate).toISOString().slice(0, 10) !== birthDate) throw new HttpError(422, "请填写有效的孩子出生日期。", "INVALID_BIRTHDATE");
   const age = ageAt(birthDate);
-  if (!Number.isInteger(age) || age < 8 || age > 17) throw new HttpError(422, "孩子自查适用于 8 至 17 岁。三份问卷都要完成，请填写这个年龄范围内的出生日期。", "CHILD_AGE");
+  if (!Number.isInteger(age) || age < 8 || age > 17) throw new HttpError(422, "本次成长支持了解适用于 8 至 17 岁，请填写这个年龄范围内的出生日期。", "CHILD_AGE");
   return age;
 }
 
@@ -86,7 +87,7 @@ export interface FamilyJoinResult { userId: string; familyId: string; assessment
 
 export function assertPublicTriadOpen(): void {
   if (isDemoMode()) return;
-  const assignedIds = new Set<string>(Object.values(currentTriadScaleIds));
+  const assignedIds = new Set<string>(Object.values(stagedTriadScaleIds));
   const assigned = triadScales.filter(scale => assignedIds.has(`${scale.id}@${scale.version}`));
   const blockers = assigned.map(scale => instrumentWriteBlockReason(scale, "service"));
   if (assigned.length !== assignedIds.size || blockers.includes("UNVALIDATED_INSTRUMENT")) throw new HttpError(409, "三方问卷尚未准备好，暂时不能创建或加入家庭。", "UNVALIDATED_INSTRUMENT");
@@ -198,7 +199,7 @@ export async function ensureTriadInstruments(): Promise<void> {
     const currentChildId = `${childScaleStaffNotes.id}@${childScaleStaffNotes.version}`;
     const currentTeacherId = `${teacherScaleStaffNotes.id}@${teacherScaleStaffNotes.version}`;
     if (id === currentChildId || id === currentTeacherId) {
-      const keep = [id, parsed.id === "growth-child" ? SCALE_ID.student : SCALE_ID.teacher];
+      const keep = parsed.id === "growth-child" ? [id,currentTriadScaleIds.student,stagedTriadScaleIds.student] : [id,currentTriadScaleIds.teacher];
       await query("UPDATE scales SET status='retired' WHERE scale_id=$1 AND id<>ALL($2::text[]) AND status='active'", [parsed.id, keep]);
     }
   }
@@ -235,14 +236,14 @@ function generationMismatch(): never {
 
 // Every caller holds the family lock. Frozen answers/definitions determine the
 // generation; an old pending task may be adopted but is never rewritten.
-export async function resolveTriadAssignment(client: PoolClient, familyId: string, role: RespondentRole, options: { requestedScale?: ScaleDefinition; preserveExisting?: boolean } = {}): Promise<{ roundId: string; scaleVersionId: string }> {
+export async function resolveTriadAssignment(client: PoolClient, familyId: string, role: RespondentRole, options: { requestedScale?: ScaleDefinition; preserveExisting?: boolean; staffObservation?: boolean } = {}): Promise<{ roundId: string; scaleVersionId: string }> {
   const region = getConfig().region;
   const legacy = await client.query("SELECT a.id FROM assessments a JOIN scales s ON s.id=a.scale_version_id WHERE a.family_id=$1 AND a.region=$2 AND a.triad_round_id IS NULL AND a.submitted_at IS NOT NULL AND a.status<>'published' AND s.definition->>'bundle'=$3 LIMIT 1", [familyId, region, TRIAD_BUNDLE]);
   if (legacy.rows[0]) throw new HttpError(409, "旧三方问卷的轮次尚未核实，请联系服务团队处理后再开始。", "TRIAD_LEGACY_REVIEW_REQUIRED");
   const unbound = await client.query("SELECT a.id,s.definition FROM assessments a JOIN scales s ON s.id=a.scale_version_id WHERE a.family_id=$1 AND a.region=$2 AND a.triad_round_id IS NULL AND a.status='pending' AND s.definition->>'bundle'=$3", [familyId, region, TRIAD_BUNDLE]);
   const unboundGenerations = new Set(unbound.rows.map(row => triadGeneration(row.definition as ScaleDefinition)));
   if (unboundGenerations.size > 1) generationMismatch();
-  const latest = await client.query("SELECT id FROM triad_rounds WHERE family_id=$1 AND region=$2 ORDER BY created_at DESC,id DESC LIMIT 1", [familyId, region]);
+  const latest = await client.query("SELECT id,report_workflow FROM triad_rounds WHERE family_id=$1 AND region=$2 ORDER BY created_at DESC,id DESC LIMIT 1", [familyId, region]);
   if (latest.rows[0]) {
     const roundId = String(latest.rows[0].id);
     const members = await client.query("SELECT respondent_role,submitted_at,a.scale_version_id,COALESCE(a.snapshot->'scale',s.definition) AS definition FROM assessments a JOIN scales s ON s.id=a.scale_version_id WHERE a.triad_round_id=$1", [roundId]);
@@ -252,15 +253,23 @@ export async function resolveTriadAssignment(client: PoolClient, familyId: strin
       const generation = generations.values().next().value ?? "support-intake";
       if (options.requestedScale && triadGeneration(options.requestedScale) !== generation) generationMismatch();
       if (members.rows.some(row => row.respondent_role === role)) throw new HttpError(409, "本轮仍在等待其他成员完成，请先完成本轮三方问卷。", "TRIAD_ROUND_IN_PROGRESS");
-      const scaleVersionId = options.requestedScale ? `${options.requestedScale.id}@${options.requestedScale.version}` : (generation === "support-intake" ? currentTriadScaleIds : legacyTriadScaleIds)[role];
+      const staged = latest.rows[0].report_workflow === PARENT_FIRST_WORKFLOW;
+      if(staged && role === "teacher" && !options.staffObservation) throw new HttpError(409,"本轮由负责家庭的 TOPE 老师在工作人员入口填写现场观察。","TOPE_STAFF_REQUIRED");
+      const scaleVersionId = options.requestedScale ? `${options.requestedScale.id}@${options.requestedScale.version}` : (staged ? stagedTriadScaleIds : generation === "support-intake" ? currentTriadScaleIds : legacyTriadScaleIds)[role];
+      if(staged && scaleVersionId !== stagedTriadScaleIds[role]) generationMismatch();
+      if(!staged && (Object.values(stagedTriadScaleIds) as string[]).includes(scaleVersionId)) generationMismatch();
       return { roundId, scaleVersionId };
     }
   }
   const generation = unboundGenerations.values().next().value ?? (options.preserveExisting && options.requestedScale ? triadGeneration(options.requestedScale) : "support-intake");
   if (options.requestedScale && triadGeneration(options.requestedScale) !== generation) generationMismatch();
   const id = randomUUID();
-  await client.query("INSERT INTO triad_rounds(id,family_id,region) VALUES($1,$2,$3)", [id, familyId, region]);
-  const scaleVersionId = options.requestedScale ? `${options.requestedScale.id}@${options.requestedScale.version}` : (generation === "support-intake" ? currentTriadScaleIds : legacyTriadScaleIds)[role];
+  const requestedId = options.requestedScale ? `${options.requestedScale.id}@${options.requestedScale.version}` : null;
+  const staged = unbound.rows.length === 0 && (requestedId ? (Object.values(stagedTriadScaleIds) as string[]).includes(requestedId) : role === "parent");
+  if(!staged && requestedId && (Object.values(stagedTriadScaleIds) as string[]).includes(requestedId)) generationMismatch();
+  if(staged && role === "teacher" && !options.staffObservation)throw new HttpError(409,"请由负责家庭的 TOPE 老师填写现场观察。","TOPE_STAFF_REQUIRED");
+  await client.query("INSERT INTO triad_rounds(id,family_id,region,report_workflow) VALUES($1,$2,$3,$4)", [id, familyId, region, staged ? PARENT_FIRST_WORKFLOW : "legacy_triad"]);
+  const scaleVersionId = requestedId ?? (staged ? stagedTriadScaleIds : generation === "support-intake" ? currentTriadScaleIds : legacyTriadScaleIds)[role];
   return { roundId: id, scaleVersionId };
 }
 
@@ -327,12 +336,14 @@ export async function joinWithCode(input: unknown, locale: "zh-CN" | "zh-HK"): P
 export async function queueTriadReport(client: PoolClient, familyId: string, roundId: string): Promise<string | null> {
   const region = getConfig().region;
   const rows = await client.query("SELECT id,respondent_role FROM assessments WHERE family_id=$1 AND region=$2 AND triad_round_id=$3 AND submitted_at IS NOT NULL ORDER BY respondent_role", [familyId, region, roundId]);
+  const round = await client.query("SELECT report_workflow FROM triad_rounds WHERE id=$1 AND family_id=$2 AND region=$3", [roundId, familyId, region]);
+  if (round.rows[0]?.report_workflow === PARENT_FIRST_WORKFLOW) return queueStagedReport(client, familyId, roundId, rows.rows);
   if (!triadRolesReady(rows.rows.map(row => String(row.respondent_role)))) return null;
   const parent = rows.rows.find(row => row.respondent_role === "parent");
   if (!parent) return null;
   const consent = await client.query(ACTIVE_CONSENT_ROWS_SQL, [familyId]);
   if (!hasGranted(consent.rows, [PARENT_REPORT_SCOPE])) return null;
-  await client.query("INSERT INTO report_jobs(id,assessment_id,source_assessment_ids) VALUES($1,$2,$3) ON CONFLICT(assessment_id) DO NOTHING", [randomUUID(), parent.id, rows.rows.map(row => row.id)]);
+  await client.query("INSERT INTO report_jobs(id,assessment_id,source_assessment_ids) VALUES($1,$2,$3) ON CONFLICT(assessment_id) WHERE report_version IS NULL DO NOTHING", [randomUUID(), parent.id, rows.rows.map(row => row.id)]);
   return String(parent.id);
 }
 
@@ -343,12 +354,12 @@ export async function enqueueReportsHeldForConsent(client: PoolClient, familyId:
   const ids = new Set<string>();
   const held = await client.query("SELECT a.id FROM assessments a JOIN scales s ON s.id=a.scale_version_id WHERE a.family_id=$1 AND a.region=$2 AND a.status='queued' AND a.submitted_at IS NOT NULL AND COALESCE(s.definition->>'bundle','')<>$3 AND NOT EXISTS (SELECT 1 FROM report_jobs j WHERE j.assessment_id=a.id) AND NOT EXISTS (SELECT 1 FROM reports r WHERE r.assessment_id=a.id)", [familyId, region, TRIAD_BUNDLE]);
   for (const row of held.rows) {
-    await client.query("INSERT INTO report_jobs(id,assessment_id) VALUES($1,$2) ON CONFLICT(assessment_id) DO NOTHING", [randomUUID(), row.id]);
+    await client.query("INSERT INTO report_jobs(id,assessment_id) VALUES($1,$2) ON CONFLICT(assessment_id) WHERE report_version IS NULL DO NOTHING", [randomUUID(), row.id]);
     ids.add(String(row.id));
   }
-  const resumed = await client.query("UPDATE report_jobs j SET state='ready', available_at=now(), lease_until=NULL, claim_token=NULL, last_error_code=NULL FROM assessments a WHERE a.id=j.assessment_id AND a.family_id=$1 AND a.region=$2 AND j.state='paused' AND j.last_error_code='PARENT_REPORT_CONSENT_REQUIRED' AND NOT EXISTS (SELECT 1 FROM reports r WHERE r.assessment_id=a.id) RETURNING a.id", [familyId, region]);
+  const resumed = await client.query("UPDATE report_jobs j SET state='ready', available_at=now(), lease_until=NULL, claim_token=NULL, last_error_code=NULL FROM assessments a WHERE a.id=j.assessment_id AND a.family_id=$1 AND a.region=$2 AND j.state='paused' AND j.last_error_code='PARENT_REPORT_CONSENT_REQUIRED' AND NOT EXISTS (SELECT 1 FROM reports r WHERE (j.report_version IS NULL AND r.assessment_id=a.id AND r.report_version IS NULL) OR r.job_id=j.id) RETURNING a.id", [familyId, region]);
   for (const row of resumed.rows) ids.add(String(row.id));
-  const ready = await client.query("SELECT a.id FROM report_jobs j JOIN assessments a ON a.id=j.assessment_id WHERE a.family_id=$1 AND a.region=$2 AND j.state='ready' AND NOT EXISTS (SELECT 1 FROM reports r WHERE r.assessment_id=a.id)", [familyId, region]);
+  const ready = await client.query("SELECT a.id FROM report_jobs j JOIN assessments a ON a.id=j.assessment_id WHERE a.family_id=$1 AND a.region=$2 AND j.state='ready' AND NOT EXISTS (SELECT 1 FROM reports r WHERE (j.report_version IS NULL AND r.assessment_id=a.id AND r.report_version IS NULL) OR r.job_id=j.id)", [familyId, region]);
   for (const row of ready.rows) ids.add(String(row.id));
   const rounds = await client.query("SELECT DISTINCT triad_round_id FROM assessments WHERE family_id=$1 AND region=$2 AND triad_round_id IS NOT NULL AND submitted_at IS NOT NULL", [familyId, region]);
   for (const row of rounds.rows) {

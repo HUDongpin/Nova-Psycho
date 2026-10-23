@@ -30,8 +30,8 @@ export async function dispatchAssessmentReport(assessmentId:string,defer?:Deferr
   const attempt=async()=>{
     const jobs=await query<{id:string}>(`SELECT j.id FROM report_jobs j JOIN assessments a ON a.id=j.assessment_id
       WHERE a.region=$2 AND (j.assessment_id=$1 OR $1=ANY(j.source_assessment_ids))
-        AND j.state IN ('ready','running') LIMIT 1`,[assessmentId,getConfig().region]);
-    if(jobs[0])await enqueueReportJob(jobs[0].id);
+        AND j.state IN ('ready','running') ORDER BY j.report_version NULLS FIRST,j.created_at`,[assessmentId,getConfig().region]);
+    for(const job of jobs)await enqueueReportJob(job.id);
   };
   try{await attempt();}
   catch{

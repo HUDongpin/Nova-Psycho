@@ -1,7 +1,8 @@
-import type { DimensionScore, Locale, RespondentRole, ResultMode, ScaleDefinition, ScaleDimension, ScaleItem, StoredAnswer, SupportIntakeObservation, TextPair, TriadReport } from "./types";
+import type { DimensionScore, Locale, RespondentRole, ResultMode, ScaleDefinition, ScaleDimension, ScaleItem, StoredAnswer, StudentSharingSnapshot, SupportIntakeObservation, TextPair, TriadReport } from "./types";
 import { answerVisible, scoreAssessment } from "./scoring";
 import { pair } from "./zh-pair";
 import { PARENT_REPORT_AUDIENCE_VERSION, parentReportWordAllowed } from "./report-privacy";
+import { approvedStudentSharing } from "./student-sharing";
 
 export const TRIAD_BUNDLE = "growth-triad";
 const ROLE_ORDER: RespondentRole[] = ["student", "parent", "teacher"];
@@ -27,6 +28,7 @@ export interface TriadSource {
   answers: Record<string, StoredAnswer>;
   score: ReturnType<typeof scoreAssessment>;
   submittedAt: string;
+  studentSharing?: StudentSharingSnapshot;
 }
 
 export function triadRolesReady(roles: Iterable<string>): boolean {
@@ -118,6 +120,40 @@ const SUPPORT_REPORT_ITEMS = {
   actions: { parent: ["q31"], teacher: ["t22", "t21"] }
 } as const;
 
+const TOPE_REPORT_ITEMS = {
+  concerns: ["o_task", "o_communication"],
+  supports: ["o_support_needs", "o_tried_supports"],
+  actions: ["o_next_step"]
+} as const;
+const TOPE_INFORMATION_SOURCE: Record<string, string> = {
+  o_task: "o_task_source", o_communication: "o_communication_source", o_support_needs: "o_support_source"
+};
+
+function isTopeObservation(scale: ScaleDefinition): boolean {
+  return scale.id === "growth-tope-observation" && scale.version === "1.0.0" && scale.resultMode === "support-intake";
+}
+
+function stagedSource(source: TriadSource): TriadReport["sources"][number] {
+  const tope = isTopeObservation(source.scale);
+  const date = source.answers.o_visit_date;
+  // Never copy staff writing into report metadata. Only a real ISO calendar date is allowed here.
+  const validDate = typeof date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(date) && Number.isFinite(Date.parse(`${date}T00:00:00.000Z`)) && new Date(`${date}T00:00:00.000Z`).toISOString().slice(0, 10) === date;
+  return {
+    role: source.role, submittedAt: source.submittedAt,
+    label: pair(source.role === "parent" ? "家长资料" : source.role === "student" ? "学生资料" : tope ? "TOPE 现场观察" : "学校教师观察"),
+    ...(tope && validDate ? { visitDate: date } : {})
+  };
+}
+
+function stagedTitle(sources: readonly TriadSource[]): TextPair {
+  const student = sources.some(source => source.role === "student");
+  const teacher = sources.find(source => source.role === "teacher");
+  if (student && teacher) return pair("综合跟进报告");
+  if (student) return pair("跟进报告：新增学生资料");
+  if (teacher) return pair(isTopeObservation(teacher.scale) ? "跟进报告：新增现场观察" : "跟进报告：新增教师资料");
+  return pair("首次家长报告");
+}
+
 function supportObservationPeriod(role: "parent" | "teacher", itemId: string): TextPair {
   if (/^(q20_|q21_)/.test(itemId)) return pair("过去四周");
   if (/^(t13_|t14_)/.test(itemId)) return pair("过去四周在学校");
@@ -131,23 +167,31 @@ function supportObservations(sources: readonly TriadSource[], section: keyof typ
   return sources.flatMap(source => {
     if (source.role !== "parent" && source.role !== "teacher") return [];
     const role = source.role;
-    return SUPPORT_REPORT_ITEMS[section][role].flatMap(itemId => {
+    const tope = isTopeObservation(source.scale);
+    const itemIds: readonly string[] = tope ? TOPE_REPORT_ITEMS[section] : SUPPORT_REPORT_ITEMS[section][role];
+    return itemIds.flatMap(itemId => {
       const item = source.scale.items.find(candidate => candidate.id === itemId);
       if (!item || item.report === "staff" || !answerVisible(source.answers, item, source.score.age)) return [];
+      if (tope && item.kind === "text") return [];
       const value = source.answers[item.id];
       const selected = typeof value === "number" ? [value] : Array.isArray(value) ? value : [];
       // Preserve submitted writing verbatim in either script; no AI translation.
       const responses = item.kind === "text" && typeof value === "string" && value.trim()
         ? [{ "zh-CN": value.trim(), "zh-HK": value.trim() }]
         : selected.flatMap(entry => { const label = choiceLabel(item, entry); return label ? [label] : []; });
-      return responses.length ? [{ role, itemId, prompt: item.label, responses, period: supportObservationPeriod(role, itemId) }] : [];
+      const informationItem = source.scale.items.find(candidate => candidate.id === TOPE_INFORMATION_SOURCE[itemId]);
+      const informationValue = informationItem && source.answers[informationItem.id];
+      const informationSource = informationItem && typeof informationValue === "number" ? choiceLabel(informationItem, informationValue) : null;
+      return responses.length ? [{ role, itemId, prompt: item.label, responses, period: tope ? pair("本次 TOPE 到访") : supportObservationPeriod(role, itemId), ...(informationSource ? { informationSource } : {}) }] : [];
     });
   });
 }
 
-export function composeTriad(sources: TriadSource[]): TriadReport {
+export function composeTriad(sources: TriadSource[], options: { staged?: boolean } = {}): TriadReport {
   const resultMode = triadResultMode(sources.map(source => source.scale));
-  const ordered = [...sources].sort((left, right) => ROLE_ORDER.indexOf(left.role) - ROLE_ORDER.indexOf(right.role));
+  if (options.staged && (resultMode !== "support-intake" || !sources.some(source => source.role === "parent"))) throw new Error("Staged reports require a parent support intake");
+  const order: RespondentRole[] = options.staged ? ["parent", "student", "teacher"] : ROLE_ORDER;
+  const ordered = [...sources].sort((left, right) => order.indexOf(left.role) - order.indexOf(right.role));
   const safety: TextPair[] = [];
   const seen = new Set<string>();
   for (const source of ordered) for (const message of source.score.riskMessages) {
@@ -155,16 +199,20 @@ export function composeTriad(sources: TriadSource[]): TriadReport {
     seen.add(message["zh-CN"]);
     safety.push(message);
   }
+  const student = ordered.find(source => source.role === "student");
+  const studentShared = options.staged && student && student.studentSharing?.confirmedAt === student.submittedAt ? approvedStudentSharing(student.scale, student.studentSharing) : undefined;
   if (resultMode === "support-intake") return {
     parentAudienceVersion: PARENT_REPORT_AUDIENCE_VERSION,
     resultMode,
-    title: pair("当前困难与支持建议"),
-    sources: ordered.map(source => ({ role: source.role, submittedAt: source.submittedAt })),
+    ...(options.staged ? { staged: true } : {}),
+    title: options.staged ? stagedTitle(ordered) : pair("当前困难与支持建议"),
+    sources: ordered.map(source => options.staged ? stagedSource(source) : ({ role: source.role, submittedAt: source.submittedAt })),
     safety, domains: [], portrait: [], situations: [], priorities: [], words: [], comparisons: [],
     supportIntake: {
       concerns: supportObservations(ordered, "concerns"),
       supports: supportObservations(ordered, "supports"),
       actions: supportObservations(ordered, "actions"),
+      ...(studentShared ? { studentShared } : {}),
       nextStep: pair("从上述关注中共同选一项，商定一项具体支持，明确由谁参与，并在四至六周后回顾。")
     }
   };
